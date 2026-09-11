@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/ilter-ai/ilter/internal/config"
@@ -74,7 +75,7 @@ func (s *SQLiteStore) CreatePromptTemplate(tmpl config.PromptTemplate) (int, err
 func (s *SQLiteStore) GetPromptTemplate(id int) (*config.PromptTemplate, error) {
 	p, err := s.queries.GetPromptTemplate(context.Background(), int64(id))
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("query prompt %d: %w", id, err)
@@ -87,7 +88,7 @@ func (s *SQLiteStore) GetPromptTemplate(id int) (*config.PromptTemplate, error) 
 func (s *SQLiteStore) GetPromptTemplateByName(name string) (*config.PromptTemplate, error) {
 	p, err := s.queries.GetPromptTemplateByName(context.Background(), name)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("query prompt by name %q: %w", name, err)

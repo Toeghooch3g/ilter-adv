@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -208,7 +209,7 @@ func (s *SQLiteStore) CreateAPIKey(name string, groupID *int, userID *int, month
 func (s *SQLiteStore) GetAPIKey(id string) (*auth.APIKey, error) {
 	dbKey, err := s.queries.GetAPIKey(context.Background(), id)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			return nil, fmt.Errorf("API key %q not found", id)
 		}
 		return nil, err
@@ -229,7 +230,7 @@ func (s *SQLiteStore) GetAPIKey(id string) (*auth.APIKey, error) {
 func (s *SQLiteStore) getAPIKeyByHashLookup(hash string) (*auth.APIKey, error) {
 	dbKey, err := s.queries.GetAPIKeyByHash(context.Background(), hash)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			return nil, fmt.Errorf("API key not found")
 		}
 		return nil, err

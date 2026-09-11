@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -138,7 +139,7 @@ func TestRuntimeConfigStore_Get_NotFound(t *testing.T) {
 	_, _ = ts.store.DB.Exec("DELETE FROM runtime_config")
 
 	_, err := s.GetRuntimeConfigEntry("nonexistent", "nokey")
-	if err != sql.ErrNoRows {
+	if !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("expected sql.ErrNoRows, got %v", err)
 	}
 }
@@ -200,7 +201,7 @@ func TestRuntimeConfigStore_Delete(t *testing.T) {
 	}
 
 	_, err := s.GetRuntimeConfigEntry("sec", "k")
-	if err != sql.ErrNoRows {
+	if !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("expected sql.ErrNoRows after delete, got %v", err)
 	}
 

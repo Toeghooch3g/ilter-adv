@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -33,7 +34,7 @@ func (h *MCPHandler) TestServer(w http.ResponseWriter, r *http.Request) {
 	err := h.store.DB.QueryRow(`SELECT name, transport, url, command, args, env, timeout_ms, max_retries, auth_type, auth_key_env
 		FROM mcp_servers WHERE id = ?`, id).Scan(&name, &transport, &url, &command, &args, &env, &timeoutMs, &maxRetries, &authType, &authKeyEnv)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			model.WriteJSONError(w, http.StatusNotFound, "not_found", "Server not found")
 			return
 		}
@@ -322,7 +323,7 @@ func (h *MCPHandler) CallServerTool(w http.ResponseWriter, r *http.Request) {
 	err := h.store.DB.QueryRow(`SELECT name, transport, url, command, args, env, timeout_ms, max_retries, auth_type, auth_key_env
 		FROM mcp_servers WHERE id = ?`, id).Scan(&name, &transport, &url, &command, &args, &env, &timeoutMs, &maxRetries, &authType, &authKeyEnv)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			model.WriteJSONError(w, http.StatusNotFound, "not_found", "Server not found")
 			return
 		}
@@ -469,7 +470,7 @@ func (h *MCPHandler) syncServerByID(ctx context.Context, id string) error {
 	err := h.store.DB.QueryRowContext(ctx, `SELECT name, transport, url, command, args, env, auth_type, auth_key_env, timeout_ms, max_retries
 		FROM mcp_servers WHERE id = ?`, id).Scan(&name, &transport, &url, &command, &args, &env, &authType, &authKeyEnv, &timeoutMs, &maxRetries)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("server %q not found", id)
 		}
 		return fmt.Errorf("failed to query server: %w", err)
@@ -511,14 +512,14 @@ func (h *MCPHandler) syncServerByID(ctx context.Context, id string) error {
 
 	client, err := mcp.NewTransportClient(serverInfo)
 	if err != nil {
-		return fmt.Errorf("Failed to connect: %w", err)
+		return fmt.Errorf("failed to connect: %w", err)
 	}
 	syncCtx, cancel := context.WithTimeout(ctx, syncTimeout)
 	defer cancel()
 
 	if err = client.Start(syncCtx); err != nil {
 		client.Close()
-		return fmt.Errorf("Failed to connect to MCP server: %w", err)
+		return fmt.Errorf("failed to connect to MCP server: %w", err)
 	}
 	defer client.Close()
 
@@ -531,10 +532,10 @@ func (h *MCPHandler) syncServerByID(ctx context.Context, id string) error {
 	}
 	initResp, err := client.Call(syncCtx, initReq)
 	if err != nil {
-		return fmt.Errorf("Failed to initialize: %w", err)
+		return fmt.Errorf("failed to initialize: %w", err)
 	}
 	if initResp.Error != nil {
-		return fmt.Errorf("Failed to initialize: %s (code %d)", initResp.Error.Message, initResp.Error.Code)
+		return fmt.Errorf("failed to initialize: %s (code %d)", initResp.Error.Message, initResp.Error.Code)
 	}
 
 	listID := json.RawMessage(`"2"`)

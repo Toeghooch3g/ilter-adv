@@ -2,6 +2,7 @@ package stats
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -151,7 +152,7 @@ func (h *Handler) HandleStats(w http.ResponseWriter, _ *http.Request) {
 		WHERE timestamp >= datetime('now', ?)
 	`, statsWindow).Scan(&totalRequests, &totalCost, &successCount, &errorCount, &cacheHits, &avgLatency)
 
-	if err != nil && err != sql.ErrNoRows {
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		slog.Error("Failed to query stats from DB", "error", err)
 		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return

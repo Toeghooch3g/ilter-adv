@@ -148,7 +148,8 @@ func (h *JobsHandler) WebhookHandler(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	rawBody, err := io.ReadAll(r.Body)
 	if err != nil {
-		if _, ok := err.(*http.MaxBytesError); ok {
+		maxBytesError := &http.MaxBytesError{}
+		if errors.As(err, &maxBytesError) {
 			model.WriteJSONError(w, http.StatusRequestEntityTooLarge, "body_too_large", "Request body exceeds 1MB limit")
 		} else {
 			model.WriteJSONError(w, http.StatusBadRequest, "invalid_body", "Failed to read request body")

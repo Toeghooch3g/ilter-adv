@@ -9,6 +9,8 @@ type KeyInfo struct {
 	OwnerName string `json:"owner_name,omitempty"`
 }
 
+// Page is a paginated slice of items along with the total count and paging
+// parameters used to produce it.
 type Page[T any] struct {
 	Items []T `json:"items"`
 	Total int `json:"total"`
@@ -16,6 +18,8 @@ type Page[T any] struct {
 	Limit int `json:"limit"`
 }
 
+// RequestSummary is a summary of a single proxied request as shown in
+// request listings.
 type RequestSummary struct {
 	ID               int     `json:"id"`
 	Timestamp        string  `json:"timestamp"`
@@ -34,6 +38,8 @@ type RequestSummary struct {
 	PromptPreview    string  `json:"prompt_preview,omitempty"`
 }
 
+// RequestDetail is the full detail of a single proxied request, including
+// request/response bodies and phase latencies.
 type RequestDetail struct {
 	RequestSummary
 	RequestBody    *string             `json:"request_body,omitempty"`
@@ -41,6 +47,7 @@ type RequestDetail struct {
 	PhaseLatencies PhaseLatencySummary `json:"phase_latencies"`
 }
 
+// PhaseLatencySummary breaks down a request's latency by processing phase.
 type PhaseLatencySummary struct {
 	GuardrailLatencyMs float64 `json:"guardrail_latency_ms"`
 	LLMLatencyMs       float64 `json:"llm_latency_ms"`

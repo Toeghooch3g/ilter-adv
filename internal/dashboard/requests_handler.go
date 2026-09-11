@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"database/sql"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -88,7 +89,7 @@ func (h *RequestsHandler) HandleRequestDetail(w http.ResponseWriter, r *http.Req
 		&detail.PhaseLatencies.QueuedLatencyMs,
 	)
 
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		model.WriteJSONError(w, http.StatusNotFound, "not_found", "request not found")
 		return
 	}
@@ -161,10 +162,11 @@ func (h *RequestsHandler) HandleListRequests(w http.ResponseWriter, r *http.Requ
 	var countArgs []any
 
 	if status != "" {
-		if status == "success" {
+		switch status {
+		case "success":
 			query += " AND al.status_code < 400"
 			countQuery += " AND al.status_code < 400"
-		} else if status == "error" {
+		case "error":
 			query += " AND al.status_code >= 400"
 			countQuery += " AND al.status_code >= 400"
 		}

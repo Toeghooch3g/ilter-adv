@@ -3,6 +3,7 @@ package dashconfig
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -711,7 +712,7 @@ func isNotFound(err error) bool {
 	if err == nil {
 		return false
 	}
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return true
 	}
 	return strings.Contains(err.Error(), "not found")

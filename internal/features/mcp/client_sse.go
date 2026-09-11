@@ -438,9 +438,10 @@ func (c *SSEClient) dispatchResponse(resp *JSONRPCResponse) {
 }
 
 func setSSEAuthHeaders(req *http.Request, server *ServerInfo) {
-	if server.Config.AuthType == "bearer" {
+	switch server.Config.AuthType {
+	case "bearer":
 		req.Header.Set("Authorization", "Bearer "+server.Config.AuthKeyEnv)
-	} else if server.Config.AuthType == "basic" {
+	case "basic":
 		req.Header.Set("Authorization", "Basic "+server.Config.AuthKeyEnv)
 	}
 }

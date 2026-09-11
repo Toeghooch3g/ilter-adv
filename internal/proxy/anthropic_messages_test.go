@@ -144,7 +144,8 @@ func TestTranslateChatResponseToAnthropic_ToolCall(t *testing.T) {
 
 	out := translateChatResponseToAnthropic(resp, "claude-opus-4")
 	assert.Equal(t, "tool_use", out["stop_reason"])
-	content := out["content"].([]map[string]any)
+	content, ok := out["content"].([]map[string]any)
+	require.True(t, ok)
 	require.Len(t, content, 1)
 	assert.Equal(t, "tool_use", content[0]["type"])
 	assert.Equal(t, "call_1", content[0]["id"])
@@ -242,6 +243,7 @@ func TestAnthropicResponseWriter_NonStreamingErrorTranslation(t *testing.T) {
 	var out map[string]any
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &out))
 	assert.Equal(t, "error", out["type"])
-	errObj := out["error"].(map[string]any)
+	errObj, ok := out["error"].(map[string]any)
+	require.True(t, ok)
 	assert.Equal(t, "rate limited", errObj["message"])
 }

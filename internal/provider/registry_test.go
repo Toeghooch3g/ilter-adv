@@ -234,7 +234,7 @@ func TestInitFromConfig_DefaultBaseURLs(t *testing.T) {
 			func(t *testing.T, p Provider) {
 				openRouterProvider, ok := p.(*OpenRouterProvider)
 				require.True(t, ok, "expected OpenRouterProvider")
-				assert.Equal(t, "https://openrouter.ai/api/v1", openRouterProvider.OpenAIProvider.config.BaseURL)
+				assert.Equal(t, "https://openrouter.ai/api/v1", openRouterProvider.config.BaseURL)
 			},
 		},
 		{
@@ -325,5 +325,5 @@ func TestInitFromConfig_CustomBaseURL(t *testing.T) {
 	openRouterProvider, ok := p.(*OpenRouterProvider)
 	require.True(t, ok)
 	// Should retain the custom URL, not the default
-	assert.Equal(t, "https://custom.openrouter.ai/v1", openRouterProvider.OpenAIProvider.config.BaseURL)
+	assert.Equal(t, "https://custom.openrouter.ai/v1", openRouterProvider.config.BaseURL)
 }

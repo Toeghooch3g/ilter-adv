@@ -22,8 +22,8 @@ func setupTestStore(t *testing.T) (*db.SQLiteStore, string) {
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() {
-		store.Close()
-		os.RemoveAll(tmpDir)
+		_ = store.Close()
+		_ = os.RemoveAll(tmpDir)
 	})
 	return store, tmpDir
 }

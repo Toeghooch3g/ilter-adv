@@ -2,6 +2,7 @@ package stats
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -386,7 +387,7 @@ func (h *Handler) HandleCostsOverview(w http.ResponseWriter, r *http.Request) {
 		FROM audit_log
 		WHERE timestamp >= datetime('now', ?)
 	`, since).Scan(&totalCost, &totalRequests)
-	if err != nil && err != sql.ErrNoRows {
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		slog.Error("Failed to query costs overall summary", "error", err)
 		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return

@@ -487,9 +487,10 @@ func (lb *LoadBalancer) GetProviderStatus() []ProviderStatus {
 			}
 
 			healthStatus := "online"
-			if cbState == "open" {
+			switch cbState {
+			case "open":
 				healthStatus = "offline"
-			} else if cbState == "half-open" {
+			case "half-open":
 				healthStatus = "degraded"
 			}
 

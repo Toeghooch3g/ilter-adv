@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -340,7 +341,7 @@ func (m *PIIMaskerMiddleware) Handler(next http.Handler) http.Handler {
 				matches := m.masker.DetectPII(contentStr)
 				masked, err := m.masker.ProcessText(contentStr, state)
 				if err != nil {
-					if err == model.ErrPIIBlocked {
+					if errors.Is(err, model.ErrPIIBlocked) {
 						if meta != nil {
 							meta.SetPIIBlocked(true)
 						}
@@ -438,7 +439,7 @@ func (m *PIIMaskerMiddleware) MaskMessages(ctx context.Context, messages []model
 
 		masked, err := m.masker.ProcessText(contentStr, state)
 		if err != nil {
-			if err == model.ErrPIIBlocked {
+			if errors.Is(err, model.ErrPIIBlocked) {
 				return err
 			}
 			continue

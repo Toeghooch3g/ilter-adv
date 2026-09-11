@@ -14,18 +14,23 @@ import (
 	"github.com/ilter-ai/ilter/internal/db/sqlc"
 )
 
+// SQLiteStore is a SQLite-backed implementation of the store's data access
+// layer, wrapping a *sql.DB and the generated sqlc queries.
 type SQLiteStore struct {
 	DB      *sql.DB
 	queries *sqlc.Queries
 }
 
+// NewSQLiteStore opens (creating the parent directory if needed), configures,
+// and migrates a SQLite database at cfg.SqlitePath, returning a ready-to-use
+// SQLiteStore.
 func NewSQLiteStore(cfg config.StorageConfig) (*SQLiteStore, error) {
 	if cfg.Type != "sqlite" {
 		return nil, fmt.Errorf("unsupported storage type: %s", cfg.Type)
 	}
 
 	// Ensure parent directory exists.
-	if err := os.MkdirAll(filepath.Dir(cfg.SqlitePath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(cfg.SqlitePath), 0o750); err != nil {
 		return nil, fmt.Errorf("failed to create sqlite directory %q: %w", filepath.Dir(cfg.SqlitePath), err)
 	}
 
@@ -67,7 +72,7 @@ func NewSQLiteStore(cfg config.StorageConfig) (*SQLiteStore, error) {
 	}
 	db.SetConnMaxLifetime(15 * time.Minute)
 
-	if err := db.Ping(); err != nil {
+	if err := db.PingContext(context.Background()); err != nil {
 		return nil, fmt.Errorf("failed to ping sqlite db: %w", err)
 	}
 
@@ -90,12 +95,15 @@ func NewSQLiteStoreFromDB(db *sql.DB) *SQLiteStore {
 	return &SQLiteStore{DB: db, queries: sqlc.New(db)}
 }
 
+// Close closes the underlying database connection.
 func (s *SQLiteStore) Close() error {
 	return s.DB.Close()
 }
 
 // RecordDailyUsage uses key_id (TEXT) to record usage in usage_daily.
 // The key_id is the API key ID (e.g. "abc123" or "legacy_5").
+//
+//nolint:revive // argument-limit: pre-existing signature, called from internal/proxy outside this batch's scope
 func (s *SQLiteStore) RecordDailyUsage(keyID string, date, model, provider string, promptTokens, completionTokens, cacheHits int, cost float64) error {
 	totalTokens := int64(promptTokens + completionTokens)
 	prompt := int64(promptTokens)

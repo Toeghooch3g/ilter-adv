@@ -42,6 +42,7 @@ fix:
 		-slicescontains -slicessort -stringsbuilder -stringscut \
 		-stringscutprefix -stringsseq -testingcontext -waitgroupgo ./...
 	$(RTK) gofumpt -l -w .
+	$(RTK) goimports -w .
 	$(RTK) golangci-lint run --fix ./...
 	cd $(WEB_DIR) && bun run biome check --write .
 

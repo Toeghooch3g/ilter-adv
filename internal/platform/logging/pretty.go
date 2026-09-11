@@ -78,7 +78,7 @@ func (h *PrettyHandler) Handle(ctx context.Context, r slog.Record) error {
 		if len(spanID) > 8 {
 			spanID = spanID[:8]
 		}
-		buf.WriteString(fmt.Sprintf("%strace=%s span=%s%s  ", gray, traceID, spanID, reset))
+		fmt.Fprintf(&buf, "%strace=%s span=%s%s  ", gray, traceID, spanID, reset)
 	}
 
 	buf.WriteString(r.Message)
@@ -105,9 +105,9 @@ func (h *PrettyHandler) Handle(ctx context.Context, r slog.Record) error {
 			valStr := formatValue(a.Value)
 
 			if isError && a.Key == "error" {
-				buf.WriteString(fmt.Sprintf("%s%s%s=%s%s%s", blue, key, reset, red, valStr, reset))
+				fmt.Fprintf(&buf, "%s%s%s=%s%s%s", blue, key, reset, red, valStr, reset)
 			} else {
-				buf.WriteString(fmt.Sprintf("%s%s%s=%s", blue, key, reset, valStr))
+				fmt.Fprintf(&buf, "%s%s%s=%s", blue, key, reset, valStr)
 			}
 		}
 	}

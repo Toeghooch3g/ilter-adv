@@ -64,7 +64,7 @@ func TestNewProviderFromConfig_OpenRouter(t *testing.T) {
 	// OpenRouter wraps OpenAIProvider; verify the underlying type.
 	or, ok := p.(*OpenRouterProvider)
 	require.True(t, ok)
-	assert.Equal(t, "https://openrouter.ai/api/v1", or.OpenAIProvider.config.BaseURL)
+	assert.Equal(t, "https://openrouter.ai/api/v1", or.config.BaseURL)
 }
 
 func TestNewProviderFromConfig_Ollama(t *testing.T) {

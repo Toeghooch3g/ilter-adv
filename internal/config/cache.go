@@ -47,7 +47,7 @@ func (s *Snapshot) GuardRules() []string { return s.RuntimeConfigSnapshot.GuardR
 func (s *Snapshot) CustomRules() []CustomRuleConfig { return s.RuntimeConfigSnapshot.CustomRules }
 
 // RoutingConfig returns the resolved routing configuration.
-func (s *Snapshot) RoutingConfig() RoutingConfig { return s.RuntimeConfigSnapshot.Routing }
+func (s *Snapshot) RoutingConfig() RoutingConfig { return s.Routing }
 
 // OpenAPITools returns the resolved OpenAPI tool specifications.
 func (s *Snapshot) Fallback() FallbackConfig { return s.RuntimeConfigSnapshot.Fallback }

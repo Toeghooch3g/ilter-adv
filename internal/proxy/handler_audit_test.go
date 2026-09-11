@@ -93,7 +93,7 @@ func TestRecordErrorAudit_JSONDecodeError(t *testing.T) {
 	h.SetConfig(cfg)
 
 	// Invalid JSON body
-	req := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewReader([]byte(`invalid json`)))
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "/v1/chat/completions", bytes.NewReader([]byte(`invalid json`)))
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
 
@@ -137,7 +137,7 @@ func TestRecordErrorAudit_NoModel(t *testing.T) {
 		Messages: []model.Message{{Role: "user", Content: "hello"}},
 	}
 	bodyBytes, _ := json.Marshal(reqBody)
-	req := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewReader(bodyBytes))
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "/v1/chat/completions", bytes.NewReader(bodyBytes))
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
 
@@ -182,7 +182,7 @@ func TestRecordErrorAudit_NoCandidates(t *testing.T) {
 		Messages: []model.Message{{Role: "user", Content: "hello"}},
 	}
 	bodyBytes, _ := json.Marshal(reqBody)
-	req := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewReader(bodyBytes))
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "/v1/chat/completions", bytes.NewReader(bodyBytes))
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
 
@@ -233,7 +233,7 @@ func TestRecordErrorAudit_ProviderError(t *testing.T) {
 		Messages: []model.Message{{Role: "user", Content: "hello"}},
 	}
 	bodyBytes, _ := json.Marshal(reqBody)
-	req := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewReader(bodyBytes))
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "/v1/chat/completions", bytes.NewReader(bodyBytes))
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
 
@@ -277,7 +277,7 @@ func TestRecordErrorAudit_Success(t *testing.T) {
 		Messages: []model.Message{{Role: "user", Content: "hello"}},
 	}
 	bodyBytes, _ := json.Marshal(reqBody)
-	req := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewReader(bodyBytes))
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "/v1/chat/completions", bytes.NewReader(bodyBytes))
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
 

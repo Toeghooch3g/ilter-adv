@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -10,6 +11,8 @@ import (
 	"github.com/ilter-ai/ilter/internal/db"
 )
 
+// AuditEntry is a single MCP tool-call record queued for asynchronous
+// persistence by AuditLogger.
 type AuditEntry struct {
 	APIKeyID   string
 	Tool       string
@@ -23,6 +26,8 @@ type AuditEntry struct {
 	ClientIP   string
 }
 
+// AuditLogger asynchronously persists MCP audit entries to the database
+// through a buffered channel and a single background worker.
 type AuditLogger struct {
 	store *db.SQLiteStore
 	ch    chan AuditEntry
@@ -30,6 +35,8 @@ type AuditLogger struct {
 	done  chan struct{}
 }
 
+// NewAuditLogger creates an AuditLogger backed by store and starts its
+// background worker goroutine.
 func NewAuditLogger(store *db.SQLiteStore) *AuditLogger {
 	l := &AuditLogger{
 		store: store,
@@ -49,50 +56,68 @@ func (l *AuditLogger) worker() {
 			if !ok {
 				return
 			}
-			query := `INSERT INTO mcp_audit_log
-			(key_id, tool, server_id, method, params, duration_ms, status_code, success, error_msg, client_ip)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-
-			paramsJSON := "{}"
-			if entry.Params != "" {
-				var m map[string]any
-				if err := json.Unmarshal([]byte(entry.Params), &m); err == nil {
-					sanitized := make(map[string]any)
-					for k, v := range m {
-						if isSensitiveParam(k) {
-							sanitized[k] = "***"
-						} else {
-							sanitized[k] = v
-						}
-					}
-					if b, err := json.Marshal(sanitized); err == nil {
-						paramsJSON = string(b)
-					}
-				}
-			}
-
-			_, err := l.store.DB.Exec(
-				query,
-				nullIfEmpty(entry.APIKeyID),
-				entry.Tool,
-				nullIfEmpty(entry.ServerID),
-				entry.Method,
-				paramsJSON,
-				entry.DurationMs,
-				entry.StatusCode,
-				boolToInt(entry.Success),
-				nullIfEmpty(entry.ErrorMsg),
-				nullIfEmpty(entry.ClientIP),
-			)
-			if err != nil {
-				mcpLog.Error("failed to write audit log", "error", err)
-			}
+			l.persist(entry)
 		case <-l.done:
 			return
 		}
 	}
 }
 
+func (l *AuditLogger) persist(entry AuditEntry) {
+	query := `INSERT INTO mcp_audit_log
+	(key_id, tool, server_id, method, params, duration_ms, status_code, success, error_msg, client_ip)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+
+	paramsJSON := sanitizedParamsJSON(entry.Params)
+
+	// This runs on the background worker goroutine, decoupled from any
+	// request; there is no caller context to inherit here.
+	_, err := l.store.DB.ExecContext(
+		context.Background(),
+		query,
+		nullIfEmpty(entry.APIKeyID),
+		entry.Tool,
+		nullIfEmpty(entry.ServerID),
+		entry.Method,
+		paramsJSON,
+		entry.DurationMs,
+		entry.StatusCode,
+		boolToInt(entry.Success),
+		nullIfEmpty(entry.ErrorMsg),
+		nullIfEmpty(entry.ClientIP),
+	)
+	if err != nil {
+		mcpLog.Error("failed to write audit log", "error", err)
+	}
+}
+
+// sanitizedParamsJSON returns params re-marshaled as JSON with sensitive
+// keys redacted, or "{}" if params is empty or not valid JSON.
+func sanitizedParamsJSON(params string) string {
+	paramsJSON := "{}"
+	if params == "" {
+		return paramsJSON
+	}
+	var m map[string]any
+	if err := json.Unmarshal([]byte(params), &m); err != nil {
+		return paramsJSON
+	}
+	sanitized := make(map[string]any)
+	for k, v := range m {
+		if isSensitiveParam(k) {
+			sanitized[k] = "***"
+		} else {
+			sanitized[k] = v
+		}
+	}
+	if b, err := json.Marshal(sanitized); err == nil {
+		paramsJSON = string(b)
+	}
+	return paramsJSON
+}
+
+// LogAsync enqueues entry for asynchronous persistence, dropping it and
+// logging a warning if the internal buffer is full.
 func (l *AuditLogger) LogAsync(entry AuditEntry) {
 	select {
 	case l.ch <- entry:
@@ -101,6 +126,7 @@ func (l *AuditLogger) LogAsync(entry AuditEntry) {
 	}
 }
 
+// Close stops the background worker and blocks until it has drained.
 func (l *AuditLogger) Close() {
 	close(l.done)
 	l.wg.Wait()
@@ -132,6 +158,8 @@ func boolToInt(b bool) int {
 	return 0
 }
 
+// AuditFilter narrows an AuditLogger.Query call by tool, server, method,
+// success, time range, and call origin.
 type AuditFilter struct {
 	Tool     string
 	ServerID string
@@ -147,6 +175,8 @@ type AuditFilter struct {
 	Source string
 }
 
+// AuditLogEntry is a single row returned by AuditLogger.Query, shaped for
+// API/UI consumption.
 type AuditLogEntry struct {
 	ID         int     `json:"id"`
 	APIKeyID   *string `json:"key_id,omitempty"`
@@ -162,7 +192,56 @@ type AuditLogEntry struct {
 	CreatedAt  string  `json:"created_at"`
 }
 
+// Query returns audit log entries matching filter, along with the total
+// count of matching rows (ignoring filter.Limit/filter.Offset).
 func (l *AuditLogger) Query(filter AuditFilter) ([]AuditLogEntry, int, error) {
+	conds, args := buildAuditConditions(filter)
+
+	where := ""
+	if len(conds) > 0 {
+		where = " WHERE " + strings.Join(conds, " AND ")
+	}
+
+	// This is invoked from HTTP handlers via a store method that predates
+	// context threading; there is no caller context available here.
+	ctx := context.Background()
+
+	var total int
+	countSQL := "SELECT COUNT(*) FROM mcp_audit_log" + where
+	if err := l.store.DB.QueryRowContext(ctx, countSQL, args...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count audit logs: %w", err)
+	}
+
+	limit := filter.Limit
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+	offset := filter.Offset
+
+	dataSQL := `SELECT id, key_id, tool, server_id, method, params,
+		duration_ms, status_code, success, error_msg, client_ip, created_at
+		FROM mcp_audit_log` + where + ` ORDER BY id DESC LIMIT ? OFFSET ?`
+	args = append(args, limit, offset)
+
+	rows, err := l.store.DB.QueryContext(ctx, dataSQL, args...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("query audit logs: %w", err)
+	}
+	defer func() {
+		_ = rows.Close()
+	}()
+
+	entries, err := scanAuditLogEntries(rows)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	return entries, total, nil
+}
+
+// buildAuditConditions translates filter into SQL WHERE-clause fragments and
+// their positional args, in the order they must be bound.
+func buildAuditConditions(filter AuditFilter) ([]string, []any) {
 	args := []any{}
 	conds := []string{}
 
@@ -207,76 +286,64 @@ func (l *AuditLogger) Query(filter AuditFilter) ([]AuditLogEntry, int, error) {
 		args = append(args, filter.To)
 	}
 
-	where := ""
-	if len(conds) > 0 {
-		where = " WHERE " + strings.Join(conds, " AND ")
-	}
+	return conds, args
+}
 
-	var total int
-	countSQL := "SELECT COUNT(*) FROM mcp_audit_log" + where
-	if err := l.store.DB.QueryRow(countSQL, args...).Scan(&total); err != nil {
-		return nil, 0, fmt.Errorf("count audit logs: %w", err)
-	}
+// auditRowNulls holds the nullable columns of one mcp_audit_log row, scanned
+// as sql.Null* so they can be copied into an AuditLogEntry's pointer/plain
+// fields afterward.
+type auditRowNulls struct {
+	keyID, serverID, params, errorMsg, clientIP, createdAt sql.NullString
+	statusCode, successInt                                 sql.NullInt64
+	durationMs                                             sql.NullFloat64
+}
 
-	limit := filter.Limit
-	if limit <= 0 || limit > 100 {
-		limit = 50
-	}
-	offset := filter.Offset
-
-	dataSQL := `SELECT id, key_id, tool, server_id, method, params,
-		duration_ms, status_code, success, error_msg, client_ip, created_at
-		FROM mcp_audit_log` + where + ` ORDER BY id DESC LIMIT ? OFFSET ?`
-	dataArgs := append(args, limit, offset)
-
-	rows, err := l.store.DB.Query(dataSQL, dataArgs...)
-	if err != nil {
-		return nil, 0, fmt.Errorf("query audit logs: %w", err)
-	}
-	defer rows.Close()
-
+// scanAuditLogEntries reads every row of rows into an AuditLogEntry slice.
+func scanAuditLogEntries(rows *sql.Rows) ([]AuditLogEntry, error) {
 	var entries []AuditLogEntry
 	for rows.Next() {
 		var e AuditLogEntry
-		var keyID, serverID, params, errorMsg, clientIP, createdAt sql.NullString
-		var statusCode, successInt sql.NullInt64
-		var durationMs sql.NullFloat64
+		var n auditRowNulls
 
-		if err := rows.Scan(&e.ID, &keyID, &e.Tool, &serverID,
-			&e.Method, &params, &durationMs, &statusCode, &successInt, &errorMsg, &clientIP, &createdAt); err != nil {
-			return nil, 0, fmt.Errorf("scan audit log: %w", err)
+		if err := rows.Scan(&e.ID, &n.keyID, &e.Tool, &n.serverID,
+			&e.Method, &n.params, &n.durationMs, &n.statusCode, &n.successInt, &n.errorMsg, &n.clientIP, &n.createdAt); err != nil {
+			return nil, fmt.Errorf("scan audit log: %w", err)
 		}
 
-		if keyID.Valid {
-			e.APIKeyID = &keyID.String
-		}
-		if serverID.Valid {
-			e.ServerID = serverID.String
-		}
-		if params.Valid {
-			e.Params = params.String
-		}
-		if durationMs.Valid {
-			e.DurationMs = durationMs.Float64
-		}
-		if statusCode.Valid {
-			e.StatusCode = int(statusCode.Int64)
-		}
-		if successInt.Valid {
-			e.Success = successInt.Int64 == 1
-		}
-		if errorMsg.Valid {
-			e.ErrorMsg = &errorMsg.String
-		}
-		if clientIP.Valid {
-			e.ClientIP = &clientIP.String
-		}
-		if createdAt.Valid {
-			e.CreatedAt = db.FormatSQLiteTimestamp(createdAt.String)
-		}
-
+		n.applyTo(&e)
 		entries = append(entries, e)
 	}
 
-	return entries, total, nil
+	return entries, nil
+}
+
+// applyTo copies the valid (non-NULL) columns in n into e's fields.
+func (n auditRowNulls) applyTo(e *AuditLogEntry) {
+	if n.keyID.Valid {
+		e.APIKeyID = &n.keyID.String
+	}
+	if n.serverID.Valid {
+		e.ServerID = n.serverID.String
+	}
+	if n.params.Valid {
+		e.Params = n.params.String
+	}
+	if n.durationMs.Valid {
+		e.DurationMs = n.durationMs.Float64
+	}
+	if n.statusCode.Valid {
+		e.StatusCode = int(n.statusCode.Int64)
+	}
+	if n.successInt.Valid {
+		e.Success = n.successInt.Int64 == 1
+	}
+	if n.errorMsg.Valid {
+		e.ErrorMsg = &n.errorMsg.String
+	}
+	if n.clientIP.Valid {
+		e.ClientIP = &n.clientIP.String
+	}
+	if n.createdAt.Valid {
+		e.CreatedAt = db.FormatSQLiteTimestamp(n.createdAt.String)
+	}
 }

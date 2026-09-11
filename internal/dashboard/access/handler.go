@@ -3,6 +3,7 @@ package access
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -250,7 +251,7 @@ func (h *Handler) UpdateGrant(w http.ResponseWriter, r *http.Request) {
 
 	var existingID string
 	err := h.store.DB.QueryRow("SELECT id FROM mcp_grant WHERE id = ?", grantID).Scan(&existingID)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		model.WriteJSONError(w, http.StatusNotFound, "not_found", "Grant not found")
 		return
 	}

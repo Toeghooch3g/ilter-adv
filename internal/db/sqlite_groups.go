@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -139,7 +140,7 @@ func (s *SQLiteStore) GetGroupBudget(id int) (budget float64, dailyLimit float64
 	ctx := context.Background()
 	row, err := s.queries.GetGroupBudget(ctx, int64(id))
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			return 0, 0, nil
 		}
 		return 0, 0, err

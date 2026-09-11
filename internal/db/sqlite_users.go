@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -128,7 +129,7 @@ func (s *SQLiteStore) ListUsers() ([]auth.User, error) {
 func (s *SQLiteStore) GetUserBudget(id int) (budget float64, dailyLimit float64, err error) {
 	row, err := s.queries.GetUserBudget(context.Background(), int64(id))
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			return 0, 0, nil
 		}
 		return 0, 0, err

@@ -39,7 +39,7 @@ func calculatorHandler(_ context.Context, args map[string]any) (any, error) {
 
 	result, err := evalMath(expr)
 	if err != nil {
-		return nil, fmt.Errorf("evaluation error: %v", err)
+		return nil, fmt.Errorf("evaluation error: %w", err)
 	}
 
 	return map[string]any{

@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -18,7 +19,7 @@ import (
 func EnsureAdminAccount(store *dbpkg.SQLiteStore) (email, password, apiKeyToken string, created bool, err error) {
 	if _, checkErr := store.GetGroupByName("admin"); checkErr == nil {
 		return "", "", "", false, nil
-	} else if checkErr != sql.ErrNoRows {
+	} else if !errors.Is(checkErr, sql.ErrNoRows) {
 		return "", "", "", false, fmt.Errorf("check admin group: %w", checkErr)
 	}
 

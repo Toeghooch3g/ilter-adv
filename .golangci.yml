@@ -1,20 +1,78 @@
+version: "2"
+
 linters:
+  enable:
+    - govet
+    - errcheck
+    - staticcheck
+    - ineffassign
+    - unused
+    - revive
+    - bodyclose
+    - exhaustive
+    - misspell
+    - gocognit
+    - goconst
+    - unparam
+    - errorlint
+    - gosec
+    - gocritic
+    - nilnil
+    - nilerr
+    - forcetypeassert
+    - wastedassign
+    - predeclared
+    - contextcheck
+    - noctx
+    - rowserrcheck
+    - sqlclosecheck
+    - modernize
+  settings:
+    revive:
+      rules:
+        - name: blank-imports
+        - name: context-as-argument
+        - name: dot-imports
+        - name: error-return
+        - name: error-strings
+        - name: exported
+        - name: if-return
+        - name: increment-decrement
+        - name: var-naming
+        - name: package-comments
+        - name: argument-limit
+          arguments: [7]
+    exhaustive:
+      default-signifies-exhaustive: true
+    gocognit:
+      min-complexity: 15
+    goconst:
+      min-len: 9
+      min-occurrences: 3
+      ignore-calls: false
+      ignore-string-values:
+        - "%[a-zA-Z%]"
+    unparam:
+      check-exported: false
+    gosec:
+      excludes:
+        - G304
+        - G204
+  exclusions:
+    rules:
+      - path: (.+)_test\.go
+        linters: [goconst, gocognit]
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  exclude-dirs:
+    - internal/db/sqlc
+
+formatters:
   enable:
     - gofumpt
     - goimports
-    - misspell
-    - revive
-linters-settings:
-  # govet shadow cannot be enabled via CLI flag — only via config file.
-  govet:
-    enable:
-      - shadow
-  goimports:
-    local-prefixes: github.com/ilter-ai/ilter
-  misspell:
-    locale: US
-run:
-  timeout: 5m
-issues:
-  exclude-dirs:
-    - internal/db/sqlc
+  settings:
+    gofumpt:
+      module-path: github.com/ilter-ai/ilter

@@ -2,6 +2,7 @@ package dashboard
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -50,7 +51,7 @@ func TestBudgetHandlers_UserBudget(t *testing.T) {
 	r := chi.NewRouter()
 	r.Get("/budget/user/{id}", s.handleUserBudget)
 
-	req := httptest.NewRequest("GET", "/budget/user/1", nil)
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "/budget/user/1", nil)
 	rr := httptest.NewRecorder()
 	r.ServeHTTP(rr, req)
 
@@ -73,7 +74,7 @@ func TestBudgetHandlers_GroupBudget(t *testing.T) {
 	r := chi.NewRouter()
 	r.Get("/budget/group/{id}", s.handleGroupBudget)
 
-	req := httptest.NewRequest("GET", "/budget/group/1", nil)
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "/budget/group/1", nil)
 	rr := httptest.NewRecorder()
 	r.ServeHTTP(rr, req)
 
@@ -98,7 +99,7 @@ func TestBudgetHandlers_SetUserBudget(t *testing.T) {
 	r.Get("/budget/user/{id}", s.handleUserBudget)
 
 	body := bytes.NewBufferString(`{"monthly_budget": 150.00}`)
-	req := httptest.NewRequest("POST", "/budget/user/1", body)
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "/budget/user/1", body)
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
 	r.ServeHTTP(rr, req)
@@ -106,7 +107,7 @@ func TestBudgetHandlers_SetUserBudget(t *testing.T) {
 	assert.Equal(t, http.StatusOK, rr.Code)
 
 	// Verify by GET
-	req2 := httptest.NewRequest("GET", "/budget/user/1", nil)
+	req2 := httptest.NewRequestWithContext(context.Background(), "GET", "/budget/user/1", nil)
 	rr2 := httptest.NewRecorder()
 	r.ServeHTTP(rr2, req2)
 
@@ -127,7 +128,7 @@ func TestBudgetHandlers_SetGroupBudget(t *testing.T) {
 	r.Get("/budget/group/{id}", s.handleGroupBudget)
 
 	body := bytes.NewBufferString(`{"monthly_budget": 300.00}`)
-	req := httptest.NewRequest("POST", "/budget/group/1", body)
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "/budget/group/1", body)
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
 	r.ServeHTTP(rr, req)
@@ -135,7 +136,7 @@ func TestBudgetHandlers_SetGroupBudget(t *testing.T) {
 	assert.Equal(t, http.StatusOK, rr.Code)
 
 	// Verify by GET
-	req2 := httptest.NewRequest("GET", "/budget/group/1", nil)
+	req2 := httptest.NewRequestWithContext(context.Background(), "GET", "/budget/group/1", nil)
 	rr2 := httptest.NewRecorder()
 	r.ServeHTTP(rr2, req2)
 
@@ -153,7 +154,7 @@ func TestBudgetHandlers_UserNotFound(t *testing.T) {
 	r := chi.NewRouter()
 	r.Get("/budget/user/{id}", s.handleUserBudget)
 
-	req := httptest.NewRequest("GET", "/budget/user/999", nil)
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "/budget/user/999", nil)
 	rr := httptest.NewRecorder()
 	r.ServeHTTP(rr, req)
 
@@ -168,7 +169,7 @@ func TestBudgetHandlers_GroupNotFound(t *testing.T) {
 	r := chi.NewRouter()
 	r.Get("/budget/group/{id}", s.handleGroupBudget)
 
-	req := httptest.NewRequest("GET", "/budget/group/999", nil)
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "/budget/group/999", nil)
 	rr := httptest.NewRecorder()
 	r.ServeHTTP(rr, req)
 

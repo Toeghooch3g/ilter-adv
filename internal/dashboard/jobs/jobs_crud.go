@@ -3,6 +3,7 @@ package dashjobs
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -261,7 +262,8 @@ func (h *JobsHandler) UpdateJob(w http.ResponseWriter, r *http.Request) {
 	if req.Triggers != nil {
 		newlyCreatedIDs, err = h.reconcileTriggers(r.Context(), existing.ID, req.Triggers)
 		if err != nil {
-			if reqErr, ok := err.(*requestError); ok {
+			reqErr := &requestError{}
+			if errors.As(err, &reqErr) {
 				model.WriteJSONError(w, reqErr.status, "invalid_trigger", reqErr.Error())
 				return
 			}

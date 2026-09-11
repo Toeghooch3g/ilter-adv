@@ -11,26 +11,31 @@ import (
 	"github.com/ilter-ai/ilter/internal/dashboard/stats"
 )
 
-// Stats
+// StatsResponse and CircuitBreakerSummaryResponse re-export the stats
+// package's response types for test compilation.
 type (
 	StatsResponse                 = stats.Response
 	CircuitBreakerSummaryResponse = stats.CircuitBreakerSummaryResponse
 )
 
-// Features
+// FeatureItem re-exports the features package's item type for test
+// compilation.
 type FeatureItem = features.FeatureItem
 
-// Models
+// ModelResponseItem and related request types re-export the models
+// package's types for test compilation.
 type (
 	ModelResponseItem      = models.ModelResponseItem
 	ToggleModelRequest     = models.ToggleModelRequest
 	UpdateModelTierRequest = models.UpdateModelTierRequest
 )
 
-// Providers
+// ProviderSummary re-exports the providers package's summary type for test
+// compilation.
 type ProviderSummary = providers.ProviderSummary
 
-// Smart router
+// OptimizeRequest and related smart router types re-export the smartrouter
+// package's types for test compilation.
 type (
 	OptimizeRequest            = smartrouter.OptimizeRequest
 	OptimizeResponse           = smartrouter.OptimizeResponse
@@ -38,12 +43,13 @@ type (
 	SmartRouterHistoryResponse = smartrouter.HistoryResponse
 )
 
-// PII
+// PIIExportItem and related PII types alias this package's own PII item
+// types for test compilation.
 type (
 	PIIExportItem = ExportItem
 	PIIEventItem  = EventItem
 	PIIStats      = Stats
 )
 
-// Guardrails
+// GuardrailViolationsResponse is a page of guardrail event items.
 type GuardrailViolationsResponse = Page[GuardrailEventItem]

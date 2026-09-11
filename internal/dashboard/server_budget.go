@@ -3,6 +3,7 @@ package dashboard
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -255,7 +256,7 @@ func (s *Server) handleUserBudget(w http.ResponseWriter, r *http.Request) {
 
 	user, err := s.store.GetUser(id)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			model.WriteJSONError(w, http.StatusNotFound, "not_found", "user not found")
 			return
 		}
@@ -300,7 +301,7 @@ func (s *Server) handleSetUserBudget(w http.ResponseWriter, r *http.Request) {
 	}
 	user, err := s.store.UpdateUser(id, updateReq)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			model.WriteJSONError(w, http.StatusNotFound, "not_found", "user not found")
 			return
 		}
@@ -332,7 +333,7 @@ func (s *Server) handleGroupBudget(w http.ResponseWriter, r *http.Request) {
 
 	group, err := s.store.GetGroup(id)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			model.WriteJSONError(w, http.StatusNotFound, "not_found", "group not found")
 			return
 		}
@@ -377,7 +378,7 @@ func (s *Server) handleSetGroupBudget(w http.ResponseWriter, r *http.Request) {
 	}
 	group, err := s.store.UpdateGroup(id, updateReq)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			model.WriteJSONError(w, http.StatusNotFound, "not_found", "group not found")
 			return
 		}

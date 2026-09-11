@@ -47,23 +47,23 @@ func (p *OpenRouterProvider) TransformRequest(ctx context.Context, req *model.Ch
 }
 
 func (p *OpenRouterProvider) DiscoverModels(ctx context.Context) ([]catalog.ModelInfo, error) {
-	if len(p.OpenAIProvider.config.GetAPIKeys()) == 0 {
+	if len(p.config.GetAPIKeys()) == 0 {
 		slog.Debug("skipping model discovery, no credentials configured",
-			"provider", p.OpenAIProvider.config.Name, "type", "openrouter")
+			"provider", p.config.Name, "type", "openrouter")
 		return nil, nil
 	}
 
-	url := fmt.Sprintf("%s/models", p.OpenAIProvider.config.BaseURL)
+	url := fmt.Sprintf("%s/models", p.config.BaseURL)
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+p.OpenAIProvider.config.APIKey)
-	for k, v := range p.OpenAIProvider.config.Headers {
+	req.Header.Set("Authorization", "Bearer "+p.config.APIKey)
+	for k, v := range p.config.Headers {
 		req.Header.Set(k, v)
 	}
 
-	resp, err := p.OpenAIProvider.client.Do(req)
+	resp, err := p.client.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -135,7 +135,7 @@ func (p *OpenRouterProvider) DiscoverModels(ctx context.Context) ([]catalog.Mode
 			CostPerOutputToken: costOut,
 			Tier:               tier,
 			Capabilities:       caps,
-			DefaultBaseURL:     p.OpenAIProvider.config.BaseURL,
+			DefaultBaseURL:     p.config.BaseURL,
 		})
 	}
 	return models, nil

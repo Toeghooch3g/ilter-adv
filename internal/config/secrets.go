@@ -106,14 +106,14 @@ func writeSecretsFile(path string, secrets map[string]string) error {
 	var sb strings.Builder
 	sb.WriteString("# ilter auto-generated secrets — do not edit manually\n")
 	sb.WriteString("# Set the corresponding ILTER_* env var to override.\n")
-	sb.WriteString(fmt.Sprintf("# Generated: %s\n", envTimestamp()))
+	fmt.Fprintf(&sb, "# Generated: %s\n", envTimestamp())
 	keys := make([]string, 0, len(secrets))
 	for k := range secrets {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
 	for _, k := range keys {
-		sb.WriteString(fmt.Sprintf("%s=%s\n", k, secrets[k]))
+		fmt.Fprintf(&sb, "%s=%s\n", k, secrets[k])
 	}
 
 	tmpPath := path + ".tmp"

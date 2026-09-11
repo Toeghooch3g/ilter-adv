@@ -234,7 +234,7 @@ func TestChatCompletionsStreamingQuotaErrorReturns429(t *testing.T) {
 	}
 	bodyBytes, _ := json.Marshal(reqBody)
 
-	req := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewReader(bodyBytes))
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "/v1/chat/completions", bytes.NewReader(bodyBytes))
 	rr := httptest.NewRecorder()
 
 	h.ChatCompletions(rr, req)
@@ -272,7 +272,7 @@ func TestChatCompletionsQuotaErrorMessageIsClean(t *testing.T) {
 	}
 	bodyBytes, _ := json.Marshal(reqBody)
 
-	req := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewReader(bodyBytes))
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "/v1/chat/completions", bytes.NewReader(bodyBytes))
 	rr := httptest.NewRecorder()
 
 	h.ChatCompletions(rr, req)
@@ -315,7 +315,7 @@ func TestChatCompletionsQuotaErrorReturns429(t *testing.T) {
 	}
 	bodyBytes, _ := json.Marshal(reqBody)
 
-	req := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewReader(bodyBytes))
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "/v1/chat/completions", bytes.NewReader(bodyBytes))
 	rr := httptest.NewRecorder()
 
 	h.ChatCompletions(rr, req)
@@ -445,7 +445,7 @@ func TestResolveRequestedModel_StripsProviderPrefix(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			req := &model.ChatCompletionRequest{Model: tt.model}
-			got, _, ok := h.resolveRequestedModel(httptest.NewRecorder(), httptest.NewRequest("POST", "/", nil), req, nil)
+			got, _, ok := h.resolveRequestedModel(httptest.NewRecorder(), httptest.NewRequestWithContext(context.Background(), "POST", "/", nil), req, nil)
 			if !ok {
 				t.Fatal("resolveRequestedModel returned ok=false unexpectedly")
 			}
@@ -460,7 +460,7 @@ func TestResolveRequestedModel_PreservesWithoutConfig(t *testing.T) {
 	h := NewHandler(nil, nil, nil, nil)
 
 	req := &model.ChatCompletionRequest{Model: "opencode_zen/deepseek-v4-flash-free"}
-	got, _, ok := h.resolveRequestedModel(httptest.NewRecorder(), httptest.NewRequest("POST", "/", nil), req, nil)
+	got, _, ok := h.resolveRequestedModel(httptest.NewRecorder(), httptest.NewRequestWithContext(context.Background(), "POST", "/", nil), req, nil)
 	if !ok {
 		t.Fatal("resolveRequestedModel returned ok=false unexpectedly")
 	}
@@ -484,7 +484,7 @@ func TestResolveRequestedModel_ConfiguredPrefixCollision(t *testing.T) {
 	h.SetConfig(cfg)
 
 	req := &model.ChatCompletionRequest{Model: "anthropic/claude-opus"}
-	got, _, ok := h.resolveRequestedModel(httptest.NewRecorder(), httptest.NewRequest("POST", "/", nil), req, nil)
+	got, _, ok := h.resolveRequestedModel(httptest.NewRecorder(), httptest.NewRequestWithContext(context.Background(), "POST", "/", nil), req, nil)
 	if !ok {
 		t.Fatal("resolveRequestedModel returned ok=false unexpectedly")
 	}
@@ -650,7 +650,7 @@ func TestChatCompletionsCostEstimateHeaders(t *testing.T) {
 			}
 			bodyBytes, _ := json.Marshal(reqBody)
 
-			req := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewReader(bodyBytes))
+			req := httptest.NewRequestWithContext(context.Background(), "POST", "/v1/chat/completions", bytes.NewReader(bodyBytes))
 			rr := httptest.NewRecorder()
 
 			h.ChatCompletions(rr, req)
@@ -766,7 +766,7 @@ func TestChatCompletionsXIlterCostHeader(t *testing.T) {
 	}
 	bodyBytes, _ := json.Marshal(reqBody)
 
-	req := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewReader(bodyBytes))
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "/v1/chat/completions", bytes.NewReader(bodyBytes))
 	rr := httptest.NewRecorder()
 
 	h.ChatCompletions(rr, req)
@@ -858,7 +858,7 @@ func TestChatCompletionsFullChainWithPII(t *testing.T) {
 	bodyBytes, err := json.Marshal(reqBody)
 	require.NoError(t, err)
 
-	req := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewReader(bodyBytes))
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "/v1/chat/completions", bytes.NewReader(bodyBytes))
 	req.Header.Set("Content-Type", "application/json")
 
 	ctx := context.WithValue(req.Context(), reqmeta.KeyIDContextKey, "legacy_1")
@@ -927,7 +927,7 @@ func TestChatCompletionsRecordsUsageDaily(t *testing.T) {
 	}
 	bodyBytes, _ := json.Marshal(reqBody)
 
-	req := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewReader(bodyBytes))
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "/v1/chat/completions", bytes.NewReader(bodyBytes))
 	rr := httptest.NewRecorder()
 	h.ChatCompletions(rr, req)
 	assert.Equal(t, http.StatusOK, rr.Code)
@@ -936,7 +936,7 @@ func TestChatCompletionsRecordsUsageDaily(t *testing.T) {
 	assert.NotEmpty(t, rr.Header().Get("X-Request-Cost"), "X-Request-Cost should be present")
 	assert.NotEmpty(t, rr.Header().Get("X-Request-Pricing"), "X-Request-Pricing should be present when Usage is available")
 
-	req = httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewReader(bodyBytes))
+	req = httptest.NewRequestWithContext(context.Background(), "POST", "/v1/chat/completions", bytes.NewReader(bodyBytes))
 	rr = httptest.NewRecorder()
 	h.ChatCompletions(rr, req)
 	assert.Equal(t, http.StatusOK, rr.Code)
@@ -945,7 +945,7 @@ func TestChatCompletionsRecordsUsageDaily(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to query usage_daily: %v", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	count := 0
 	for rows.Next() {
@@ -1009,7 +1009,7 @@ func TestCostEstimateHeadersConsistency(t *testing.T) {
 	}
 	bodyBytes, _ := json.Marshal(reqBody)
 
-	req := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewReader(bodyBytes))
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "/v1/chat/completions", bytes.NewReader(bodyBytes))
 	rr := httptest.NewRecorder()
 
 	h.ChatCompletions(rr, req)

@@ -21,10 +21,12 @@ type benchProvider struct{ name, typ string }
 func (s *benchProvider) Name() string { return s.name }
 func (s *benchProvider) Type() string { return s.typ }
 func (s *benchProvider) TransformRequest(_ context.Context, _ *model.ChatCompletionRequest) (*http.Request, error) {
+	//nolint:nilnil // stub satisfies provider.Provider for registry benchmarks; never invoked, return value never inspected
 	return nil, nil
 }
 
 func (s *benchProvider) TransformResponse(_ context.Context, _ *http.Response) (*model.ChatCompletionResponse, error) {
+	//nolint:nilnil // stub satisfies provider.Provider for registry benchmarks; never invoked, return value never inspected
 	return nil, nil
 }
 func (s *benchProvider) Client() *http.Client                { return &http.Client{} }

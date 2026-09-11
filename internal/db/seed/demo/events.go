@@ -299,30 +299,33 @@ func seedGuardrailEvents(db *sql.DB, rng *rand.Rand, keyIDs []string, _ time.Tim
 		case "budget_block":
 			budget := 20.0 + float64(rng.Intn(480))
 			pct := 70.0 + float64(rng.Intn(30))
-			if evt.actionTaken == "blocked" {
+			switch evt.actionTaken {
+			case "blocked":
 				detail = fmt.Sprintf(evt.detailFmt, budget, fmt.Sprintf("key-%s", keyID))
-			} else if evt.actionTaken == "flagged" {
+			case "flagged":
 				detail = fmt.Sprintf(evt.detailFmt, fmt.Sprintf("key-%s", keyID), pct)
-			} else {
+			default:
 				detail = fmt.Sprintf(evt.detailFmt, fmt.Sprintf("key-%s", keyID), 5.0+float64(rng.Intn(45)))
 			}
 		case "rate_limit":
 			rpm := 50 + rng.Intn(950)
 			detail = fmt.Sprintf(evt.detailFmt, rpm, fmt.Sprintf("key-%s", keyID))
-			if evt.actionTaken == "throttled" {
+			switch evt.actionTaken {
+			case "throttled":
 				detail = fmt.Sprintf(evt.detailFmt, fmt.Sprintf("key-%s", keyID), rng.Intn(rpm), rpm)
-			} else if evt.actionTaken == "flagged" {
+			case "flagged":
 				pct := 60 + rng.Intn(39)
 				detail = fmt.Sprintf(evt.detailFmt, fmt.Sprintf("key-%s", keyID), pct)
 			}
 		case "loop_detection":
 			repeats := 5 + rng.Intn(45)
 			window := 30 + rng.Intn(270)
-			if evt.actionTaken == "blocked" {
+			switch evt.actionTaken {
+			case "blocked":
 				detail = fmt.Sprintf(evt.detailFmt, repeats, window)
-			} else if evt.actionTaken == "alerted" {
+			case "alerted":
 				detail = fmt.Sprintf(evt.detailFmt, fmt.Sprintf("key-%s", keyID), repeats)
-			} else {
+			default:
 				sessionID := fmt.Sprintf("sess_%x", rng.Int63())
 				detail = fmt.Sprintf(evt.detailFmt, sessionID)
 			}

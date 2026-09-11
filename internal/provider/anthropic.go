@@ -114,9 +114,10 @@ func (p *AnthropicProvider) TransformRequest(ctx context.Context, req *model.Cha
 	if req.ToolChoice != nil {
 		switch v := req.ToolChoice.(type) {
 		case string:
-			if v == "auto" {
+			switch v {
+			case "auto":
 				anthropicReq.ToolChoice = map[string]string{"type": "auto"}
-			} else if v == "required" {
+			case "required":
 				anthropicReq.ToolChoice = map[string]string{"type": "any"}
 			}
 		case map[string]any:

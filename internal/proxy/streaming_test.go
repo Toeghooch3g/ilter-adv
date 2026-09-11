@@ -106,7 +106,7 @@ func TestHandleStreaming_NormalFlow(t *testing.T) {
 		Stream:   true,
 		Messages: []model.Message{{Role: "user", Content: "hello"}},
 	}
-	httpReq := httptest.NewRequest("POST", "/v1/chat/completions", nil)
+	httpReq := httptest.NewRequestWithContext(context.Background(), "POST", "/v1/chat/completions", nil)
 
 	chunk1 := makeChunk("Hello ")
 	chunk2 := makeChunk("world")
@@ -146,7 +146,7 @@ func TestHandleStreaming_ClientDisconnect(t *testing.T) {
 		Stream:   true,
 		Messages: []model.Message{{Role: "user", Content: "hello"}},
 	}
-	httpReq := httptest.NewRequest("POST", "/v1/chat/completions", nil)
+	httpReq := httptest.NewRequestWithContext(context.Background(), "POST", "/v1/chat/completions", nil)
 
 	// Pipe-based body so we can cancel mid-stream
 	pr, pw := io.Pipe()
@@ -191,7 +191,7 @@ func TestHandleStreaming_ProviderReadError(t *testing.T) {
 		Stream:   true,
 		Messages: []model.Message{{Role: "user", Content: "hello"}},
 	}
-	httpReq := httptest.NewRequest("POST", "/v1/chat/completions", nil)
+	httpReq := httptest.NewRequestWithContext(context.Background(), "POST", "/v1/chat/completions", nil)
 
 	errBody := &errAfterRead{msg: "connection reset by provider", after: 50}
 	resp := &http.Response{
@@ -224,7 +224,7 @@ func TestHandleStreaming_MissingFlusher(t *testing.T) {
 		Stream:   true,
 		Messages: []model.Message{{Role: "user", Content: "hello"}},
 	}
-	httpReq := httptest.NewRequest("POST", "/v1/chat/completions", nil)
+	httpReq := httptest.NewRequestWithContext(context.Background(), "POST", "/v1/chat/completions", nil)
 
 	resp := &http.Response{
 		StatusCode: http.StatusOK,
@@ -256,7 +256,7 @@ func TestHandleStreaming_FlushAfterEOFSend(t *testing.T) {
 		Stream:   true,
 		Messages: []model.Message{{Role: "user", Content: "hello"}},
 	}
-	httpReq := httptest.NewRequest("POST", "/v1/chat/completions", nil)
+	httpReq := httptest.NewRequestWithContext(context.Background(), "POST", "/v1/chat/completions", nil)
 
 	// Empty SSE stream — immediate EOF
 	resp := &http.Response{
@@ -287,7 +287,7 @@ func TestHandleStreaming_StreamingProviderPath(t *testing.T) {
 		Stream:   true,
 		Messages: []model.Message{{Role: "user", Content: "hello"}},
 	}
-	httpReq := httptest.NewRequest("POST", "/v1/chat/completions", nil)
+	httpReq := httptest.NewRequestWithContext(context.Background(), "POST", "/v1/chat/completions", nil)
 
 	body := "data: {\"type\":\"content\",\"text\":\"Hello\"}\n\ndata: [DONE]\n\n"
 	resp := &http.Response{
@@ -413,7 +413,7 @@ func TestHandleStreaming_OutputLoopDetection_EnforceMode(t *testing.T) {
 		Stream:   true,
 		Messages: []model.Message{{Role: "user", Content: "hello"}},
 	}
-	httpReq := httptest.NewRequest("POST", "/v1/chat/completions", nil)
+	httpReq := httptest.NewRequestWithContext(context.Background(), "POST", "/v1/chat/completions", nil)
 	start := time.Now()
 
 	h.handleStreaming(ctx, cancel, rr, resp, route.Provider, route, "gpt-4o-mini", start, httpReq, req)
@@ -494,7 +494,7 @@ func TestHandleStreaming_OutputLoopDetection_ObserveMode(t *testing.T) {
 		Stream:   true,
 		Messages: []model.Message{{Role: "user", Content: "hello"}},
 	}
-	httpReq := httptest.NewRequest("POST", "/v1/chat/completions", nil)
+	httpReq := httptest.NewRequestWithContext(context.Background(), "POST", "/v1/chat/completions", nil)
 	start := time.Now()
 
 	h.handleStreaming(ctx, cancel, rr, resp, route.Provider, route, "gpt-4o-mini", start, httpReq, req)
@@ -546,7 +546,7 @@ func TestHandleStreaming_OutputLoopDetection_OffMode(t *testing.T) {
 	defer cancel()
 
 	req := &model.ChatCompletionRequest{Model: "gpt-4o-mini", Stream: true, Messages: []model.Message{{Role: "user", Content: "hello"}}}
-	httpReq := httptest.NewRequest("POST", "/v1/chat/completions", nil)
+	httpReq := httptest.NewRequestWithContext(context.Background(), "POST", "/v1/chat/completions", nil)
 
 	h.handleStreaming(ctx, cancel, rr, resp, route.Provider, route, "gpt-4o-mini", time.Now(), httpReq, req)
 

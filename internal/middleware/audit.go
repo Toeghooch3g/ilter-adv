@@ -1,12 +1,15 @@
 package middleware
 
 import (
+	"context"
 	"log/slog"
 	"sync"
 
 	"github.com/ilter-ai/ilter/internal/db"
 )
 
+// AuditLogEntry holds one request's audit data queued for asynchronous
+// persistence to the audit_log table.
 type AuditLogEntry struct {
 	KeyID            string
 	Model            string
@@ -24,6 +27,8 @@ type AuditLogEntry struct {
 	IPAddress        string
 }
 
+// AuditLoggerMiddleware asynchronously persists audit log entries to the
+// database via a buffered channel and background worker.
 type AuditLoggerMiddleware struct {
 	store *db.SQLiteStore
 	ch    chan AuditLogEntry
@@ -31,6 +36,8 @@ type AuditLoggerMiddleware struct {
 	done  chan struct{}
 }
 
+// NewAuditLoggerMiddleware creates an AuditLoggerMiddleware backed by store
+// and starts its background worker goroutine.
 func NewAuditLoggerMiddleware(store *db.SQLiteStore) *AuditLoggerMiddleware {
 	l := &AuditLoggerMiddleware{
 		store: store,
@@ -47,7 +54,8 @@ func (l *AuditLoggerMiddleware) worker() {
 	for {
 		select {
 		case entry := <-l.ch:
-			_, err := l.store.DB.Exec(
+			_, err := l.store.DB.ExecContext(
+				context.Background(),
 				`INSERT INTO audit_log
 					(key_id, model, provider, prompt_tokens, completion_tokens, total_cost,
 					 latency_ms, status_code, cache_hit, prompt_preview, request_body, response_body, complexity_score, client_ip)
@@ -76,6 +84,8 @@ func (l *AuditLoggerMiddleware) worker() {
 	}
 }
 
+// LogAsync enqueues entry for asynchronous persistence, dropping it and
+// logging a warning if the internal buffer is full.
 func (l *AuditLoggerMiddleware) LogAsync(entry AuditLogEntry) {
 	select {
 	case l.ch <- entry:
@@ -84,6 +94,7 @@ func (l *AuditLoggerMiddleware) LogAsync(entry AuditLogEntry) {
 	}
 }
 
+// Close stops the background worker and waits for it to finish.
 func (l *AuditLoggerMiddleware) Close() {
 	close(l.done)
 	l.wg.Wait()

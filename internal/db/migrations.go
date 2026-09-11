@@ -20,9 +20,12 @@ var migrationFS embed.FS
 
 // Migrate runs all pending schema migrations using goose.
 func (s *SQLiteStore) Migrate() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
 	// Drop old hand-rolled schema_migrations table if it exists.
 	// Goose uses its own goose_db_version table with a different schema.
-	if _, err := s.DB.Exec("DROP TABLE IF EXISTS schema_migrations"); err != nil {
+	if _, err := s.DB.ExecContext(ctx, "DROP TABLE IF EXISTS schema_migrations"); err != nil {
 		return fmt.Errorf("drop old schema_migrations: %w", err)
 	}
 
@@ -39,9 +42,6 @@ func (s *SQLiteStore) Migrate() error {
 	if err != nil {
 		return fmt.Errorf("create goose provider: %w", err)
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
 
 	results, err := provider.Up(ctx)
 	if err != nil {
