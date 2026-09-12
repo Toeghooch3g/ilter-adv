@@ -72,6 +72,7 @@ func (s *SQLiteStore) CreatePromptTemplate(tmpl config.PromptTemplate) (int, err
 }
 
 // GetPromptTemplate retrieves a prompt template by ID.
+// It returns (nil, nil) if no prompt template with that ID exists.
 func (s *SQLiteStore) GetPromptTemplate(id int) (*config.PromptTemplate, error) {
 	p, err := s.queries.GetPromptTemplate(context.Background(), int64(id))
 	if err != nil {
@@ -85,6 +86,7 @@ func (s *SQLiteStore) GetPromptTemplate(id int) (*config.PromptTemplate, error) 
 }
 
 // GetPromptTemplateByName retrieves a prompt template by name.
+// It returns (nil, nil) if no prompt template with that name exists.
 func (s *SQLiteStore) GetPromptTemplateByName(name string) (*config.PromptTemplate, error) {
 	p, err := s.queries.GetPromptTemplateByName(context.Background(), name)
 	if err != nil {

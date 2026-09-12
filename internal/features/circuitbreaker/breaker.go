@@ -165,23 +165,31 @@ func (t *HTTPBreaker) RoundTrip(req *http.Request) (*http.Response, error) {
 	return resp, err
 }
 
+// SetEnabled toggles whether the breaker is active; when disabled, RoundTrip
+// passes requests straight through to the wrapped transport.
 func (t *HTTPBreaker) SetEnabled(v bool) { t.enabled.Store(v) }
 
+// SetForceOpen forces the breaker into (or out of) the open state regardless
+// of its failure counts, for manual/admin overrides.
 func (t *HTTPBreaker) SetForceOpen(v bool) { t.forceOpen.Store(v) }
 
+// Enabled reports whether the breaker is currently active.
 func (t *HTTPBreaker) Enabled() bool { return t.enabled.Load() }
 
+// Reset rebuilds the underlying circuit breaker from scratch, clearing all
+// counters and forcing it back to the closed, enabled state.
 func (t *HTTPBreaker) Reset() {
 	st := gobreaker.Settings{
 		Name:        t.name,
-		MaxRequests: uint32(t.cfg.HalfOpenMaxRequests),
+		MaxRequests: toUint32Clamped(t.cfg.HalfOpenMaxRequests),
 		Interval:    0,
 		Timeout:     t.cfg.Timeout,
 		ReadyToTrip: func(counts gobreaker.Counts) bool {
-			return counts.ConsecutiveFailures >= uint32(t.cfg.MaxFailures)
+			return counts.ConsecutiveFailures >= toUint32Clamped(t.cfg.MaxFailures)
 		},
 	}
 	t.mu.Lock()
+	//nolint:bodyclose // body is closed on error paths in RoundTrip; on success it's left open for RoundTrip's caller, per http.RoundTripper's contract — bodyclose can't trace that through the generic Execute closure.
 	t.cb = gobreaker.NewCircuitBreaker[*http.Response](st)
 	t.totalRequests = 0
 	t.totalErrors = 0
@@ -192,6 +200,7 @@ func (t *HTTPBreaker) Reset() {
 	t.enabled.Store(true)
 }
 
+// Metrics returns this breaker's request/error counters and last error/success times.
 func (t *HTTPBreaker) Metrics() (totalRequests, totalErrors int64, lastErrorTime, lastSuccessTime *time.Time) {
 	t.mu.Lock()
 	defer t.mu.Unlock()

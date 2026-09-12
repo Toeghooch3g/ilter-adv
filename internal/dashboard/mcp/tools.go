@@ -275,7 +275,7 @@ func (h *MCPHandler) ListServerTools(w http.ResponseWriter, r *http.Request) {
 		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", "Failed to list tools")
 		return
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	tools := make([]map[string]any, 0)
 	for rows.Next() {
@@ -290,6 +290,10 @@ func (h *MCPHandler) ListServerTools(w http.ResponseWriter, r *http.Request) {
 			"input_schema": nullToEmpty(inputSchema),
 			"created_at":   nullToEmpty(createdAt),
 		})
+	}
+	if err := rows.Err(); err != nil {
+		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", "Failed to list tools")
+		return
 	}
 
 	model.WriteJSON(w, http.StatusOK, map[string]any{
@@ -546,25 +550,25 @@ func (h *MCPHandler) syncServerByID(ctx context.Context, id string) error {
 	}
 	listResp, err := client.Call(syncCtx, listReq)
 	if err != nil {
-		return fmt.Errorf("Failed to call tools: %w", err)
+		return fmt.Errorf("failed to call tools: %w", err)
 	}
 	if listResp.Error != nil {
-		return fmt.Errorf("Failed to call tools: %s (code %d)", listResp.Error.Message, listResp.Error.Code)
+		return fmt.Errorf("failed to call tools: %s (code %d)", listResp.Error.Message, listResp.Error.Code)
 	}
 
 	var listResult mcp.ListToolsResult
 	if err = json.Unmarshal(listResp.Result, &listResult); err != nil {
-		return fmt.Errorf("Failed to parse tools list: %w", err)
+		return fmt.Errorf("failed to parse tools list: %w", err)
 	}
 
 	tx, err := h.store.DB.BeginTx(syncCtx, nil)
 	if err != nil {
-		return fmt.Errorf("Failed to begin transaction: %w", err)
+		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
 	if _, err = tx.ExecContext(syncCtx, "DELETE FROM mcp_tools WHERE server_id = ?", id); err != nil {
-		return fmt.Errorf("Failed to clear old tools: %w", err)
+		return fmt.Errorf("failed to clear old tools: %w", err)
 	}
 
 	for _, tool := range listResult.Tools {
@@ -576,12 +580,12 @@ func (h *MCPHandler) syncServerByID(ctx context.Context, id string) error {
 			toolID, id, tool.Name, tool.Description, string(tool.InputSchema),
 		)
 		if err != nil {
-			return fmt.Errorf("Failed to insert tool: %w", err)
+			return fmt.Errorf("failed to insert tool: %w", err)
 		}
 	}
 
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("Failed to commit transaction: %w", err)
+		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
 	if h.registry != nil {

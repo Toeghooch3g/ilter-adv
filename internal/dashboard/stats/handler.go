@@ -246,6 +246,9 @@ func (h *Handler) HandleStats(w http.ResponseWriter, _ *http.Request) {
 				dailyStats = append(dailyStats, item)
 			}
 		}
+		if err := dailyRows.Err(); err != nil {
+			slog.Warn("error iterating daily stats rows", "error", err)
+		}
 	}
 
 	provRows, err := h.store.DB.Query(
@@ -268,6 +271,9 @@ func (h *Handler) HandleStats(w http.ResponseWriter, _ *http.Request) {
 				provTotal += item.Cost
 				providerBreakdown = append(providerBreakdown, item)
 			}
+		}
+		if err := provRows.Err(); err != nil {
+			slog.Warn("error iterating provider breakdown rows", "error", err)
 		}
 	}
 	for i := range providerBreakdown {

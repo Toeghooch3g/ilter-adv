@@ -603,6 +603,9 @@ func TestPIIMaskedEventsPersisted(t *testing.T) {
 			t.Error("client_ip should not be empty")
 		}
 	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("error iterating pii_events rows: %v", err)
+	}
 }
 
 func TestPIIPhoneUnmask(t *testing.T) {

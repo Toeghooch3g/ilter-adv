@@ -185,6 +185,11 @@ func (h *PIIHandler) HandlePIIEvents(w http.ResponseWriter, r *http.Request) {
 		item.Timestamp = db.FormatSQLiteTimestamp(item.Timestamp)
 		items = append(items, item)
 	}
+	if err := rows.Err(); err != nil {
+		slog.Error("error iterating pii events", "error", err)
+		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
 
 	totalPages := max((total+limit-1)/limit, 1)
 
@@ -349,6 +354,9 @@ func (h *PIIHandler) HandleStats(w http.ResponseWriter, _ *http.Request) {
 			}
 			stats.TypeBreakdown = append(stats.TypeBreakdown, tc)
 		}
+		if err := typeRows.Err(); err != nil {
+			slog.Warn("error iterating PII type breakdown rows", "error", err)
+		}
 	}
 
 	keyRows, err := h.store.DB.Query(`
@@ -370,6 +378,9 @@ func (h *PIIHandler) HandleStats(w http.ResponseWriter, _ *http.Request) {
 			}
 			stats.TopKeys = append(stats.TopKeys, ke)
 		}
+		if err := keyRows.Err(); err != nil {
+			slog.Warn("error iterating PII top-keys rows", "error", err)
+		}
 	}
 
 	trendRows, err := h.store.DB.Query(`
@@ -390,6 +401,9 @@ func (h *PIIHandler) HandleStats(w http.ResponseWriter, _ *http.Request) {
 				continue
 			}
 			stats.RecentTrend = append(stats.RecentTrend, tc)
+		}
+		if err := trendRows.Err(); err != nil {
+			slog.Warn("error iterating PII daily trend rows", "error", err)
 		}
 	}
 

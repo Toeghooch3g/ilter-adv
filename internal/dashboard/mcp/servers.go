@@ -27,7 +27,7 @@ func (h *MCPHandler) ListServers(w http.ResponseWriter, _ *http.Request) {
 		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", "Failed to list servers")
 		return
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	servers := make([]map[string]any, 0)
 	for rows.Next() {
@@ -67,6 +67,10 @@ func (h *MCPHandler) ListServers(w http.ResponseWriter, _ *http.Request) {
 			"protocol_version":  nullToEmptyOr(protocolVersion, "auto"),
 		}
 		servers = append(servers, srv)
+	}
+	if err := rows.Err(); err != nil {
+		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", "Failed to list servers")
+		return
 	}
 
 	model.WriteJSON(w, http.StatusOK, map[string]any{
@@ -130,7 +134,7 @@ func (h *MCPHandler) GetServer(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *MCPHandler) CreateServer(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 	var req struct {
 		ID              string `json:"id"`
 		Name            string `json:"name"`
@@ -227,7 +231,7 @@ func (h *MCPHandler) UpdateServer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 	var req struct {
 		Name            string `json:"name"`
 		Description     string `json:"description"`

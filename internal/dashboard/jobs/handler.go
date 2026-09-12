@@ -59,11 +59,11 @@ func NewJobsHandler(
 }
 
 // refreshCron hot-reloads the cron scheduler after a trigger CRUD operation.
-func (h *JobsHandler) refreshCron() {
+func (h *JobsHandler) refreshCron(ctx context.Context) {
 	if h.cronTrigger == nil {
 		return
 	}
-	if err := h.cronTrigger.Refresh(context.Background()); err != nil {
+	if err := h.cronTrigger.Refresh(ctx); err != nil {
 		h.logger.Error("jobs: cron refresh after trigger change failed", "error", err)
 	}
 }
@@ -92,23 +92,38 @@ func (h *JobsHandler) jobToResponse(job jobs.Job, trigs []triggers.TriggerRow, r
 		resp.Triggers = make([]TriggerResponse, 0, len(trigs))
 		for _, t := range trigs {
 			resp.Triggers = append(resp.Triggers, h.triggerToResponse(t, revealTokenIDs[t.ID]))
-			if t.Kind == triggers.TriggerKindCron && t.Config.Expr != "" && resp.CronExpr == "" {
-				resp.CronExpr = t.Config.Expr
-				expr := t.Config.Expr
-				if t.Config.Timezone != "" {
-					if _, err := time.LoadLocation(t.Config.Timezone); err != nil {
-						slog.Warn("invalid cron timezone, using server local", "timezone", t.Config.Timezone, "err", err)
-					} else {
-						expr = "CRON_TZ=" + t.Config.Timezone + " " + expr
-					}
-				}
-				if sched, err := robfigcron.ParseStandard(expr); err == nil {
-					resp.NextRun = sched.Next(time.Now()).Format(time.RFC3339)
+			if resp.CronExpr == "" {
+				if cronExpr, nextRun, ok := cronScheduleFor(t); ok {
+					resp.CronExpr = cronExpr
+					resp.NextRun = nextRun
 				}
 			}
 		}
 	}
 	return resp
+}
+
+// cronScheduleFor computes the display cron expression and next-run time for
+// a cron trigger. ok is false for non-cron triggers or triggers with no
+// expression set, in which case the trigger doesn't affect the job's
+// cron_expr/next_run fields.
+func cronScheduleFor(t triggers.TriggerRow) (cronExpr, nextRun string, ok bool) {
+	if t.Kind != triggers.TriggerKindCron || t.Config.Expr == "" {
+		return "", "", false
+	}
+	cronExpr = t.Config.Expr
+	parseExpr := cronExpr
+	if t.Config.Timezone != "" {
+		if _, err := time.LoadLocation(t.Config.Timezone); err != nil {
+			slog.Warn("invalid cron timezone, using server local", "timezone", t.Config.Timezone, "err", err)
+		} else {
+			parseExpr = "CRON_TZ=" + t.Config.Timezone + " " + parseExpr
+		}
+	}
+	if sched, err := robfigcron.ParseStandard(parseExpr); err == nil {
+		nextRun = sched.Next(time.Now()).Format(time.RFC3339)
+	}
+	return cronExpr, nextRun, true
 }
 
 func (h *JobsHandler) triggerToResponse(t triggers.TriggerRow, showToken bool) TriggerResponse {

@@ -48,47 +48,22 @@ func NewOllamaProvider(cfg config.ProviderConfig) *OllamaProvider {
 // to access without synchronization.
 func (p *OllamaProvider) detectMode(ctx context.Context) error {
 	p.detectOnce.Do(func() {
-		v1URL := fmt.Sprintf("%s/v1/models", p.config.BaseURL)
-		if p.config.BaseURL == "http://localhost:11434" {
-			v1URL = "http://localhost:11434/v1/models"
-		}
-
-		req, err := http.NewRequestWithContext(ctx, "GET", v1URL, nil)
+		v1OK, err := p.probeOllamaV1(ctx)
 		if err != nil {
-			p.detectErr = fmt.Errorf("failed to create v1 endpoint request: %w", err)
+			p.detectErr = err
 			return
 		}
-		resp, err := p.openAI.client.Do(req)
-		if err != nil {
-			if resp != nil {
-				resp.Body.Close()
-			}
-		} else {
-			// resp.Body must be closed before the sync.Once closure returns.
-			defer resp.Body.Close()
-			if resp.StatusCode == http.StatusOK {
-				p.useNative = false
-				return
-			}
-		}
-
-		nativeURL := fmt.Sprintf("%s/api/tags", p.config.BaseURL)
-		req2, err := http.NewRequestWithContext(ctx, "GET", nativeURL, nil)
-		if err != nil {
-			p.detectErr = fmt.Errorf("failed to create native endpoint request: %w", err)
+		if v1OK {
+			p.useNative = false
 			return
 		}
-		resp2, err2 := p.openAI.client.Do(req2)
-		if err2 != nil {
-			if resp2 != nil {
-				resp2.Body.Close()
-			}
-			p.detectErr = err2
+
+		nativeOK, err := p.probeOllamaNative(ctx)
+		if err != nil {
+			p.detectErr = err
 			return
 		}
-		defer resp2.Body.Close()
-
-		if resp2.StatusCode == http.StatusOK {
+		if nativeOK {
 			p.useNative = true
 			return
 		}
@@ -96,6 +71,51 @@ func (p *OllamaProvider) detectMode(ctx context.Context) error {
 		p.detectErr = fmt.Errorf("both ollama endpoints failed")
 	})
 	return p.detectErr
+}
+
+// probeOllamaV1 reports whether the OpenAI-compatible /v1/models endpoint
+// responds 200 OK. A non-nil error means constructing the request itself
+// failed (a fatal, non-retryable problem); a network/transport failure
+// talking to the endpoint is reported as (false, nil) so the caller falls
+// back to probing the native endpoint instead.
+func (p *OllamaProvider) probeOllamaV1(ctx context.Context) (bool, error) {
+	v1URL := fmt.Sprintf("%s/v1/models", p.config.BaseURL)
+	if p.config.BaseURL == "http://localhost:11434" {
+		v1URL = "http://localhost:11434/v1/models"
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "GET", v1URL, nil)
+	if err != nil {
+		return false, fmt.Errorf("failed to create v1 endpoint request: %w", err)
+	}
+	resp, err := p.openAI.client.Do(req)
+	if err != nil {
+		if resp != nil {
+			_ = resp.Body.Close()
+		}
+		return false, nil
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return resp.StatusCode == http.StatusOK, nil
+}
+
+// probeOllamaNative reports whether the native /api/tags endpoint responds
+// 200 OK.
+func (p *OllamaProvider) probeOllamaNative(ctx context.Context) (bool, error) {
+	nativeURL := fmt.Sprintf("%s/api/tags", p.config.BaseURL)
+	req, err := http.NewRequestWithContext(ctx, "GET", nativeURL, nil)
+	if err != nil {
+		return false, fmt.Errorf("failed to create native endpoint request: %w", err)
+	}
+	resp, err := p.openAI.client.Do(req)
+	if err != nil {
+		if resp != nil {
+			_ = resp.Body.Close()
+		}
+		return false, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return resp.StatusCode == http.StatusOK, nil
 }
 
 func (p *OllamaProvider) Name() string {
@@ -133,25 +153,31 @@ func ollamaContentToString(content any) string {
 		return s
 	}
 	if parts, ok := content.([]any); ok {
-		var sb strings.Builder
-		for _, part := range parts {
-			m, ok := part.(map[string]any)
-			if !ok {
-				continue
-			}
-			if t, _ := m["type"].(string); t == "text" {
-				if text, ok := m["text"].(string); ok {
-					sb.WriteString(text)
-				}
-			}
-		}
-		return sb.String()
+		return ollamaContentPartsToString(parts)
 	}
 	b, err := json.Marshal(content)
 	if err != nil {
 		return ""
 	}
 	return string(b)
+}
+
+// ollamaContentPartsToString concatenates the text of every "text"-type block
+// in an array-shaped content field, ignoring any other block types.
+func ollamaContentPartsToString(parts []any) string {
+	var sb strings.Builder
+	for _, part := range parts {
+		m, ok := part.(map[string]any)
+		if !ok {
+			continue
+		}
+		if t, _ := m["type"].(string); t == "text" {
+			if text, ok := m["text"].(string); ok {
+				sb.WriteString(text)
+			}
+		}
+	}
+	return sb.String()
 }
 
 type ollamaNativeOptions struct {
@@ -370,7 +396,7 @@ func (p *OllamaProvider) Embed(ctx context.Context, req *model.EmbeddingRequest)
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	respBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -417,7 +443,7 @@ func (p *OllamaProvider) TransformStreamChunk(data []byte) (*model.ChatCompletio
 	}
 
 	if err := json.Unmarshal(cleanData, &nativeChunk); err != nil {
-		return nil, false, nil
+		return nil, false, fmt.Errorf("failed to decode chunk: %w", err)
 	}
 
 	createdTime, _ := time.Parse(time.RFC3339, nativeChunk.CreatedAt)
@@ -499,22 +525,42 @@ func isEmbeddingOnlyModel(name, family string, families []string) bool {
 }
 
 func (p *OllamaProvider) DiscoverModels(ctx context.Context) ([]catalog.ModelInfo, error) {
-	if err := p.detectMode(ctx); err != nil {
-		openAIModels, err := p.openAI.DiscoverModels(ctx)
-		if err != nil {
-			return nil, err
-		}
-		return p.mapOpenAIModelsToOllama(openAIModels), nil
+	detectErr := p.detectMode(ctx)
+	if detectErr != nil || !p.useNative {
+		return p.discoverModelsViaOpenAI(ctx)
 	}
 
-	if !p.useNative {
-		openAIModels, err := p.openAI.DiscoverModels(ctx)
-		if err != nil {
-			return nil, err
-		}
-		return p.mapOpenAIModelsToOllama(openAIModels), nil
+	tagsResp, err := p.fetchOllamaTags(ctx)
+	if err != nil {
+		return nil, err
 	}
 
+	var models []catalog.ModelInfo
+	for _, entry := range tagsResp.Models {
+		if entry.Name == "" {
+			continue
+		}
+		if isEmbeddingOnlyModel(entry.Name, entry.Details.Family, entry.Details.Families) {
+			continue
+		}
+		models = append(models, p.ollamaModelInfoFromTag(entry))
+	}
+	return models, nil
+}
+
+// discoverModelsViaOpenAI is used both when native-endpoint detection fails
+// and when detection selected the OpenAI-compatible endpoint: either way,
+// discovery goes through OpenAI-compatible /v1/models.
+func (p *OllamaProvider) discoverModelsViaOpenAI(ctx context.Context) ([]catalog.ModelInfo, error) {
+	openAIModels, err := p.openAI.DiscoverModels(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return p.mapOpenAIModelsToOllama(openAIModels), nil
+}
+
+// fetchOllamaTags calls Ollama's native GET /api/tags and decodes the result.
+func (p *OllamaProvider) fetchOllamaTags(ctx context.Context) (*ollamaTagsResponse, error) {
 	url := fmt.Sprintf("%s/api/tags", p.config.BaseURL)
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
@@ -525,7 +571,7 @@ func (p *OllamaProvider) DiscoverModels(ctx context.Context) ([]catalog.ModelInf
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -540,40 +586,35 @@ func (p *OllamaProvider) DiscoverModels(ctx context.Context) ([]catalog.ModelInf
 	if err := json.Unmarshal(bodyBytes, &tagsResp); err != nil {
 		return nil, err
 	}
+	return &tagsResp, nil
+}
 
-	var models []catalog.ModelInfo
-	for _, entry := range tagsResp.Models {
-		if entry.Name == "" {
-			continue
-		}
-		if isEmbeddingOnlyModel(entry.Name, entry.Details.Family, entry.Details.Families) {
-			continue
-		}
-		catalog.ModelsMu.RLock()
-		entries, ok := catalog.Models[entry.Name]
-		catalog.ModelsMu.RUnlock()
+// ollamaModelInfoFromTag returns the registered catalog.ModelInfo for a
+// native /api/tags entry if one is already known, or a default (free,
+// function-calling-only) one otherwise.
+func (p *OllamaProvider) ollamaModelInfoFromTag(entry ollamaTagEntry) catalog.ModelInfo {
+	catalog.ModelsMu.RLock()
+	entries, ok := catalog.Models[entry.Name]
+	catalog.ModelsMu.RUnlock()
 
-		if ok && len(entries) > 0 {
-			regInfo := entries[0]
-			regInfo.DefaultBaseURL = p.config.BaseURL
-			models = append(models, regInfo)
-			continue
-		}
-
-		models = append(models, catalog.ModelInfo{
-			ID:                 entry.Name,
-			Provider:           "ollama",
-			DisplayName:        entry.Name,
-			MaxContextTokens:   8192,
-			MaxOutputTokens:    2048,
-			CostPerInputToken:  0.0,
-			CostPerOutputToken: 0.0,
-			Tier:               "free",
-			Capabilities:       []string{"function_calling"},
-			DefaultBaseURL:     p.config.BaseURL,
-		})
+	if ok && len(entries) > 0 {
+		regInfo := entries[0]
+		regInfo.DefaultBaseURL = p.config.BaseURL
+		return regInfo
 	}
-	return models, nil
+
+	return catalog.ModelInfo{
+		ID:                 entry.Name,
+		Provider:           "ollama",
+		DisplayName:        entry.Name,
+		MaxContextTokens:   8192,
+		MaxOutputTokens:    2048,
+		CostPerInputToken:  0.0,
+		CostPerOutputToken: 0.0,
+		Tier:               "free",
+		Capabilities:       []string{"function_calling"},
+		DefaultBaseURL:     p.config.BaseURL,
+	}
 }
 
 func (p *OllamaProvider) mapOpenAIModelsToOllama(openAIModels []catalog.ModelInfo) []catalog.ModelInfo {

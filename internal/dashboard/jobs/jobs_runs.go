@@ -3,6 +3,7 @@ package dashjobs
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -154,7 +155,7 @@ func (h *JobsHandler) GetStats(w http.ResponseWriter, _ *http.Request) {
 		 FROM job_runs ORDER BY started_at DESC LIMIT 10`,
 	)
 	if err == nil {
-		defer rows.Close()
+		defer func() { _ = rows.Close() }()
 		for rows.Next() {
 			var r jobs.JobRun
 			if err := rows.Scan(&r.ID, &r.JobID, &r.TriggerID, &r.Status,
@@ -164,6 +165,9 @@ func (h *JobsHandler) GetStats(w http.ResponseWriter, _ *http.Request) {
 				&r.RequestBody, &r.ExecutionKey, &r.Steps); err == nil {
 				recent = append(recent, runToResponse(r))
 			}
+		}
+		if err := rows.Err(); err != nil {
+			slog.Warn("error iterating recent job runs", "error", err)
 		}
 	}
 

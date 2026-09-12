@@ -117,6 +117,7 @@ func (s *SQLiteStore) UpdateGroup(id int, req auth.UpdateGroupRequest) (*auth.Gr
 	sets = append(sets, "updated_at = CURRENT_TIMESTAMP")
 	args = append(args, id)
 
+	//nolint:gosec // G201: sets contains only hardcoded column clauses built above, not user input; values are bound via args
 	query := fmt.Sprintf("UPDATE groups SET %s WHERE id = ?", strings.Join(sets, ", "))
 	res, err := s.DB.Exec(query, args...)
 	if err != nil {

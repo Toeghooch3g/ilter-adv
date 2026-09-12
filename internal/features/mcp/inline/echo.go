@@ -2,6 +2,7 @@ package inline
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 )
 
@@ -31,7 +32,7 @@ var echoTools = []ToolDef{
 func echoHandler(_ context.Context, args map[string]any) (any, error) {
 	message, ok := args["message"].(string)
 	if !ok {
-		return nil, nil
+		return nil, fmt.Errorf("missing required parameter: message")
 	}
 	return map[string]any{
 		"echo":   message,

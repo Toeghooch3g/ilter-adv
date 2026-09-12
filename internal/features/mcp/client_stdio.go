@@ -51,24 +51,41 @@ func NewStdioClient(server *ServerInfo) *StdioClient {
 }
 
 func (c *StdioClient) Start(ctx context.Context) error {
-	c.mu.Lock()
-	if c.connected {
-		c.mu.Unlock()
+	childCtx, cancel, alreadyConnected, err := c.spawnProcess(ctx)
+	if err != nil {
+		return err
+	}
+	if alreadyConnected {
 		return nil
+	}
+	return c.handshake(childCtx, cancel)
+}
+
+// spawnProcess validates the server command, launches the child process,
+// and wires up stdin/stdout, starting the read loop goroutine. c.mu is held
+// for the whole check-and-spawn section exactly as Start did before this
+// was extracted (to keep its cognitive complexity down), so a concurrent
+// Start() still can't race past the "already connected" check while a spawn
+// is in progress. Returns alreadyConnected=true (with a nil error) if a
+// previous Start already completed.
+func (c *StdioClient) spawnProcess(ctx context.Context) (childCtx context.Context, cancel context.CancelFunc, alreadyConnected bool, err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.connected {
+		return nil, nil, true, nil
 	}
 
 	cfg := c.server.Config
 	if cfg.Command == "" {
-		c.mu.Unlock()
-		return fmt.Errorf("stdio server %q has no command configured", c.server.ID)
+		return nil, nil, false, fmt.Errorf("stdio server %q has no command configured", c.server.ID)
 	}
 
-	if _, err := exec.LookPath(cfg.Command); err != nil {
-		c.mu.Unlock()
-		return fmt.Errorf("command %q not found on PATH (is it installed?): %w", cfg.Command, err)
+	if _, lookErr := exec.LookPath(cfg.Command); lookErr != nil {
+		return nil, nil, false, fmt.Errorf("command %q not found on PATH (is it installed?): %w", cfg.Command, lookErr)
 	}
 
-	childCtx, cancel := context.WithCancel(ctx)
+	childCtx, cancel = context.WithCancel(ctx)
 	c.cancel = cancel
 
 	args := cfg.Args
@@ -87,25 +104,22 @@ func (c *StdioClient) Start(ctx context.Context) error {
 	c.stderrBuf.Reset()
 	cmd.Stderr = &c.stderrBuf
 
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
+	stdin, pipeErr := cmd.StdinPipe()
+	if pipeErr != nil {
 		cancel()
-		c.mu.Unlock()
-		return fmt.Errorf("stdin pipe: %w", err)
+		return nil, nil, false, fmt.Errorf("stdin pipe: %w", pipeErr)
 	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		stdin.Close()
+	stdout, pipeErr := cmd.StdoutPipe()
+	if pipeErr != nil {
+		_ = stdin.Close()
 		cancel()
-		c.mu.Unlock()
-		return fmt.Errorf("stdout pipe: %w", err)
+		return nil, nil, false, fmt.Errorf("stdout pipe: %w", pipeErr)
 	}
 
-	if err = cmd.Start(); err != nil {
-		stdin.Close()
+	if startErr := cmd.Start(); startErr != nil {
+		_ = stdin.Close()
 		cancel()
-		c.mu.Unlock()
-		return fmt.Errorf("start process: %w", err)
+		return nil, nil, false, fmt.Errorf("start process: %w", startErr)
 	}
 
 	c.cmd = cmd
@@ -115,7 +129,17 @@ func (c *StdioClient) Start(ctx context.Context) error {
 	c.connected = true
 
 	go c.readLoop(childCtx)
-	c.mu.Unlock()
+
+	return childCtx, cancel, false, nil
+}
+
+// handshake performs the MCP initialize negotiation and initial tools
+// discovery over the newly-spawned process's stdin/stdout, updating
+// c.negotiatedVersion/c.discoveredTools (or rolling back c.connected on
+// failure). Extracted from Start to keep its cognitive complexity down;
+// behavior is unchanged.
+func (c *StdioClient) handshake(childCtx context.Context, cancel context.CancelFunc) error {
+	cfg := c.server.Config
 
 	initCtx, initCancel := context.WithTimeout(childCtx, 5*time.Second)
 	defer initCancel()
@@ -138,7 +162,7 @@ func (c *StdioClient) Start(ctx context.Context) error {
 	if err != nil {
 		c.mu.Lock()
 		if c.stdin != nil {
-			c.stdin.Close()
+			_ = c.stdin.Close()
 		}
 		cancel()
 		c.connected = false

@@ -54,84 +54,16 @@ func (p *AnthropicProvider) TransformRequest(ctx context.Context, req *model.Cha
 		anthropicReq.MaxTokens = 4096
 	}
 
-	var systemParts []string
-	var anthropicMsgs []anthropicMessage
-
-	for _, msg := range req.Messages {
-		switch msg.Role {
-		case "system":
-			if strContent, ok := msg.Content.(string); ok {
-				systemParts = append(systemParts, strContent)
-			}
-		case "user":
-			anthropicMsgs = append(anthropicMsgs, anthropicMessage{
-				Role:    "user",
-				Content: translateContentToAnthropic(msg.Content),
-			})
-		case "assistant":
-			anthropicMsgs = append(anthropicMsgs, anthropicMessage{
-				Role:    "assistant",
-				Content: buildAssistantContent(msg),
-			})
-		case "tool":
-			anthropicMsgs = append(anthropicMsgs, anthropicMessage{
-				Role:    "user",
-				Content: []any{buildToolResult(msg)},
-			})
-		}
-	}
-
-	anthropicReq.System = strings.Join(systemParts, "\n\n")
-	anthropicReq.Messages = anthropicMsgs
+	anthropicReq.System, anthropicReq.Messages = buildAnthropicMessages(req.Messages)
 
 	if len(req.Tools) > 0 {
-		var aTools []anthropicTool
-		for _, t := range req.Tools {
-			if t.Type == "function" {
-				aTools = append(aTools, anthropicTool{
-					Name:        t.Function.Name,
-					Description: t.Function.Description,
-					InputSchema: t.Function.Parameters,
-				})
-			}
-		}
-		anthropicReq.Tools = aTools
+		anthropicReq.Tools = buildAnthropicTools(req.Tools)
 	}
 
-	if req.Thinking != nil {
-		anthropicReq.Thinking = &anthropicThinking{
-			Type:         req.Thinking.Type,
-			BudgetTokens: req.Thinking.BudgetTokens,
-		}
-		if req.Thinking.Type == "enabled" {
-			// Anthropic rejects thinking requests unless temperature is left at
-			// its default (1) and top_p is unset.
-			anthropicReq.Temperature = nil
-			anthropicReq.TopP = nil
-		}
-	}
+	applyAnthropicThinking(&anthropicReq, req.Thinking)
 
 	if req.ToolChoice != nil {
-		switch v := req.ToolChoice.(type) {
-		case string:
-			switch v {
-			case "auto":
-				anthropicReq.ToolChoice = map[string]string{"type": "auto"}
-			case "required":
-				anthropicReq.ToolChoice = map[string]string{"type": "any"}
-			}
-		case map[string]any:
-			if typeVal, ok := v["type"].(string); ok && typeVal == "function" {
-				if fn, ok := v["function"].(map[string]any); ok {
-					if name, ok := fn["name"].(string); ok {
-						anthropicReq.ToolChoice = map[string]string{
-							"type": "tool",
-							"name": name,
-						}
-					}
-				}
-			}
-		}
+		anthropicReq.ToolChoice = buildAnthropicToolChoice(req.ToolChoice)
 	}
 
 	bodyBytes, err := json.Marshal(anthropicReq)
@@ -161,6 +93,102 @@ func (p *AnthropicProvider) TransformRequest(ctx context.Context, req *model.Cha
 	}
 
 	return httpReq, nil
+}
+
+// buildAnthropicMessages splits req.Messages into the Anthropic "system"
+// string (joined from all system-role messages) and the ordered list of
+// non-system messages translated to Anthropic's message shape.
+func buildAnthropicMessages(messages []model.Message) (string, []anthropicMessage) {
+	var systemParts []string
+	var anthropicMsgs []anthropicMessage
+
+	for _, msg := range messages {
+		switch msg.Role {
+		case "system":
+			if strContent, ok := msg.Content.(string); ok {
+				systemParts = append(systemParts, strContent)
+			}
+		case "user":
+			anthropicMsgs = append(anthropicMsgs, anthropicMessage{
+				Role:    "user",
+				Content: translateContentToAnthropic(msg.Content),
+			})
+		case "assistant":
+			anthropicMsgs = append(anthropicMsgs, anthropicMessage{
+				Role:    "assistant",
+				Content: buildAssistantContent(msg),
+			})
+		case "tool":
+			anthropicMsgs = append(anthropicMsgs, anthropicMessage{
+				Role:    "user",
+				Content: []any{buildToolResult(msg)},
+			})
+		}
+	}
+
+	return strings.Join(systemParts, "\n\n"), anthropicMsgs
+}
+
+// buildAnthropicTools translates OpenAI-shaped function tools into
+// Anthropic's tool schema, skipping any non-function tool entries.
+func buildAnthropicTools(tools []model.Tool) []anthropicTool {
+	var aTools []anthropicTool
+	for _, t := range tools {
+		if t.Type == "function" {
+			aTools = append(aTools, anthropicTool{
+				Name:        t.Function.Name,
+				Description: t.Function.Description,
+				InputSchema: t.Function.Parameters,
+			})
+		}
+	}
+	return aTools
+}
+
+// applyAnthropicThinking sets anthropicReq.Thinking from thinking (a no-op if
+// thinking is nil) and, when thinking is enabled, clears Temperature/TopP —
+// Anthropic rejects thinking requests unless temperature is left at its
+// default (1) and top_p is unset.
+func applyAnthropicThinking(anthropicReq *anthropicRequest, thinking *model.ThinkingConfig) {
+	if thinking == nil {
+		return
+	}
+	anthropicReq.Thinking = &anthropicThinking{
+		Type:         thinking.Type,
+		BudgetTokens: thinking.BudgetTokens,
+	}
+	if thinking.Type == "enabled" {
+		anthropicReq.Temperature = nil
+		anthropicReq.TopP = nil
+	}
+}
+
+// buildAnthropicToolChoice translates an OpenAI-shaped tool_choice value
+// (a string of "auto"/"required", or a {"type":"function","function":{"name":...}}
+// map) into Anthropic's tool_choice shape. Returns nil (untyped, since the
+// declared return type is `any`) if toolChoice doesn't match a known shape.
+func buildAnthropicToolChoice(toolChoice any) any {
+	switch v := toolChoice.(type) {
+	case string:
+		switch v {
+		case "auto":
+			return map[string]string{"type": "auto"}
+		case "required":
+			return map[string]string{"type": "any"}
+		}
+	case map[string]any:
+		if typeVal, ok := v["type"].(string); ok && typeVal == "function" {
+			if fn, ok := v["function"].(map[string]any); ok {
+				if name, ok := fn["name"].(string); ok {
+					return map[string]string{
+						"type": "tool",
+						"name": name,
+					}
+				}
+			}
+		}
+	}
+	return nil
 }
 
 func (p *AnthropicProvider) TransformResponse(_ context.Context, resp *http.Response) (*model.ChatCompletionResponse, error) {
@@ -253,7 +281,7 @@ func (p *AnthropicProvider) HealthCheck(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode == http.StatusUnauthorized {
 		return fmt.Errorf("health check failed: unauthorized api key")

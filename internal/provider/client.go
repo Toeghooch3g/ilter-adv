@@ -28,7 +28,13 @@ func NewResilientClient(cfg config.ProviderConfig) *http.Client {
 	// would also bound it, but that covers the *entire* body read too, which
 	// would truncate legitimately long streaming completions. Bounding only
 	// "time to first byte" catches true hangs without that risk.
-	baseTransport := http.DefaultTransport.(*http.Transport).Clone()
+	defaultTransport, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		// http.DefaultTransport is always *http.Transport in practice; fall back
+		// to a fresh zero-value Transport rather than asserting unconditionally.
+		defaultTransport = &http.Transport{}
+	}
+	baseTransport := defaultTransport.Clone()
 	baseTransport.ResponseHeaderTimeout = 60 * time.Second
 	var base http.RoundTripper = baseTransport
 

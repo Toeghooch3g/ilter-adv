@@ -42,31 +42,45 @@ func (am *AuthMiddleware) loadKeyContext(ctx context.Context, vk *auth.APIKey) c
 	ctx = context.WithValue(ctx, reqmeta.APIKeyRateLimitContextKey, vk.RateLimitRPM)
 
 	if vk.GroupID != nil {
-		ctx = context.WithValue(ctx, reqmeta.GroupIDsContextKey, []int{*vk.GroupID})
-		if groupBudget, _, gbErr := am.store.GetGroupBudget(*vk.GroupID); gbErr == nil && groupBudget > 0 {
-			ctx = context.WithValue(ctx, reqmeta.GroupBudgetsContextKey, map[int]float64{*vk.GroupID: groupBudget})
-		}
+		ctx = am.loadGroupContext(ctx, *vk.GroupID)
 	}
 	if vk.UserID != nil {
-		ctx = context.WithValue(ctx, reqmeta.UserIDContextKey, *vk.UserID)
-		if userBudget, _, ubErr := am.store.GetUserBudget(*vk.UserID); ubErr == nil && userBudget > 0 {
-			ctx = context.WithValue(ctx, reqmeta.UserBudgetContextKey, userBudget)
+		ctx = am.loadUserContext(ctx, *vk.UserID)
+	}
+	return ctx
+}
+
+// loadGroupContext adds the API key's group ID and, if configured, its budget to ctx.
+func (am *AuthMiddleware) loadGroupContext(ctx context.Context, groupID int) context.Context {
+	ctx = context.WithValue(ctx, reqmeta.GroupIDsContextKey, []int{groupID})
+	if groupBudget, _, gbErr := am.store.GetGroupBudget(groupID); gbErr == nil && groupBudget > 0 {
+		ctx = context.WithValue(ctx, reqmeta.GroupBudgetsContextKey, map[int]float64{groupID: groupBudget})
+	}
+	return ctx
+}
+
+// loadUserContext adds the API key's user ID, budget, and group memberships to ctx.
+func (am *AuthMiddleware) loadUserContext(ctx context.Context, userID int) context.Context {
+	ctx = context.WithValue(ctx, reqmeta.UserIDContextKey, userID)
+	if userBudget, _, ubErr := am.store.GetUserBudget(userID); ubErr == nil && userBudget > 0 {
+		ctx = context.WithValue(ctx, reqmeta.UserBudgetContextKey, userBudget)
+	}
+
+	groups, gErr := am.store.GetUserGroups(userID)
+	if gErr != nil || len(groups) == 0 {
+		return ctx
+	}
+	groupIDs := make([]int, len(groups))
+	groupBudgets := make(map[int]float64, len(groups))
+	for i, g := range groups {
+		groupIDs[i] = g.ID
+		if g.Budget > 0 {
+			groupBudgets[g.ID] = g.Budget
 		}
-		groups, gErr := am.store.GetUserGroups(*vk.UserID)
-		if gErr == nil && len(groups) > 0 {
-			groupIDs := make([]int, len(groups))
-			groupBudgets := make(map[int]float64, len(groups))
-			for i, g := range groups {
-				groupIDs[i] = g.ID
-				if g.Budget > 0 {
-					groupBudgets[g.ID] = g.Budget
-				}
-			}
-			ctx = context.WithValue(ctx, reqmeta.GroupIDsContextKey, groupIDs)
-			if len(groupBudgets) > 0 {
-				ctx = context.WithValue(ctx, reqmeta.GroupBudgetsContextKey, groupBudgets)
-			}
-		}
+	}
+	ctx = context.WithValue(ctx, reqmeta.GroupIDsContextKey, groupIDs)
+	if len(groupBudgets) > 0 {
+		ctx = context.WithValue(ctx, reqmeta.GroupBudgetsContextKey, groupBudgets)
 	}
 	return ctx
 }

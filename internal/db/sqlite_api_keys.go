@@ -38,6 +38,18 @@ func hashAPIKey(rawToken string) string {
 // apiKeyFromSQLC — converts a sqlc API key row to auth.APIKey
 // ---------------------------------------------------------------------------
 
+// unmarshalJSONField parses a nullable JSON-encoded string column into dest,
+// logging (rather than failing) on a parse error — malformed stored JSON
+// shouldn't block reading the rest of the key's fields.
+func unmarshalJSONField(raw *string, dest any, field string) {
+	if raw == nil || *raw == "" {
+		return
+	}
+	if err := json.Unmarshal([]byte(*raw), dest); err != nil {
+		slog.Error("failed to unmarshal "+field, "error", err)
+	}
+}
+
 func apiKeyFromSQLC(
 	id string,
 	name string,
@@ -54,33 +66,11 @@ func apiKeyFromSQLC(
 	createdAt time.Time,
 	updatedAt time.Time,
 ) *auth.APIKey {
-	var gid, uid *int
-	if groupID != nil {
-		v := int(*groupID)
-		gid = &v
-	}
-	if userID != nil {
-		v := int(*userID)
-		uid = &v
-	}
-
 	var models, providers []string
 	var t map[string]string
-	if allowedModels != nil && *allowedModels != "" {
-		if err := json.Unmarshal([]byte(*allowedModels), &models); err != nil {
-			slog.Error("failed to unmarshal allowed_models", "error", err)
-		}
-	}
-	if allowedProviders != nil && *allowedProviders != "" {
-		if err := json.Unmarshal([]byte(*allowedProviders), &providers); err != nil {
-			slog.Error("failed to unmarshal allowed_providers", "error", err)
-		}
-	}
-	if tags != nil && *tags != "" {
-		if err := json.Unmarshal([]byte(*tags), &t); err != nil {
-			slog.Error("failed to unmarshal tags", "error", err)
-		}
-	}
+	unmarshalJSONField(allowedModels, &models, "allowed_models")
+	unmarshalJSONField(allowedProviders, &providers, "allowed_providers")
+	unmarshalJSONField(tags, &t, "tags")
 
 	if models == nil {
 		models = []string{}
@@ -92,33 +82,16 @@ func apiKeyFromSQLC(
 		t = map[string]string{}
 	}
 
-	rpm := 0
-	if rateLimitRPM != nil {
-		rpm = int(*rateLimitRPM)
-	}
-	tpm := int64(0)
-	if rateLimitTPM != nil {
-		tpm = *rateLimitTPM
-	}
-	mbTokens := int64(0)
-	if monthlyBudgetTokens != nil {
-		mbTokens = *monthlyBudgetTokens
-	}
-	mbUSD := 0.0
-	if monthlyBudgetUSD != nil {
-		mbUSD = *monthlyBudgetUSD
-	}
-
 	return &auth.APIKey{
 		ID:                  id,
 		Name:                name,
-		GroupID:             gid,
-		UserID:              uid,
+		GroupID:             int64PtrToIntPtr(groupID),
+		UserID:              int64PtrToIntPtr(userID),
 		Tags:                t,
-		MonthlyBudgetUSD:    mbUSD,
-		MonthlyBudgetTokens: mbTokens,
-		RateLimitRPM:        rpm,
-		RateLimitTPM:        tpm,
+		MonthlyBudgetUSD:    float64Deref(monthlyBudgetUSD),
+		MonthlyBudgetTokens: int64Deref(monthlyBudgetTokens),
+		RateLimitRPM:        int(int64Deref(rateLimitRPM)),
+		RateLimitTPM:        int64Deref(rateLimitTPM),
 		AllowedModels:       models,
 		AllowedProviders:    providers,
 		Enabled:             enabled == 1,
@@ -509,6 +482,7 @@ func (s *SQLiteStore) SetKeyBudget(id string, monthlyBudgetUSD *float64, monthly
 	now := time.Now().UTC()
 	args = append(args, now, id)
 
+	//nolint:gosec // G201: sets contains only hardcoded column clauses built above, not user input; values are bound via args
 	query := fmt.Sprintf("UPDATE api_keys SET %s, updated_at = ? WHERE id = ?", strings.Join(sets, ", "))
 	res, err := s.DB.Exec(query, args...)
 	if err != nil {
@@ -603,47 +577,16 @@ func (s *SQLiteStore) GetKeyUsage(keyID, fromDate, toDate string) ([]auth.KeyUsa
 	usage := make([]auth.KeyUsage, 0, len(rows))
 	for _, r := range rows {
 		date, _ := time.Parse("2006-01-02", r.Date)
-		u := auth.KeyUsage{
-			KeyID: r.KeyID,
-			Date:  date,
-			TokensIn: func() int64 {
-				if r.TokensIn != nil {
-					return *r.TokensIn
-				}
-				return 0
-			}(),
-			TokensOut: func() int64 {
-				if r.TokensOut != nil {
-					return *r.TokensOut
-				}
-				return 0
-			}(),
-			CostUSD: func() float64 {
-				if r.CostUsd != nil {
-					return *r.CostUsd
-				}
-				return 0
-			}(),
-			RequestCount: func() int64 {
-				if r.RequestCount != nil {
-					return *r.RequestCount
-				}
-				return 0
-			}(),
-			Model: func() string {
-				if r.Model != nil {
-					return *r.Model
-				}
-				return ""
-			}(),
-			Provider: func() string {
-				if r.Provider != nil {
-					return *r.Provider
-				}
-				return ""
-			}(),
-		}
-		usage = append(usage, u)
+		usage = append(usage, auth.KeyUsage{
+			KeyID:        r.KeyID,
+			Date:         date,
+			TokensIn:     int64Deref(r.TokensIn),
+			TokensOut:    int64Deref(r.TokensOut),
+			CostUSD:      float64Deref(r.CostUsd),
+			RequestCount: int64Deref(r.RequestCount),
+			Model:        strDeref(r.Model),
+			Provider:     strDeref(r.Provider),
+		})
 	}
 	return usage, nil
 }
@@ -668,20 +611,17 @@ func (s *SQLiteStore) GetCurrentMonthUsage(vkID string) (float64, error) {
 		return 0, fmt.Errorf("get current month usage for %s: %w", vkID, err)
 	}
 
-	total, _ := toFloat64(raw)
-	return total, nil
+	return toFloat64(raw), nil
 }
 
-func toFloat64(v any) (float64, bool) {
+func toFloat64(v any) float64 {
 	switch val := v.(type) {
 	case float64:
-		return val, true
+		return val
 	case int64:
-		return float64(val), true
-	case nil:
-		return 0, true
+		return float64(val)
 	default:
-		return 0, false
+		return 0
 	}
 }
 
@@ -709,22 +649,17 @@ func (s *SQLiteStore) GetAPIKeySummary() (*APIKeySummary, error) {
 		return nil, fmt.Errorf("API key count: %w", err)
 	}
 	summary.TotalKeys = int(countRow.Count)
-	enabled, _ := toFloat64(countRow.Coalesce)
-	summary.EnabledKeys = int(enabled)
+	summary.EnabledKeys = int(toFloat64(countRow.Coalesce))
 
 	// Aggregate usage.
 	usageRow, err := s.queries.GetUsageSummary(context.Background())
 	if err != nil {
 		return nil, fmt.Errorf("API key usage summary: %w", err)
 	}
-	reqs, _ := toFloat64(usageRow.Coalesce)
-	summary.TotalRequests = int64(reqs)
-	cost, _ := toFloat64(usageRow.Coalesce_2)
-	summary.TotalCostUSD = cost
-	tokIn, _ := toFloat64(usageRow.Coalesce_3)
-	summary.TotalTokensIn = int64(tokIn)
-	tokOut, _ := toFloat64(usageRow.Coalesce_4)
-	summary.TotalTokensOut = int64(tokOut)
+	summary.TotalRequests = int64(toFloat64(usageRow.Coalesce))
+	summary.TotalCostUSD = toFloat64(usageRow.Coalesce_2)
+	summary.TotalTokensIn = int64(toFloat64(usageRow.Coalesce_3))
+	summary.TotalTokensOut = int64(toFloat64(usageRow.Coalesce_4))
 
 	return &summary, nil
 }

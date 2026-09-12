@@ -266,6 +266,7 @@ func TestAudit_LogBodiesMultipleRequests(t *testing.T) {
 		assert.Contains(t, respB.String, "Mock response content here.")
 		count++
 	}
+	require.NoError(t, rows.Err())
 	assert.Equal(t, 3, count, "should have 3 audit log entries")
 	t.Logf("✓ All %d requests have valid request_body and response_body", count)
 }

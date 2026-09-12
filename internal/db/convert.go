@@ -35,6 +35,13 @@ func int64Deref(v *int64) int64 {
 	return *v
 }
 
+func float64Deref(v *float64) float64 {
+	if v == nil {
+		return 0
+	}
+	return *v
+}
+
 func boolToInt(b bool) int {
 	if b {
 		return 1

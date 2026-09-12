@@ -49,6 +49,11 @@ func (h *Handler) HandleTopExpensiveRequests(w http.ResponseWriter, _ *http.Requ
 		}
 		items = append(items, item)
 	}
+	if err := rows.Err(); err != nil {
+		slog.Error("error iterating top expensive requests", "error", err)
+		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
 
 	model.WriteJSON(w, http.StatusOK, items)
 }
@@ -109,6 +114,11 @@ func (h *Handler) HandleCostTrend(w http.ResponseWriter, r *http.Request) {
 		}
 		items = append(items, item)
 	}
+	if err := rows.Err(); err != nil {
+		slog.Error("error iterating cost trend rows", "error", err)
+		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
 
 	model.WriteJSON(w, http.StatusOK, items)
 }
@@ -162,6 +172,11 @@ func (h *Handler) HandleCostByModel(w http.ResponseWriter, _ *http.Request) {
 			item.RequestCount = int(requestCount.Int64)
 		}
 		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		slog.Error("error iterating cost by model rows", "error", err)
+		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
 	}
 
 	model.WriteJSON(w, http.StatusOK, items)
@@ -261,7 +276,7 @@ func (h *Handler) HandleSavingsOpportunity(w http.ResponseWriter, _ *http.Reques
 
 		tier := modelTier[modelName]
 		cheapest, ok := cheapestInTier[tier]
-		altCost := 0.0
+		var altCost float64
 		recModel := ""
 		if ok {
 			altCost = float64(pTokens)*cheapest.inRate + float64(cTokens)*cheapest.outRate
@@ -423,6 +438,11 @@ func (h *Handler) HandleCostsOverview(w http.ResponseWriter, r *http.Request) {
 			byProvider = append(byProvider, item)
 		}
 	}
+	if err := provRows.Err(); err != nil {
+		slog.Error("error iterating costs by provider", "error", err)
+		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
 
 	// 3. Model Breakdown
 	modelRows, err := db.Query(`
@@ -448,6 +468,11 @@ func (h *Handler) HandleCostsOverview(w http.ResponseWriter, r *http.Request) {
 			}
 			byModel = append(byModel, item)
 		}
+	}
+	if err := modelRows.Err(); err != nil {
+		slog.Error("error iterating costs by model", "error", err)
+		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
 	}
 
 	// 4. Time Series
@@ -478,6 +503,11 @@ func (h *Handler) HandleCostsOverview(w http.ResponseWriter, r *http.Request) {
 		if scanErr := tsRows.Scan(&item.Period, &item.Cost, &item.Count); scanErr == nil {
 			timeSeries = append(timeSeries, item)
 		}
+	}
+	if err := tsRows.Err(); err != nil {
+		slog.Error("error iterating costs time series", "error", err)
+		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
 	}
 
 	resp := CostAttributionResponse{
@@ -560,6 +590,11 @@ func (h *Handler) HandleCostsByKey(w http.ResponseWriter, r *http.Request) {
 			}
 			byKey = append(byKey, item)
 		}
+	}
+	if err := rows.Err(); err != nil {
+		slog.Error("error iterating costs by key", "error", err)
+		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
 	}
 
 	resp := CostByKeyResponse{

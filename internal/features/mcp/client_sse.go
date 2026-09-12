@@ -104,7 +104,7 @@ func (c *SSEClient) Start(ctx context.Context) error {
 		return fmt.Errorf("sse dial: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		cancel()
 		return fmt.Errorf("sse dial: %s returned HTTP %d", c.server.Config.URL, resp.StatusCode)
 	}
@@ -121,7 +121,7 @@ func (c *SSEClient) Start(ctx context.Context) error {
 		select {
 		case <-deadline:
 			cancel()
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			return fmt.Errorf("sse: timed out waiting for endpoint event from %q", c.server.ID)
 		case <-childCtx.Done():
 			return fmt.Errorf("sse: context canceled while waiting for endpoint event")
@@ -136,53 +136,61 @@ func (c *SSEClient) Start(ctx context.Context) error {
 				sseLog.Debug("connected", "server_id", c.server.ID,
 					"post_url", pu)
 
-				// Negotiate a protocol version before discovering tools —
-				// this transport previously did NO handshake at all
-				// (jumped straight to tools/list), a real gap: without it,
-				// ilter never confirmed what protocol version the
-				// downstream server actually speaks, and a version-aware
-				// server had no way to know what to expect from ilter.
-				discCtx, discCancel := context.WithTimeout(context.Background(), 15*time.Second)
-				defer discCancel()
-
-				rawCall := func(ctx context.Context, method string, params json.RawMessage) (*JSONRPCResponse, error) {
-					id := json.RawMessage(`"handshake"`)
-					return c.Call(ctx, &JSONRPCRequest{JSONRPC: JSONRPCVersion, ID: &id, Method: method, Params: params})
-				}
-				sendNotification := func(method string, params json.RawMessage) {
-					c.postNotification(discCtx, method, params)
-				}
-				version, negErr := negotiateOutbound(discCtx, c.server, rawCall, sendNotification)
-				if negErr != nil {
-					c.mu.Lock()
-					c.connected = false
-					c.mu.Unlock()
-					cancel()
-					resp.Body.Close()
-					return fmt.Errorf("sse handshake: %w", negErr)
-				}
-				c.mu.Lock()
-				c.negotiatedVersion = version.ID()
-				c.mu.Unlock()
-				sseLog.Debug("negotiated protocol version", "server_id", c.server.ID, "version", version.ID())
-
-				discovered, discErr := c.discoverTools(discCtx)
-				if discErr != nil {
-					sseLog.Warn("tools/list failed, tools will be unavailable",
-						"server_id", c.server.ID, "error", discErr)
-				} else {
-					c.mu.Lock()
-					c.discoveredTools = discovered
-					c.mu.Unlock()
-					sseLog.Debug("discovered tools",
-						"server_id", c.server.ID, "count", len(discovered))
-				}
-
-				return nil
+				return c.completeHandshake(childCtx, cancel, resp)
 			}
 			time.Sleep(50 * time.Millisecond)
 		}
 	}
+}
+
+// completeHandshake negotiates the MCP protocol version and discovers tools
+// once the SSE endpoint event has been received (extracted from Start to
+// keep it under the cognitive-complexity limit; behavior is unchanged).
+// On negotiation failure it rolls back the connected state and tears down
+// the connection, mirroring what Start did inline before.
+func (c *SSEClient) completeHandshake(ctx context.Context, cancel context.CancelFunc, resp *http.Response) error {
+	// Negotiate a protocol version before discovering tools — this transport
+	// previously did NO handshake at all (jumped straight to tools/list), a
+	// real gap: without it, ilter never confirmed what protocol version the
+	// downstream server actually speaks, and a version-aware server had no
+	// way to know what to expect from ilter.
+	discCtx, discCancel := context.WithTimeout(ctx, 15*time.Second)
+	defer discCancel()
+
+	rawCall := func(ctx context.Context, method string, params json.RawMessage) (*JSONRPCResponse, error) {
+		id := json.RawMessage(`"handshake"`)
+		return c.Call(ctx, &JSONRPCRequest{JSONRPC: JSONRPCVersion, ID: &id, Method: method, Params: params})
+	}
+	sendNotification := func(method string, params json.RawMessage) {
+		c.postNotification(discCtx, method, params)
+	}
+	version, negErr := negotiateOutbound(discCtx, c.server, rawCall, sendNotification)
+	if negErr != nil {
+		c.mu.Lock()
+		c.connected = false
+		c.mu.Unlock()
+		cancel()
+		_ = resp.Body.Close()
+		return fmt.Errorf("sse handshake: %w", negErr)
+	}
+	c.mu.Lock()
+	c.negotiatedVersion = version.ID()
+	c.mu.Unlock()
+	sseLog.Debug("negotiated protocol version", "server_id", c.server.ID, "version", version.ID())
+
+	discovered, discErr := c.discoverTools(discCtx)
+	if discErr != nil {
+		sseLog.Warn("tools/list failed, tools will be unavailable",
+			"server_id", c.server.ID, "error", discErr)
+	} else {
+		c.mu.Lock()
+		c.discoveredTools = discovered
+		c.mu.Unlock()
+		sseLog.Debug("discovered tools",
+			"server_id", c.server.ID, "count", len(discovered))
+	}
+
+	return nil
 }
 
 func (c *SSEClient) Call(ctx context.Context, req *JSONRPCRequest) (*JSONRPCResponse, error) {
@@ -226,7 +234,7 @@ func (c *SSEClient) Call(ctx context.Context, req *JSONRPCRequest) (*JSONRPCResp
 	if err != nil {
 		return nil, fmt.Errorf("post message: %w", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
 		return nil, fmt.Errorf("post message: HTTP %d", resp.StatusCode)
 	}
@@ -302,7 +310,7 @@ func (c *SSEClient) postNotification(ctx context.Context, method string, params 
 		sseLog.Warn("failed to post notification", "server_id", c.server.ID, "method", method, "error", err)
 		return
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 }
 
 func (c *SSEClient) Tools() []ToolDefinition {
@@ -361,7 +369,7 @@ func (c *SSEClient) discoverTools(ctx context.Context) ([]ToolDefinition, error)
 // response body.  It is terminated via context cancellation.
 func (c *SSEClient) readLoop(ctx context.Context, body io.ReadCloser) {
 	defer close(c.sseDone)
-	defer body.Close()
+	defer func() { _ = body.Close() }()
 
 	reader := bufio.NewReader(body)
 	var eventType string

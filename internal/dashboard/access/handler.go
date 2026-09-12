@@ -20,6 +20,8 @@ import (
 	"github.com/ilter-ai/ilter/internal/platform/reqmeta"
 )
 
+const errListGrants = "Failed to list grants"
+
 type Handler struct {
 	store   *db.SQLiteStore
 	redis   *redis.Client
@@ -47,7 +49,7 @@ func (h *Handler) ListAllGrants(w http.ResponseWriter, r *http.Request) {
 		 ORDER BY g.priority DESC, g.created_at DESC`,
 	)
 	if err != nil {
-		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", "Failed to list grants")
+		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", errListGrants)
 		return
 	}
 	defer rows.Close()
@@ -73,6 +75,10 @@ func (h *Handler) ListAllGrants(w http.ResponseWriter, r *http.Request) {
 			"created_at":   createdAt,
 		})
 	}
+	if err := rows.Err(); err != nil {
+		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", errListGrants)
+		return
+	}
 	model.WriteJSON(w, http.StatusOK, map[string]any{"grants": grants})
 }
 
@@ -83,7 +89,7 @@ func (h *Handler) listGrantsByServer(w http.ResponseWriter, serverID string) {
 		serverID,
 	)
 	if err != nil {
-		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", "Failed to list grants")
+		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", errListGrants)
 		return
 	}
 	defer rows.Close()
@@ -106,6 +112,10 @@ func (h *Handler) listGrantsByServer(w http.ResponseWriter, serverID string) {
 			"priority":     priority,
 			"created_at":   createdAt,
 		})
+	}
+	if err := rows.Err(); err != nil {
+		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", errListGrants)
+		return
 	}
 	model.WriteJSON(w, http.StatusOK, map[string]any{"grants": grants})
 }
@@ -588,7 +598,7 @@ func (h *Handler) TestRule(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 
-	allowedResult := false
+	var allowedResult bool
 	matchedRule := ""
 	matchedSource := ""
 	hasDeny := false
@@ -618,6 +628,10 @@ func (h *Handler) TestRule(w http.ResponseWriter, r *http.Request) {
 				matchedSource = "grant"
 			}
 		}
+	}
+	if err := rows.Err(); err != nil {
+		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", "Failed to query grants")
+		return
 	}
 
 	if hasDeny {

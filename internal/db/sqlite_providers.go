@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -85,39 +86,54 @@ func (s *SQLiteStore) SaveDiscoveredModels(provider string, models []catalog.Mod
 	if err != nil {
 		return fmt.Errorf("prepare upsert: %w", err)
 	}
-	defer stmt.Close()
+	defer func() { _ = stmt.Close() }()
 
 	for _, m := range models {
-		capsJSON := "[]"
-		if len(m.Capabilities) > 0 {
-			if b, mErr := json.Marshal(m.Capabilities); mErr == nil {
-				capsJSON = string(b)
-			}
-		}
-		if _, execErr := stmt.Exec(provider, m.ID, m.Tier, m.CostPerInputToken, m.CostPerOutputToken,
-			m.DisplayName, m.MaxContextTokens, m.MaxOutputTokens, capsJSON, m.DefaultBaseURL); execErr != nil {
-			return fmt.Errorf("upsert model %s: %w", m.ID, execErr)
+		if err := upsertDiscoveredModel(stmt, provider, m); err != nil {
+			return err
 		}
 	}
 
-	// Mark models that upstream no longer returns as inactive so they don't
-	// vanish from the UI — they stay available for manual re-enable.
-	existing, err := s.queries.GetProviderModels(context.Background(), provider)
-	if err == nil {
-		discovered := make(map[string]bool, len(models))
-		for _, m := range models {
-			discovered[m.ID] = true
-		}
-		for _, em := range existing {
-			if !discovered[em.Model] && em.Active != 0 {
-				if _, uErr := tx.Exec("UPDATE provider_models SET active=0 WHERE provider=? AND model=?", provider, em.Model); uErr != nil {
-					slog.Warn("failed to mark model inactive", "provider", provider, "model", em.Model, "error", uErr)
-				}
-			}
-		}
-	}
+	s.deactivateStaleModels(tx, provider, models)
 
 	return tx.Commit()
+}
+
+// upsertDiscoveredModel inserts or updates a single discovered model row
+// using the prepared upsert statement.
+func upsertDiscoveredModel(stmt *sql.Stmt, provider string, m catalog.ModelInfo) error {
+	capsJSON := "[]"
+	if len(m.Capabilities) > 0 {
+		if b, mErr := json.Marshal(m.Capabilities); mErr == nil {
+			capsJSON = string(b)
+		}
+	}
+	if _, execErr := stmt.Exec(provider, m.ID, m.Tier, m.CostPerInputToken, m.CostPerOutputToken,
+		m.DisplayName, m.MaxContextTokens, m.MaxOutputTokens, capsJSON, m.DefaultBaseURL); execErr != nil {
+		return fmt.Errorf("upsert model %s: %w", m.ID, execErr)
+	}
+	return nil
+}
+
+// deactivateStaleModels marks models that upstream no longer returns as
+// inactive so they don't vanish from the UI — they stay available for
+// manual re-enable. Failures here are logged, not fatal to the save.
+func (s *SQLiteStore) deactivateStaleModels(tx *sql.Tx, provider string, models []catalog.ModelInfo) {
+	existing, err := s.queries.GetProviderModels(context.Background(), provider)
+	if err != nil {
+		return
+	}
+	discovered := make(map[string]bool, len(models))
+	for _, m := range models {
+		discovered[m.ID] = true
+	}
+	for _, em := range existing {
+		if !discovered[em.Model] && em.Active != 0 {
+			if _, uErr := tx.Exec("UPDATE provider_models SET active=0 WHERE provider=? AND model=?", provider, em.Model); uErr != nil {
+				slog.Warn("failed to mark model inactive", "provider", provider, "model", em.Model, "error", uErr)
+			}
+		}
+	}
 }
 
 // ProviderModelCount returns the number of models registered for a provider.

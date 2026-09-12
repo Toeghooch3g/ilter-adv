@@ -163,6 +163,9 @@ func (h *Handler) HandleSemanticCacheSummary(w http.ResponseWriter, r *http.Requ
 				topQueries = append(topQueries, q)
 			}
 		}
+		if err := topRows.Err(); err != nil {
+			slog.Warn("error iterating top cached queries", "error", err)
+		}
 		resp.TopQueries = topQueries
 	}
 
@@ -184,6 +187,9 @@ func (h *Handler) HandleSemanticCacheSummary(w http.ResponseWriter, r *http.Requ
 			if err := hourRows.Scan(&p.Time, &p.Hits, &p.Misses); err == nil {
 				hourly = append(hourly, p)
 			}
+		}
+		if err := hourRows.Err(); err != nil {
+			slog.Warn("error iterating hourly cache data", "error", err)
 		}
 		resp.HourlyData = hourly
 	}

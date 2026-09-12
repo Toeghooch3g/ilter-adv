@@ -48,7 +48,7 @@ func (h *JobsHandler) CreateTrigger(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 	var input triggerInput
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 		model.WriteJSONError(w, http.StatusBadRequest, "invalid_request_error", "Invalid request body")
@@ -82,7 +82,7 @@ func (h *JobsHandler) CreateTrigger(w http.ResponseWriter, r *http.Request) {
 		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", "Failed to create trigger: "+err.Error())
 		return
 	}
-	h.refreshCron()
+	h.refreshCron(r.Context())
 
 	model.WriteJSON(w, http.StatusCreated, h.triggerToResponse(tr, true))
 }
@@ -132,7 +132,7 @@ func (h *JobsHandler) DeleteTrigger(w http.ResponseWriter, r *http.Request) {
 		model.WriteJSONError(w, http.StatusNotFound, "not_found", "Trigger not found")
 		return
 	}
-	h.refreshCron()
+	h.refreshCron(r.Context())
 
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -143,7 +143,7 @@ func (h *JobsHandler) DeleteTrigger(w http.ResponseWriter, r *http.Request) {
 
 // WebhookHandler handles POST /api/webhooks/{token}.
 func (h *JobsHandler) WebhookHandler(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	rawBody, err := io.ReadAll(r.Body)

@@ -65,6 +65,7 @@ func (c *InlineClient) Call(ctx context.Context, req *JSONRPCRequest) (*JSONRPCR
 	var rawParams map[string]any
 	if len(req.Params) > 0 {
 		if err := json.Unmarshal(req.Params, &rawParams); err != nil {
+			//nolint:nilerr // JSON-RPC errors are reported via the response's Error field, not the Go error return — consistent with every other NewErrorResponse call in this file.
 			return NewErrorResponse(req.ID, ErrorCodeInvalidParams,
 				"inline: invalid params: "+err.Error()), nil
 		}

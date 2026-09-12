@@ -41,7 +41,7 @@ func (h *MCPHandler) GetStats(w http.ResponseWriter, _ *http.Request) {
 	rows, err := h.store.DB.Query(`SELECT tool, COUNT(*) as count FROM mcp_audit_log
 		WHERE created_at >= datetime('now', '-24 hours') GROUP BY tool ORDER BY count DESC LIMIT 10`)
 	if err == nil {
-		defer rows.Close()
+		defer func() { _ = rows.Close() }()
 		for rows.Next() {
 			var tool string
 			var count int
@@ -51,6 +51,9 @@ func (h *MCPHandler) GetStats(w http.ResponseWriter, _ *http.Request) {
 					"count": count,
 				})
 			}
+		}
+		if err := rows.Err(); err != nil {
+			slog.Warn("error iterating MCP calls-by-tool rows", "error", err)
 		}
 	}
 

@@ -7,7 +7,9 @@ import (
 
 func (ex *Executor) getToolConfig(toolName string) *ToolConfig {
 	if v, ok := ex.toolConfigCache.Load(toolName); ok {
-		return v.(*ToolConfig)
+		if tc, ok := v.(*ToolConfig); ok {
+			return tc
+		}
 	}
 	if ex.db == nil {
 		return nil
@@ -29,7 +31,10 @@ func (ex *Executor) isRateLimited(toolName string, rpm int) bool {
 		return false
 	}
 	v, _ := ex.rateLimits.LoadOrStore(toolName, &rateLimitWindow{start: time.Now()})
-	w := v.(*rateLimitWindow)
+	w, ok := v.(*rateLimitWindow)
+	if !ok {
+		return false
+	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if time.Since(w.start) >= time.Minute {

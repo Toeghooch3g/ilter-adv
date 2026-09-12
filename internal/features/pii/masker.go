@@ -405,7 +405,7 @@ func (m *Masker) ProcessText(text string, state *ReversibleState) (string, error
 				continue
 			}
 			state.mu.Lock()
-			placeholder := ""
+			var placeholder string
 			for {
 				h := generateRandomHex(6)
 				placeholder = "PII:" + strings.ToUpper(string(r.pType)) + ":" + h

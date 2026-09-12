@@ -274,6 +274,11 @@ func (h *GuardrailsHandler) HandleGuardrailViolations(w http.ResponseWriter, r *
 		item.Timestamp = db.FormatSQLiteTimestamp(item.Timestamp)
 		items = append(items, item)
 	}
+	if err := rows.Err(); err != nil {
+		slog.Error("error iterating guardrail violations", "error", err)
+		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
 
 	resp := Page[GuardrailEventItem]{Items: items, Total: total, Page: page, Limit: limit}
 	model.WriteJSON(w, http.StatusOK, resp)
@@ -320,6 +325,9 @@ func (h *GuardrailsHandler) HandleGuardrailSummary(w http.ResponseWriter, r *htt
 		}
 		byType = append(byType, item)
 	}
+	if err := typeRows.Err(); err != nil {
+		slog.Warn("error iterating guardrail type breakdown", "error", err)
+	}
 
 	trendRows, err := h.store.DB.Query(
 		`SELECT DATE(timestamp) as day, COUNT(*) as cnt
@@ -338,6 +346,9 @@ func (h *GuardrailsHandler) HandleGuardrailSummary(w http.ResponseWriter, r *htt
 				continue
 			}
 			trend = append(trend, item)
+		}
+		if err := trendRows.Err(); err != nil {
+			slog.Warn("error iterating guardrail trend rows", "error", err)
 		}
 	}
 
@@ -398,6 +409,11 @@ func (h *GuardrailsHandler) HandleGuardrailExport(w http.ResponseWriter, r *http
 			}
 		}
 		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		slog.Error("error iterating guardrail events for export", "error", err)
+		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
 	}
 
 	if format == "csv" {

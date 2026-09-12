@@ -20,6 +20,9 @@ import (
 	"github.com/ilter-ai/ilter/internal/platform/reqmeta"
 )
 
+const errListGrants = "Failed to list grants"
+
+// MCPHandler serves the dashboard's MCP server/tool/grant management API.
 type MCPHandler struct {
 	store         *db.SQLiteStore
 	auditLogger   *mcp.AuditLogger
@@ -47,7 +50,7 @@ func (h *MCPHandler) SyncAllEnabledServers(ctx context.Context) {
 		mcpLog.Error("failed to query enabled MCP servers", "error", err)
 		return
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var ids []string
 	for rows.Next() {
@@ -55,6 +58,9 @@ func (h *MCPHandler) SyncAllEnabledServers(ctx context.Context) {
 		if err := rows.Scan(&id); err == nil {
 			ids = append(ids, id)
 		}
+	}
+	if err := rows.Err(); err != nil {
+		mcpLog.Error("error iterating enabled MCP servers", "error", err)
 	}
 
 	mcpLog.Info("auto-syncing MCP servers on startup", "count", len(ids))
@@ -150,10 +156,10 @@ func (h *MCPHandler) ListAllGrants(w http.ResponseWriter, _ *http.Request) {
 		 ORDER BY g.created_at DESC`,
 	)
 	if err != nil {
-		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", "Failed to list grants")
+		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", errListGrants)
 		return
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	grants := make([]map[string]any, 0)
 	for rows.Next() {
@@ -174,6 +180,10 @@ func (h *MCPHandler) ListAllGrants(w http.ResponseWriter, _ *http.Request) {
 			"created_at":   createdAt,
 		})
 	}
+	if err := rows.Err(); err != nil {
+		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", errListGrants)
+		return
+	}
 	model.WriteJSON(w, http.StatusOK, map[string]any{"grants": grants})
 }
 
@@ -184,10 +194,10 @@ func (h *MCPHandler) ListGrants(w http.ResponseWriter, r *http.Request) {
 		serverID,
 	)
 	if err != nil {
-		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", "Failed to list grants")
+		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", errListGrants)
 		return
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	grants := make([]map[string]any, 0)
 	for rows.Next() {
@@ -204,6 +214,10 @@ func (h *MCPHandler) ListGrants(w http.ResponseWriter, r *http.Request) {
 			"effect":       effect,
 			"created_at":   createdAt,
 		})
+	}
+	if err := rows.Err(); err != nil {
+		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", errListGrants)
+		return
 	}
 	model.WriteJSON(w, http.StatusOK, map[string]any{"grants": grants})
 }

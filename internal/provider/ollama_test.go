@@ -538,7 +538,7 @@ func TestOllamaProvider_TransformStreamChunk_NativeStripsDataPrefix(t *testing.T
 	assert.Equal(t, "Hello", chunk.Choices[0].Delta.Content)
 }
 
-// TestOllamaProvider_TransformStreamChunk_BadChunk silently ignored
+// TestOllamaProvider_TransformStreamChunk_BadChunk verifies bad JSON surfaces as an error.
 func TestOllamaProvider_TransformStreamChunk_BadChunk(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -563,9 +563,9 @@ func TestOllamaProvider_TransformStreamChunk_BadChunk(t *testing.T) {
 	_ = p.HealthCheck(context.Background())
 	require.True(t, p.useNative)
 
-	// Bad JSON should be silently ignored (returns nil chunk, no error)
+	// Bad JSON should surface as an error so the caller can log and skip the chunk.
 	chunk, done, err := p.TransformStreamChunk([]byte(`not json`))
-	assert.NoError(t, err)
+	assert.Error(t, err)
 	assert.False(t, done)
 	assert.Nil(t, chunk)
 }

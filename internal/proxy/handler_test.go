@@ -965,6 +965,9 @@ func TestChatCompletionsRecordsUsageDaily(t *testing.T) {
 		assert.Equal(t, 300, tokens)
 		assert.Equal(t, 2, requestCount)
 	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("error iterating usage_daily rows: %v", err)
+	}
 	if count != 1 {
 		t.Fatalf("expected exactly 1 usage_daily row, got %d", count)
 	}

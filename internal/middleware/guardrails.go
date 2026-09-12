@@ -195,7 +195,7 @@ func (m *GuardrailsMiddleware) Handler(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		r.Body.Close()
+		_ = r.Body.Close()
 
 		var req model.ChatCompletionRequest
 		if err := json.Unmarshal(bodyBytes, &req); err != nil {
@@ -205,16 +205,7 @@ func (m *GuardrailsMiddleware) Handler(next http.Handler) http.Handler {
 			return
 		}
 
-		messages := make([]guardrails.Message, 0, len(req.Messages))
-		for i, msg := range req.Messages {
-			if contentStr, ok := msg.Content.(string); ok && contentStr != "" {
-				messages = append(messages, guardrails.Message{
-					Index:   i,
-					Role:    msg.Role,
-					Content: contentStr,
-				})
-			}
-		}
+		messages := buildGuardrailMessages(req.Messages)
 
 		checkStart := time.Now()
 		checker := m.checker.Load()
@@ -227,48 +218,12 @@ func (m *GuardrailsMiddleware) Handler(next http.Handler) http.Handler {
 		checkDuration := time.Since(checkStart).Milliseconds()
 
 		if result.Blocked {
-			m.logger.Warn(
-				"guardrails: request blocked",
-				"rule_id", result.RuleID,
-				"rule_set", result.RuleSet,
-				"severity", result.Severity,
-				"matched", result.MatchedText,
-			)
-			attrs := metric.WithAttributes(
-				attribute.String("rule_set", result.RuleSet),
-				attribute.String("severity", string(result.Severity)),
-			)
-			if guardrailsBlockedTotal != nil {
-				guardrailsBlockedTotal.Add(r.Context(), 1, attrs)
-			}
-			if guardrailsCheckDuration != nil {
-				guardrailsCheckDuration.Record(r.Context(), float64(checkDuration), attrs)
-			}
-			m.recordEvent(r, req.Model, result.RuleSet, "blocked", string(result.Severity), result.MatchedText)
-			writeGuardrailsBlockedError(w, result)
+			m.handleBlocked(w, r, req.Model, result, checkDuration)
 			return
 		}
 
 		if result.Warned {
-			m.logger.Info(
-				"guardrails: request warned",
-				"rule_id", result.RuleID,
-				"rule_set", result.RuleSet,
-				"severity", result.Severity,
-				"matched", result.MatchedText,
-			)
-			attrs := metric.WithAttributes(
-				attribute.String("rule_set", result.RuleSet),
-				attribute.String("severity", string(result.Severity)),
-			)
-			if guardrailsWarnedTotal != nil {
-				guardrailsWarnedTotal.Add(r.Context(), 1, attrs)
-			}
-			if guardrailsCheckDuration != nil {
-				guardrailsCheckDuration.Record(r.Context(), float64(checkDuration), attrs)
-			}
-			m.recordEvent(r, req.Model, result.RuleSet, "warned", string(result.Severity), result.MatchedText)
-			w.Header().Set("X-Guardrails-Warning", result.RuleID)
+			m.handleWarned(w, r, req.Model, result, checkDuration)
 		}
 
 		if guardrailsCheckedTotal != nil {
@@ -278,6 +233,70 @@ func (m *GuardrailsMiddleware) Handler(next http.Handler) http.Handler {
 		r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 		next.ServeHTTP(w, r)
 	})
+}
+
+// buildGuardrailMessages converts chat request messages with string content
+// into the guardrails package's Message shape, skipping non-string/empty content.
+func buildGuardrailMessages(msgs []model.Message) []guardrails.Message {
+	messages := make([]guardrails.Message, 0, len(msgs))
+	for i, msg := range msgs {
+		if contentStr, ok := msg.Content.(string); ok && contentStr != "" {
+			messages = append(messages, guardrails.Message{
+				Index:   i,
+				Role:    msg.Role,
+				Content: contentStr,
+			})
+		}
+	}
+	return messages
+}
+
+// handleBlocked logs, records metrics/an audit event, and writes the
+// guardrails-blocked error response for a blocked result.
+func (m *GuardrailsMiddleware) handleBlocked(w http.ResponseWriter, r *http.Request, modelName string, result guardrails.Result, checkDurationMs int64) {
+	m.logger.Warn(
+		"guardrails: request blocked",
+		"rule_id", result.RuleID,
+		"rule_set", result.RuleSet,
+		"severity", result.Severity,
+		"matched", result.MatchedText,
+	)
+	attrs := metric.WithAttributes(
+		attribute.String("rule_set", result.RuleSet),
+		attribute.String("severity", string(result.Severity)),
+	)
+	if guardrailsBlockedTotal != nil {
+		guardrailsBlockedTotal.Add(r.Context(), 1, attrs)
+	}
+	if guardrailsCheckDuration != nil {
+		guardrailsCheckDuration.Record(r.Context(), float64(checkDurationMs), attrs)
+	}
+	m.recordEvent(r, modelName, result.RuleSet, "blocked", string(result.Severity), result.MatchedText)
+	writeGuardrailsBlockedError(w, result)
+}
+
+// handleWarned logs, records metrics/an audit event, and sets the warning
+// header for a warned (non-blocking) result.
+func (m *GuardrailsMiddleware) handleWarned(w http.ResponseWriter, r *http.Request, modelName string, result guardrails.Result, checkDurationMs int64) {
+	m.logger.Info(
+		"guardrails: request warned",
+		"rule_id", result.RuleID,
+		"rule_set", result.RuleSet,
+		"severity", result.Severity,
+		"matched", result.MatchedText,
+	)
+	attrs := metric.WithAttributes(
+		attribute.String("rule_set", result.RuleSet),
+		attribute.String("severity", string(result.Severity)),
+	)
+	if guardrailsWarnedTotal != nil {
+		guardrailsWarnedTotal.Add(r.Context(), 1, attrs)
+	}
+	if guardrailsCheckDuration != nil {
+		guardrailsCheckDuration.Record(r.Context(), float64(checkDurationMs), attrs)
+	}
+	m.recordEvent(r, modelName, result.RuleSet, "warned", string(result.Severity), result.MatchedText)
+	w.Header().Set("X-Guardrails-Warning", result.RuleID)
 }
 
 func writeGuardrailsBlockedError(w http.ResponseWriter, result guardrails.Result) {

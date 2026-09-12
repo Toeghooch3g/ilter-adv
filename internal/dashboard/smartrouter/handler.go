@@ -175,6 +175,9 @@ func (h *Handler) HandleSmartRouterHistory(w http.ResponseWriter, r *http.Reques
 					resp.Items = append(resp.Items, item)
 				}
 			}
+			if err := rows.Err(); err != nil {
+				slog.Warn("error iterating smart router history rows", "error", err)
+			}
 		}
 	}
 

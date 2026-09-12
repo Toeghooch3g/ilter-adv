@@ -313,8 +313,8 @@ func TestAnthropicProvider_TransformStreamChunk_InvalidJSON(t *testing.T) {
 	p := NewAnthropicProvider(config.ProviderConfig{Name: "anthropic", Type: "anthropic"})
 
 	chunk, done, err := p.TransformStreamChunk([]byte(`{invalid}`))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err == nil {
+		t.Fatal("expected an error for invalid json")
 	}
 	if done {
 		t.Errorf("expected done=false")

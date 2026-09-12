@@ -15,6 +15,7 @@ import (
 //
 // Returns sql.ErrNoRows-wrapped errors from the underlying query so
 // callers can distinguish "no data" from real errors.
+// It returns (nil, nil) if no reference vectors have been configured yet.
 func (s *SQLiteStore) LoadReferenceVectors(ctx context.Context) (map[string][]float32, error) {
 	rows, err := s.queries.GetConfigSection(ctx, "reference_vector")
 	if err != nil {

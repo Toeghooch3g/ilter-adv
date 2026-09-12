@@ -313,6 +313,9 @@ func scanAuditLogEntries(rows *sql.Rows) ([]AuditLogEntry, error) {
 		n.applyTo(&e)
 		entries = append(entries, e)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate audit log rows: %w", err)
+	}
 
 	return entries, nil
 }

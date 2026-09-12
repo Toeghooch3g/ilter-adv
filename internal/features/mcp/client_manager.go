@@ -70,6 +70,7 @@ func (m *ClientManager) GetOrCreate(_ context.Context, server *ServerInfo) (Tran
 	}
 
 	// Use background context so the MCP subprocess outlives individual HTTP requests.
+	//nolint:contextcheck // intentional: client lifetime must outlive the request that triggered creation
 	if err := client.Start(context.Background()); err != nil {
 		return nil, fmt.Errorf("start client for %s: %w", server.ID, err)
 	}

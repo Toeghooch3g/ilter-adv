@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"fmt"
+	"log/slog"
 	"path"
 	"slices"
 	"strings"
@@ -180,6 +181,9 @@ func (a *Authorizer) matchGrants(subjectType, subjectID, serverID, toolName stri
 		} else {
 			hasAllow = true
 		}
+	}
+	if err := rows.Err(); err != nil {
+		slog.Warn("error iterating mcp_grant rows", "error", err)
 	}
 
 	return hasDeny, hasAllow

@@ -170,7 +170,7 @@ func postOpenAIJSON[T any](ctx context.Context, p *OpenAIProvider, path string, 
 	if err != nil {
 		return nil, fmt.Errorf("%s request failed: %w", path, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	respBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -289,7 +289,7 @@ func (p *OpenAIProvider) HealthCheck(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("health check failed with status: %d", resp.StatusCode)
@@ -365,7 +365,7 @@ func (p *OpenAIProvider) DiscoverModels(ctx context.Context) ([]catalog.ModelInf
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -386,50 +386,56 @@ func (p *OpenAIProvider) DiscoverModels(ctx context.Context) ([]catalog.ModelInf
 		if entry.ID == "" {
 			continue
 		}
-
-		catalog.ModelsMu.RLock()
-		existing, exists := catalog.Models[entry.ID]
-		catalog.ModelsMu.RUnlock()
-
-		if exists && len(existing) > 0 {
-			regInfo := existing[0]
-			regInfo.Provider = p.provType
-			if p.provType == "" {
-				regInfo.Provider = "openai"
-			}
-			regInfo.DefaultBaseURL = p.config.BaseURL
-			if p.config.Type == "opencode_zen" || p.config.Type == "opencode_go" {
-				idLower := strings.ToLower(entry.ID)
-				if strings.Contains(idLower, "free") {
-					regInfo.CostPerInputToken = 0.0
-					regInfo.CostPerOutputToken = 0.0
-					regInfo.Tier = "free"
-				}
-			}
-			models = append(models, regInfo)
-			continue
-		}
-
-		tier, costIn, costOut, maxCtx, maxOut, caps := p.discoverModelHeuristics(entry.ID)
-
-		provType := p.provType
-		if provType == "" {
-			provType = "openai"
-		}
-		models = append(models, catalog.ModelInfo{
-			ID:                 entry.ID,
-			Provider:           provType,
-			DisplayName:        entry.ID,
-			MaxContextTokens:   maxCtx,
-			MaxOutputTokens:    maxOut,
-			CostPerInputToken:  costIn,
-			CostPerOutputToken: costOut,
-			Tier:               tier,
-			Capabilities:       caps,
-			DefaultBaseURL:     p.config.BaseURL,
-		})
+		models = append(models, p.openAIModelInfoFromEntry(entry.ID))
 	}
 	return models, nil
+}
+
+// openAIModelInfoFromEntry returns the registered catalog.ModelInfo for
+// modelID if one is already known (adjusted for this provider's type, and for
+// the opencode_zen/opencode_go free-tier naming convention), or a
+// heuristically-estimated one otherwise.
+func (p *OpenAIProvider) openAIModelInfoFromEntry(modelID string) catalog.ModelInfo {
+	catalog.ModelsMu.RLock()
+	existing, exists := catalog.Models[modelID]
+	catalog.ModelsMu.RUnlock()
+
+	if exists && len(existing) > 0 {
+		regInfo := existing[0]
+		regInfo.Provider = p.provType
+		if p.provType == "" {
+			regInfo.Provider = "openai"
+		}
+		regInfo.DefaultBaseURL = p.config.BaseURL
+		if p.config.Type == "opencode_zen" || p.config.Type == "opencode_go" {
+			idLower := strings.ToLower(modelID)
+			if strings.Contains(idLower, "free") {
+				regInfo.CostPerInputToken = 0.0
+				regInfo.CostPerOutputToken = 0.0
+				regInfo.Tier = "free"
+			}
+		}
+		return regInfo
+	}
+
+	tier, costIn, costOut, maxCtx, maxOut, caps := p.discoverModelHeuristics(modelID)
+
+	provType := p.provType
+	if provType == "" {
+		provType = "openai"
+	}
+	return catalog.ModelInfo{
+		ID:                 modelID,
+		Provider:           provType,
+		DisplayName:        modelID,
+		MaxContextTokens:   maxCtx,
+		MaxOutputTokens:    maxOut,
+		CostPerInputToken:  costIn,
+		CostPerOutputToken: costOut,
+		Tier:               tier,
+		Capabilities:       caps,
+		DefaultBaseURL:     p.config.BaseURL,
+	}
 }
 
 func (p *OpenAIProvider) UpdateConfig(baseURL string, apiKey string) {

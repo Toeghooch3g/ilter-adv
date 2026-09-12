@@ -93,7 +93,10 @@ func TestNewResilientClient_GivesUpAfterMaxRetries(t *testing.T) {
 		CircuitBreaker: testCircuitBreakerCfg(),
 	})
 
-	_, err := cli.Get(srv.URL)
+	resp, err := cli.Get(srv.URL)
+	if resp != nil {
+		resp.Body.Close()
+	}
 	if err == nil {
 		t.Fatal("expected an error once retries are exhausted on a persistent 503")
 	}
@@ -122,7 +125,10 @@ func TestNewResilientClient_NoRetryWhenMaxRetriesZero(t *testing.T) {
 		CircuitBreaker: testCircuitBreakerCfg(),
 	})
 
-	_, err := cli.Get(srv.URL)
+	resp, err := cli.Get(srv.URL)
+	if resp != nil {
+		resp.Body.Close()
+	}
 	if err == nil {
 		t.Fatal("expected an error on a 500 response")
 	}

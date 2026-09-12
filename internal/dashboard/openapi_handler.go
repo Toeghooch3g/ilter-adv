@@ -123,6 +123,10 @@ func (h *OpenAPIHandler) ListSpecs(w http.ResponseWriter, _ *http.Request) {
 			"updated_at":  nullToEmpty(updatedAt),
 		})
 	}
+	if err := rows.Err(); err != nil {
+		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", "Failed to list OpenAPI specs")
+		return
+	}
 
 	model.WriteJSON(w, http.StatusOK, map[string]any{"specs": specs})
 }
@@ -453,6 +457,9 @@ func (h *OpenAPIHandler) SyncOperationsFromProvider(ctx context.Context) {
 		}
 		updatedAny = true
 	}
+	if err := rows.Err(); err != nil {
+		log.Error("error iterating enabled OpenAPI specs", "error", err)
+	}
 
 	log.Info("synced OpenAPI operations from provider", "specs", len(ids), "updated", updatedAny)
 }
@@ -467,13 +474,13 @@ func (h *OpenAPIHandler) validateSpecByID(_ context.Context, id string, forceUpd
 	cfg := &config.OpenAPISpecConfig{Name: name, SpecURL: specURL}
 	doc, err := openapi.LoadSpec(cfg)
 	if err != nil {
-		return 0, false, fmt.Errorf("Failed to load spec: %w", err)
+		return 0, false, fmt.Errorf("failed to load spec: %w", err)
 	}
 
 	loader := openapi3.NewLoader()
 	loader.IsExternalRefsAllowed = false
 	if err := doc.Validate(loader.Context); err != nil {
-		return 0, false, fmt.Errorf("Spec validation failed: %w", err)
+		return 0, false, fmt.Errorf("spec validation failed: %w", err)
 	}
 
 	discoveredPaths := []string{}

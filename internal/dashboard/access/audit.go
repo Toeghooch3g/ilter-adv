@@ -104,6 +104,10 @@ func (h *Handler) ListConfigAuditLog(w http.ResponseWriter, r *http.Request) {
 		e.PerformedAt = iltdb.FormatSQLiteTimestamp(e.PerformedAt)
 		items = append(items, e)
 	}
+	if err := rows.Err(); err != nil {
+		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", "Failed to list audit log")
+		return
+	}
 
 	model.WriteJSON(w, http.StatusOK, map[string]any{
 		"items": items,

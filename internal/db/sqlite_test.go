@@ -34,7 +34,7 @@ func setupTestStore(t *testing.T) testStore {
 		SqlitePath: dbPath,
 	})
 	if err != nil {
-		os.RemoveAll(tmpDir)
+		_ = os.RemoveAll(tmpDir)
 		require.NoError(t, err)
 	}
 	return testStore{store: store, dbPath: dbPath, tmpDir: tmpDir}
@@ -120,7 +120,7 @@ func TestMigration_CreatesTableWithAllColumns(t *testing.T) {
 	// Open a separate connection to verify schema.
 	db, err := sql.Open("sqlite", "file:"+store.dbPath+"?_pragma=journal_mode(WAL)")
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	expectedCols := []string{"complexity_score", "request_body", "response_body", "prompt_preview"}
 	for _, col := range expectedCols {

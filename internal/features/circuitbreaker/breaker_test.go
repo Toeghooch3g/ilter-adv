@@ -53,6 +53,9 @@ func TestCircuitBreaker_Flow(t *testing.T) {
 		resp, err := transport.RoundTrip(req)
 		assert.Error(t, err)
 		assert.Nil(t, resp)
+		if resp != nil {
+			resp.Body.Close()
+		}
 	}
 
 	// The 4th call should immediately return ErrOpenState without calling mockTrans
@@ -62,6 +65,9 @@ func TestCircuitBreaker_Flow(t *testing.T) {
 	assert.Equal(t, gobreaker.ErrOpenState, err)
 	assert.Nil(t, resp)
 	assert.Equal(t, currentCalls, callCount) // mockTrans was NOT called
+	if resp != nil {
+		resp.Body.Close()
+	}
 
 	// 2. Wait for Timeout to transition to Half-Open state
 	time.Sleep(60 * time.Millisecond)
@@ -73,11 +79,17 @@ func TestCircuitBreaker_Flow(t *testing.T) {
 	assert.NoError(t, err)
 	assert.NotNil(t, resp)
 	assert.Equal(t, currentCalls+1, callCount)
+	if resp != nil {
+		resp.Body.Close()
+	}
 
 	// Circuit should be Closed now. Failures shouldn't immediately open it until threshold is reached.
 	resp, err = transport.RoundTrip(req)
 	assert.NoError(t, err)
 	assert.NotNil(t, resp)
+	if resp != nil {
+		resp.Body.Close()
+	}
 }
 
 func TestCircuitBreaker_5xxStatus(t *testing.T) {
@@ -104,9 +116,15 @@ func TestCircuitBreaker_5xxStatus(t *testing.T) {
 		resp, err := transport.RoundTrip(req)
 		assert.Error(t, err)
 		assert.Nil(t, resp)
+		if resp != nil {
+			resp.Body.Close()
+		}
 	}
 
 	resp, err := transport.RoundTrip(req)
 	assert.Equal(t, gobreaker.ErrOpenState, err)
 	assert.Nil(t, resp)
+	if resp != nil {
+		resp.Body.Close()
+	}
 }

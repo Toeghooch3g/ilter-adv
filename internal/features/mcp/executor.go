@@ -55,29 +55,14 @@ func (ex *Executor) ExecuteTool(ctx context.Context, p *ExecuteToolParams) *Call
 	}
 
 	// 2. Check access (with resolved server and bare tool name).
-	if ex.authorizer != nil {
-		result := ex.authorizer.CheckAccess(p.KeyPrefix, nil, p.APIKeyID, server.ID, tool.Name)
-		if !result.Allowed {
-			ex.logAudit(p, tool.Name, server.ID, "tools/call", start, 403, false, "access denied")
-			return errorResult(p.ToolName, "Access denied by MCP access rules")
-		}
+	if blocked := ex.checkToolAccess(ctx, p, tool, server, start); blocked != nil {
+		return blocked
 	}
 
 	// 3. Security checks (destructive, confirmation, rate limit).
 	tc := ex.getToolConfig(p.ToolName)
-	if tc != nil {
-		if tc.Destructive {
-			ex.logAudit(p, tool.Name, server.ID, "tools/call", start, 403, false, "destructive tool blocked")
-			return errorResult(p.ToolName, "Tool call blocked: destructive tool not allowed")
-		}
-		if tc.RequiresConfirmation {
-			ex.logAudit(p, tool.Name, server.ID, "tools/call", start, 403, false, "tool requires confirmation")
-			return errorResult(p.ToolName, "Tool call blocked: tool requires manual confirmation")
-		}
-		if ex.isRateLimited(p.ToolName, tc.RateLimitRPM) {
-			ex.logAudit(p, tool.Name, server.ID, "tools/call", start, 403, false, "rate limit exceeded")
-			return errorResult(p.ToolName, "Tool call blocked: rate limit exceeded")
-		}
+	if blocked := ex.checkToolPolicy(ctx, p, tool, server, tc, start); blocked != nil {
+		return blocked
 	}
 
 	// 4. Build the JSON-RPC request.
@@ -97,13 +82,11 @@ func (ex *Executor) ExecuteTool(ctx context.Context, p *ExecuteToolParams) *Call
 	// 5. Obtain a transport client.
 	client, err := ex.clients.GetOrCreate(ctx, server)
 	if err != nil {
-		ex.logAudit(p, tool.Name, server.ID, "tools/call", start, 500, false, err.Error())
+		ex.logAudit(ctx, p, tool.Name, server.ID, "tools/call", start, 500, false, err.Error())
 		return errorResult(p.ToolName, fmt.Sprintf("Failed to connect to server %q: %v", server.Config.Name, err))
 	}
 
 	// 6. Execute with circuit breaker + retry.
-	var resp *JSONRPCResponse
-	cb := getBreaker(server.ID)
 	timeout := parseDurationOrDefault(server.Config.Timeout, 30*time.Second)
 	if tc != nil && tc.TimeoutMs > 0 {
 		timeout = time.Duration(tc.TimeoutMs) * time.Millisecond
@@ -117,20 +100,91 @@ func (ex *Executor) ExecuteTool(ctx context.Context, p *ExecuteToolParams) *Call
 	callCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
+	resp, err := ex.callWithRetry(callCtx, client, req, tool.Name, server.ID, maxRetries)
+	if err != nil {
+		ex.logAudit(ctx, p, tool.Name, server.ID, "tools/call", start, 500, false, err.Error())
+		return errorResult(p.ToolName, fmt.Sprintf("Tool call failed after %d attempt(s): %v", maxRetries, err))
+	}
+
+	if resp.Error != nil {
+		ex.logAudit(ctx, p, tool.Name, server.ID, "tools/call", start, 200, false, resp.Error.Message)
+		return &CallToolResult{
+			IsError: true,
+			Content: []ToolContent{{Type: "text", Text: resp.Error.Message}},
+		}
+	}
+
+	ex.logAudit(ctx, p, tool.Name, server.ID, "tools/call", start, 200, true, "")
+
+	return parseToolResult(resp.Result)
+}
+
+// checkToolAccess applies the Authorizer's allow/deny decision for p against
+// the resolved tool and server, logging an audit entry and returning a
+// blocked *CallToolResult if access is denied (nil if the call may
+// proceed). Extracted from ExecuteTool to keep its cognitive complexity
+// down; behavior is unchanged.
+func (ex *Executor) checkToolAccess(ctx context.Context, p *ExecuteToolParams, tool *ToolDefinition, server *ServerInfo, start time.Time) *CallToolResult {
+	if ex.authorizer == nil {
+		return nil
+	}
+	result := ex.authorizer.CheckAccess(p.KeyPrefix, nil, p.APIKeyID, server.ID, tool.Name)
+	if !result.Allowed {
+		ex.logAudit(ctx, p, tool.Name, server.ID, "tools/call", start, 403, false, "access denied")
+		return errorResult(p.ToolName, "Access denied by MCP access rules")
+	}
+	return nil
+}
+
+// checkToolPolicy applies the per-tool security policy (destructive,
+// requires-confirmation, rate limit) carried by tc, logging an audit entry
+// and returning a blocked *CallToolResult if the call is disallowed (nil
+// if it may proceed). Extracted from ExecuteTool to keep its cognitive
+// complexity down; behavior is unchanged.
+func (ex *Executor) checkToolPolicy(ctx context.Context, p *ExecuteToolParams, tool *ToolDefinition, server *ServerInfo, tc *ToolConfig, start time.Time) *CallToolResult {
+	if tc == nil {
+		return nil
+	}
+	if tc.Destructive {
+		ex.logAudit(ctx, p, tool.Name, server.ID, "tools/call", start, 403, false, "destructive tool blocked")
+		return errorResult(p.ToolName, "Tool call blocked: destructive tool not allowed")
+	}
+	if tc.RequiresConfirmation {
+		ex.logAudit(ctx, p, tool.Name, server.ID, "tools/call", start, 403, false, "tool requires confirmation")
+		return errorResult(p.ToolName, "Tool call blocked: tool requires manual confirmation")
+	}
+	if ex.isRateLimited(p.ToolName, tc.RateLimitRPM) {
+		ex.logAudit(ctx, p, tool.Name, server.ID, "tools/call", start, 403, false, "rate limit exceeded")
+		return errorResult(p.ToolName, "Tool call blocked: rate limit exceeded")
+	}
+	return nil
+}
+
+// callWithRetry executes req against client through serverID's circuit
+// breaker, retrying with exponential backoff until maxRetries attempts are
+// exhausted or callCtx is done. Extracted from ExecuteTool to keep its
+// cognitive complexity down; behavior is unchanged, including returning the
+// last attempt's error (rather than a context error) when callCtx ends the
+// loop early — matching the original's goto-done fallthrough.
+func (ex *Executor) callWithRetry(callCtx context.Context, client TransportClient, req *JSONRPCRequest, toolName, serverID string, maxRetries int) (*JSONRPCResponse, error) {
+	cb := getBreaker(serverID)
+
 	b := backoff.NewExponentialBackOff()
 	b.InitialInterval = 100 * time.Millisecond
 	b.MaxInterval = 3 * time.Second
 	// no MaxElapsedTime (v7 removed it, default 0 is correct — callCtx handles deadline)
 
+	var resp *JSONRPCResponse
+	var err error
+
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		if attempt > 0 {
 			d := b.NextBackOff()
 			mcpLog.Debug("retrying tool call",
-				"tool", tool.Name, "server", server.ID, "attempt", attempt+1, "backoff_ms", d.Milliseconds())
+				"tool", toolName, "server", serverID, "attempt", attempt+1, "backoff_ms", d.Milliseconds())
 			select {
 			case <-callCtx.Done():
-				resp = nil
-				goto done
+				return nil, err
 			case <-time.After(d):
 			}
 		}
@@ -148,26 +202,10 @@ func (ex *Executor) ExecuteTool(ctx context.Context, p *ExecuteToolParams) *Call
 		break
 	}
 
-done:
-	if err != nil {
-		ex.logAudit(p, tool.Name, server.ID, "tools/call", start, 500, false, err.Error())
-		return errorResult(p.ToolName, fmt.Sprintf("Tool call failed after %d attempt(s): %v", maxRetries, err))
-	}
-
-	if resp.Error != nil {
-		ex.logAudit(p, tool.Name, server.ID, "tools/call", start, 200, false, resp.Error.Message)
-		return &CallToolResult{
-			IsError: true,
-			Content: []ToolContent{{Type: "text", Text: resp.Error.Message}},
-		}
-	}
-
-	ex.logAudit(p, tool.Name, server.ID, "tools/call", start, 200, true, "")
-
-	return parseToolResult(resp.Result)
+	return resp, err
 }
 
-func (ex *Executor) logAudit(p *ExecuteToolParams, toolName, serverID, method string, start time.Time, statusCode int, success bool, errMsg string) {
+func (ex *Executor) logAudit(ctx context.Context, p *ExecuteToolParams, toolName, serverID, method string, start time.Time, statusCode int, success bool, errMsg string) {
 	if ex.auditLog == nil {
 		return
 	}
@@ -190,7 +228,7 @@ func (ex *Executor) logAudit(p *ExecuteToolParams, toolName, serverID, method st
 		ClientIP:   p.ClientIP,
 	})
 	if MCPToolCallsTotal != nil {
-		MCPToolCallsTotal.Add(context.Background(), 1)
+		MCPToolCallsTotal.Add(ctx, 1)
 	}
 }
 

@@ -25,9 +25,34 @@ func RunDemoSeed(db *sql.DB) error {
 		return fmt.Errorf("apply migrations: %w", err)
 	}
 
+	//nolint:gosec // G404: fixed seed (42) for reproducible demo/mock data, not security-relevant
 	rng := rand.New(rand.NewSource(42))
 	today := time.Now().UTC().Truncate(24 * time.Hour)
 
+	if err := seedCoreEntities(db); err != nil {
+		return err
+	}
+	if err := seedConfigAndCatalog(db); err != nil {
+		return err
+	}
+	if err := seedDashboardDemoData(db, rng, today); err != nil {
+		return err
+	}
+
+	// ── Smart router strategies ──
+	if err := seedSmartRouterStrategies(db); err != nil {
+		return fmt.Errorf("smart router strategies: %w", err)
+	}
+	fmt.Println("  ✓ smart router strategies")
+
+	fmt.Println("\nDemo seed inserted successfully!")
+	fmt.Println("Use `Authorization: Bearer test` for all proxy API calls.")
+	return nil
+}
+
+// seedCoreEntities seeds the "test" API key, groups, users, and their
+// memberships — the base entities the rest of the demo data references.
+func seedCoreEntities(db *sql.DB) error {
 	// ── Single API key: "test" (plaintext) ──
 	testHash := fmt.Sprintf("%x", sha256.Sum256([]byte("test")))
 	_, err := db.Exec(
@@ -68,6 +93,12 @@ func RunDemoSeed(db *sql.DB) error {
 	}
 	fmt.Println("  ✓ user_group_memberships")
 
+	return nil
+}
+
+// seedConfigAndCatalog seeds prompt templates, jobs, model/provider catalog
+// data, MCP servers/grants, guardrail rules, feature flags, and PII patterns.
+func seedConfigAndCatalog(db *sql.DB) error {
 	// ── Prompt templates ──
 	if err := seedPromptTemplates(db); err != nil {
 		return fmt.Errorf("prompt_templates: %w", err)
@@ -81,17 +112,8 @@ func RunDemoSeed(db *sql.DB) error {
 	fmt.Println("  ✓ jobs")
 
 	// ── Model enable/disable configs ──
-	for _, m := range []string{
-		"big-pickle", "deepseek-v4-flash-free",
-		"hy3-free", "mimo-v2.5-free",
-		"nemotron-3-ultra-free", "north-mini-code-free",
-	} {
-		if _, err := db.Exec(
-			`INSERT INTO model_configs (name, active) VALUES (?, 1)
-			 ON CONFLICT(name) DO NOTHING`, m,
-		); err != nil {
-			return fmt.Errorf("model_config %s: %w", m, err)
-		}
+	if err := seedDefaultModelConfigs(db); err != nil {
+		return err
 	}
 	fmt.Println("  ✓ model_configs")
 
@@ -138,6 +160,30 @@ func RunDemoSeed(db *sql.DB) error {
 	}
 	fmt.Println("  ✓ pii_patterns")
 
+	return nil
+}
+
+// seedDefaultModelConfigs enables a fixed set of free-tier models by default
+// so the demo dashboard has usable models out of the box.
+func seedDefaultModelConfigs(db *sql.DB) error {
+	for _, m := range []string{
+		"big-pickle", "deepseek-v4-flash-free",
+		"hy3-free", "mimo-v2.5-free",
+		"nemotron-3-ultra-free", "north-mini-code-free",
+	} {
+		if _, err := db.Exec(
+			`INSERT INTO model_configs (name, active) VALUES (?, 1)
+			 ON CONFLICT(name) DO NOTHING`, m,
+		); err != nil {
+			return fmt.Errorf("model_config %s: %w", m, err)
+		}
+	}
+	return nil
+}
+
+// seedDashboardDemoData seeds the time-series demo data (audit log, usage,
+// loop/PII/guardrail events, MCP audit log) that populates the dashboard.
+func seedDashboardDemoData(db *sql.DB, rng *rand.Rand, today time.Time) error {
 	// ── Dashboard demo data ──
 	if err := clearAndSeed(db, "audit_log", func() error {
 		return seedAuditLog(db, rng, []string{"test"}, today)
@@ -179,14 +225,6 @@ func RunDemoSeed(db *sql.DB) error {
 	}
 	fmt.Println("  ✓ mcp_audit_log")
 
-	// ── Smart router strategies ──
-	if err := seedSmartRouterStrategies(db); err != nil {
-		return fmt.Errorf("smart router strategies: %w", err)
-	}
-	fmt.Println("  ✓ smart router strategies")
-
-	fmt.Println("\nDemo seed inserted successfully!")
-	fmt.Println("Use `Authorization: Bearer test` for all proxy API calls.")
 	return nil
 }
 
@@ -199,6 +237,7 @@ func clearAndSeed(db *sql.DB, table string, seedFn func() error) error {
 	}
 	defer tx.Rollback() //nolint:errcheck
 
+	//nolint:gosec // G202: table is always one of this file's hardcoded literals (see call sites above), never user input
 	if _, err := tx.Exec("DELETE FROM " + table); err != nil {
 		return fmt.Errorf("delete %s: %w", table, err)
 	}

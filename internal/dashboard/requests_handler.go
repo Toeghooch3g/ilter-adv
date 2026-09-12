@@ -264,6 +264,11 @@ func (h *RequestsHandler) HandleListRequests(w http.ResponseWriter, r *http.Requ
 
 		items = append(items, item)
 	}
+	if err := rows.Err(); err != nil {
+		slog.Error("error iterating requests list", "error", err)
+		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
 
 	resp := Page[RequestSummary]{
 		Items: items,

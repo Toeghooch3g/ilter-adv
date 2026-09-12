@@ -49,7 +49,7 @@ func seedAuditLog(db *sql.DB, rng *rand.Rand, keyIDs []string, _ time.Time) erro
 	if err != nil {
 		return err
 	}
-	defer stmt.Close()
+	defer func() { _ = stmt.Close() }()
 
 	providerOf := map[string]string{
 		"big-pickle":             "opencode_zen",
@@ -108,7 +108,7 @@ func seedUsageDaily(db *sql.DB, rng *rand.Rand, keyIDs []string, today time.Time
 	if err != nil {
 		return err
 	}
-	defer stmt.Close()
+	defer func() { _ = stmt.Close() }()
 
 	for day := range 30 {
 		date := today.Add(-time.Duration(day) * 24 * time.Hour).Format("2006-01-02")
@@ -148,7 +148,7 @@ func seedLoopEvents(db *sql.DB, rng *rand.Rand, keyIDs []string, _ time.Time) er
 	if err != nil {
 		return err
 	}
-	defer stmt.Close()
+	defer func() { _ = stmt.Close() }()
 
 	n := 20 + rng.Intn(11)
 	for range n {
@@ -176,6 +176,18 @@ func seedLoopEvents(db *sql.DB, rng *rand.Rand, keyIDs []string, _ time.Time) er
 	return nil
 }
 
+// digitByte converts a single decimal digit (0-9) to its ASCII byte,
+// clamping defensively since gosec (G115) cannot otherwise prove the int
+// is in range for this int->byte narrowing.
+func digitByte(n int) byte {
+	if n < 0 {
+		n = 0
+	} else if n > 9 {
+		n = 9
+	}
+	return byte(n) + '0' //nolint:gosec // bounds-checked above
+}
+
 func randomPIIValue(rng *rand.Rand, piiType string) string {
 	switch piiType {
 	case "EMAIL":
@@ -184,11 +196,11 @@ func randomPIIValue(rng *rand.Rand, piiType string) string {
 		return fmt.Sprintf("%s@%s", user, domains[rng.Intn(len(domains))])
 	case "TCKN":
 		d := make([]byte, 11)
-		d[0] = byte(1+rng.Intn(9)) + '0'
+		d[0] = digitByte(1 + rng.Intn(9))
 		for i := 1; i < 10; i++ {
-			d[i] = byte(rng.Intn(10)) + '0'
+			d[i] = digitByte(rng.Intn(10))
 		}
-		d[10] = byte(rng.Intn(5)*2) + '0'
+		d[10] = digitByte(rng.Intn(5) * 2)
 		return string(d)
 	case "SSN":
 		return fmt.Sprintf("%03d-%02d-%04d", rng.Intn(900), rng.Intn(100), rng.Intn(10000))
@@ -219,7 +231,7 @@ func seedPIIEvents(db *sql.DB, rng *rand.Rand, keyIDs []string, _ time.Time) err
 	if err != nil {
 		return err
 	}
-	defer stmt.Close()
+	defer func() { _ = stmt.Close() }()
 
 	n := 30 + rng.Intn(21)
 	for i := range n {
@@ -272,7 +284,7 @@ func seedGuardrailEvents(db *sql.DB, rng *rand.Rand, keyIDs []string, _ time.Tim
 	if err != nil {
 		return err
 	}
-	defer stmt.Close()
+	defer func() { _ = stmt.Close() }()
 
 	n := 40 + rng.Intn(11)
 	for i := range n {
@@ -291,54 +303,7 @@ func seedGuardrailEvents(db *sql.DB, rng *rand.Rand, keyIDs []string, _ time.Tim
 		}
 		provider := providerOf[model]
 
-		var detail string
-		switch evt.guardrailType {
-		case "pii_block":
-			piiType := piiValues[rng.Intn(len(piiValues))]
-			detail = fmt.Sprintf(evt.detailFmt, randomPIIValue(rng, piiType))
-		case "budget_block":
-			budget := 20.0 + float64(rng.Intn(480))
-			pct := 70.0 + float64(rng.Intn(30))
-			switch evt.actionTaken {
-			case "blocked":
-				detail = fmt.Sprintf(evt.detailFmt, budget, fmt.Sprintf("key-%s", keyID))
-			case "flagged":
-				detail = fmt.Sprintf(evt.detailFmt, fmt.Sprintf("key-%s", keyID), pct)
-			default:
-				detail = fmt.Sprintf(evt.detailFmt, fmt.Sprintf("key-%s", keyID), 5.0+float64(rng.Intn(45)))
-			}
-		case "rate_limit":
-			rpm := 50 + rng.Intn(950)
-			detail = fmt.Sprintf(evt.detailFmt, rpm, fmt.Sprintf("key-%s", keyID))
-			switch evt.actionTaken {
-			case "throttled":
-				detail = fmt.Sprintf(evt.detailFmt, fmt.Sprintf("key-%s", keyID), rng.Intn(rpm), rpm)
-			case "flagged":
-				pct := 60 + rng.Intn(39)
-				detail = fmt.Sprintf(evt.detailFmt, fmt.Sprintf("key-%s", keyID), pct)
-			}
-		case "loop_detection":
-			repeats := 5 + rng.Intn(45)
-			window := 30 + rng.Intn(270)
-			switch evt.actionTaken {
-			case "blocked":
-				detail = fmt.Sprintf(evt.detailFmt, repeats, window)
-			case "alerted":
-				detail = fmt.Sprintf(evt.detailFmt, fmt.Sprintf("key-%s", keyID), repeats)
-			default:
-				sessionID := fmt.Sprintf("sess_%x", rng.Int63())
-				detail = fmt.Sprintf(evt.detailFmt, sessionID)
-			}
-		case "content_policy":
-			detail = fmt.Sprintf(evt.detailFmt, contentFlags[rng.Intn(len(contentFlags))])
-		case "model_access":
-			unauthModel := models[rng.Intn(len(models))]
-			if evt.actionTaken == "blocked" {
-				detail = fmt.Sprintf(evt.detailFmt, unauthModel, "sk_test_"+fmt.Sprintf("key-%s", keyID))
-			} else {
-				detail = fmt.Sprintf(evt.detailFmt, unauthModel, fmt.Sprintf("key-%s", keyID))
-			}
-		}
+		detail := guardrailEventDetail(evt, rng, keyID, piiValues, contentFlags)
 
 		requestID := 10000 + rng.Intn(90000)
 
@@ -386,7 +351,7 @@ func seedMCPAuditLog(db *sql.DB, rng *rand.Rand, keyIDs []string, _ time.Time) e
 	if err != nil {
 		return err
 	}
-	defer stmt.Close()
+	defer func() { _ = stmt.Close() }()
 
 	n := 50 + rng.Intn(51)
 	for i := range n {
