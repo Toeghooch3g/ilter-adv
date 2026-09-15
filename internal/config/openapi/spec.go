@@ -26,8 +26,8 @@ var openapiLog = slog.With("component", "openapi")
 // Supports OpenAPI 3.0, 3.1 (via kin-openapi native loader) and Swagger 2.0
 // (via openapi2conv.ToV3 conversion). Returns a resolved *openapi3.T with all
 // $ref references resolved inline.
-func LoadSpec(cfg *config.OpenAPISpecConfig) (*openapi3.T, error) {
-	raw, err := readSpecRaw(cfg.SpecURL)
+func LoadSpec(ctx context.Context, cfg *config.OpenAPISpecConfig) (*openapi3.T, error) {
+	raw, err := readSpecRaw(ctx, cfg.SpecURL)
 	if err != nil {
 		return nil, fmt.Errorf("openapi: reading spec %q: %w", cfg.Name, err)
 	}
@@ -85,35 +85,42 @@ func LoadSpec(cfg *config.OpenAPISpecConfig) (*openapi3.T, error) {
 }
 
 // readSpecRaw reads raw spec bytes from specURL which may be an http(s) URL
-// or a local file path. Uses a 30s HTTP client timeout for URLs.
-func readSpecRaw(specURL string) ([]byte, error) {
+// or a local file path.
+func readSpecRaw(ctx context.Context, specURL string) ([]byte, error) {
 	if specURL == "" {
 		return nil, fmt.Errorf("spec_url is empty")
 	}
-
 	if strings.HasPrefix(specURL, "http://") || strings.HasPrefix(specURL, "https://") {
-		client := &http.Client{Timeout: 30 * time.Second}
-		req, err := http.NewRequestWithContext(context.Background(), "GET", specURL, nil)
-		if err != nil {
-			return nil, fmt.Errorf("creating request for %q: %w", specURL, err)
-		}
-		resp, err := client.Do(req)
-		if err != nil {
-			return nil, fmt.Errorf("fetching URL %q: %w", specURL, err)
-		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("fetching URL %q: unexpected HTTP status %d", specURL, resp.StatusCode)
-		}
-		raw, err := io.ReadAll(resp.Body)
-		if err != nil {
-			return nil, fmt.Errorf("reading response body from %q: %w", specURL, err)
-		}
-		return raw, nil
+		return readSpecFromURL(ctx, specURL)
 	}
+	return readSpecFromFile(specURL)
+}
 
-	// Local file
+// readSpecFromURL fetches spec bytes over HTTP(S), with a 30s client timeout.
+func readSpecFromURL(ctx context.Context, specURL string) ([]byte, error) {
+	client := &http.Client{Timeout: 30 * time.Second}
+	req, err := http.NewRequestWithContext(ctx, "GET", specURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("creating request for %q: %w", specURL, err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("fetching URL %q: %w", specURL, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("fetching URL %q: unexpected HTTP status %d", specURL, resp.StatusCode)
+	}
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("reading response body from %q: %w", specURL, err)
+	}
+	return raw, nil
+}
+
+// readSpecFromFile reads spec bytes from a local file path.
+func readSpecFromFile(specURL string) ([]byte, error) {
 	info, err := os.Stat(specURL)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -174,6 +181,21 @@ func detectBaseURL(doc *openapi3.T) {
 	doc.Servers = openapi3.Servers{}
 }
 
+// countPathOperations counts the HTTP operations item defines.
+func countPathOperations(item *openapi3.PathItem) int {
+	ops := []*openapi3.Operation{
+		item.Get, item.Put, item.Post, item.Delete,
+		item.Options, item.Head, item.Patch, item.Trace,
+	}
+	n := 0
+	for _, op := range ops {
+		if op != nil {
+			n++
+		}
+	}
+	return n
+}
+
 // countOperations returns the total number of HTTP operations in the spec.
 func countOperations(doc *openapi3.T) int {
 	if doc.Paths == nil {
@@ -181,30 +203,7 @@ func countOperations(doc *openapi3.T) int {
 	}
 	n := 0
 	for _, item := range doc.Paths.Map() {
-		if item.Get != nil {
-			n++
-		}
-		if item.Put != nil {
-			n++
-		}
-		if item.Post != nil {
-			n++
-		}
-		if item.Delete != nil {
-			n++
-		}
-		if item.Options != nil {
-			n++
-		}
-		if item.Head != nil {
-			n++
-		}
-		if item.Patch != nil {
-			n++
-		}
-		if item.Trace != nil {
-			n++
-		}
+		n += countPathOperations(item)
 	}
 	return n
 }

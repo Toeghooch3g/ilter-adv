@@ -8,18 +8,15 @@ import (
 	"github.com/ilter-ai/ilter/internal/features/mcp/protocol"
 )
 
-func newTestHub(servers map[string]*ServerInfo) (*Hub, *SessionManager) {
-	reg := &Registry{servers: servers}
-	if reg.servers == nil {
-		reg.servers = make(map[string]*ServerInfo)
-	}
+func newTestHub() (*Hub, *SessionManager) {
+	reg := &Registry{servers: make(map[string]*ServerInfo)}
 	auth := NewAuthorizer(nil, nil, "deny")
 	hub := NewHub(reg, auth, nil, nil, &config.MCPConfig{})
 	return hub, NewSessionManager()
 }
 
 func TestHub_Dispatch_ServerDiscover_NoSessionRequired(t *testing.T) {
-	hub, sm := newTestHub(nil)
+	hub, sm := newTestHub()
 	session := sm.Create("", "")
 	defer sm.Delete(session.ID)
 
@@ -50,7 +47,7 @@ func TestHub_Dispatch_ServerDiscover_NoSessionRequired(t *testing.T) {
 // client requesting one of these gets pinned to exactly that version.
 func TestHub_Dispatch_Initialize_PinsEachVersion(t *testing.T) {
 	for _, id := range []protocol.ID{protocol.V20241105, protocol.V20250326} {
-		hub, sm := newTestHub(nil)
+		hub, sm := newTestHub()
 		session := sm.Create("", "")
 
 		params, _ := json.Marshal(InitializeParams{ProtocolVersion: string(id)})
@@ -88,7 +85,7 @@ func TestHub_Dispatch_Initialize_PinsEachVersion(t *testing.T) {
 // confused or a version behind, ilter degrades to the newest version that
 // DOES define `initialize` (2025-03-26).
 func TestHub_Dispatch_Initialize_2026RequestGracefullyDegrades(t *testing.T) {
-	hub, sm := newTestHub(nil)
+	hub, sm := newTestHub()
 	session := sm.Create("", "")
 	defer sm.Delete(session.ID)
 
@@ -108,7 +105,7 @@ func TestHub_Dispatch_Initialize_2026RequestGracefullyDegrades(t *testing.T) {
 }
 
 func TestHub_Dispatch_Initialize_UnknownVersionFallsBackToNewestThatSupportsIt(t *testing.T) {
-	hub, sm := newTestHub(nil)
+	hub, sm := newTestHub()
 	session := sm.Create("", "")
 	defer sm.Delete(session.ID)
 
@@ -131,7 +128,7 @@ func TestHub_Dispatch_Initialize_UnknownVersionFallsBackToNewestThatSupportsIt(t
 }
 
 func TestHub_Dispatch_ToolsCall_NotInitialized(t *testing.T) {
-	hub, sm := newTestHub(nil)
+	hub, sm := newTestHub()
 	session := sm.Create("", "")
 	defer sm.Delete(session.ID)
 
@@ -159,7 +156,7 @@ func TestHub_Dispatch_ToolsList_CacheableResultOnlyFor2026(t *testing.T) {
 		{protocol.V20250326, false},
 		{protocol.V20260728, true},
 	} {
-		hub, sm := newTestHub(nil)
+		hub, sm := newTestHub()
 		session := sm.Create("", "")
 		session.ProtocolVersion = tc.version
 
@@ -185,7 +182,7 @@ func TestHub_Dispatch_ToolsList_CacheableResultOnlyFor2026(t *testing.T) {
 }
 
 func TestHub_Dispatch_MethodNotSupportedForVersion(t *testing.T) {
-	hub, sm := newTestHub(nil)
+	hub, sm := newTestHub()
 	session := sm.Create("", "")
 	session.ProtocolVersion = protocol.V20260728 // ping was removed in 2026-07-28
 	defer sm.Delete(session.ID)
@@ -202,7 +199,7 @@ func TestHub_Dispatch_MethodNotSupportedForVersion(t *testing.T) {
 
 func TestHub_Dispatch_MethodSupportedForOlderVersions(t *testing.T) {
 	for _, id := range []protocol.ID{protocol.V20241105, protocol.V20250326} {
-		hub, sm := newTestHub(nil)
+		hub, sm := newTestHub()
 		session := sm.Create("", "")
 		session.ProtocolVersion = id
 

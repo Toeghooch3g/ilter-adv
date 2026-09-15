@@ -125,6 +125,50 @@ func (lb *LoadBalancer) NextRoute(modelName string, preference string) (Route, e
 // Active (available) routes are prioritized; candidates in cooldown are placed at the tail.
 // When FallbackConfig.ModelDowngrade is non-none, downgrade model candidates are appended
 // after the primary model's candidates so FallbackExecutor can try them on exhaustion.
+// resolveFallbackConfig returns the effective fallback config, preferring
+// the live cache snapshot (which includes runtime_config overrides) over
+// the static boot config.
+func (lb *LoadBalancer) resolveFallbackConfig() config.FallbackConfig {
+	fb := lb.cfg.Fallback
+	if lb.cache != nil {
+		if snap := lb.cache.Get(); snap != nil {
+			fb = snap.Fallback()
+		}
+	}
+	return fb
+}
+
+// buildDowngradeCandidates builds fallback candidates for every resolved
+// downgrade model (skipping skipModel, if set), appending each model's
+// isDowngrade=true candidates.
+func (lb *LoadBalancer) buildDowngradeCandidates(ctx context.Context, downgradeModels []string, skipModel, preference string, cooldownStore cooldown.Store) []cooldown.Candidate {
+	var candidates []cooldown.Candidate
+	for _, dm := range downgradeModels {
+		if skipModel != "" && dm == skipModel {
+			continue
+		}
+		if dRoutes, ok := lb.routes[dm]; ok && len(dRoutes) > 0 {
+			candidates = append(candidates, lb.buildCandidates(ctx, dRoutes, dm, preference, true, cooldownStore)...)
+		}
+	}
+	return candidates
+}
+
+// selectDowngradeOnlyCandidates handles SelectCandidates when modelName has
+// no registered routes at all: it tries the configured downgrade fallback
+// before giving up.
+func (lb *LoadBalancer) selectDowngradeOnlyCandidates(ctx context.Context, modelName string, fb config.FallbackConfig, preference string, cooldownStore cooldown.Store) ([]cooldown.Candidate, error) {
+	if !fb.Enabled || fb.ModelDowngrade == "" || fb.ModelDowngrade == "none" {
+		return nil, fmt.Errorf("no providers configured for model: %s", modelName)
+	}
+	downgradeModels := lb.resolveDowngradeModels(modelName, fb)
+	candidates := lb.buildDowngradeCandidates(ctx, downgradeModels, "", preference, cooldownStore)
+	if len(candidates) > 0 {
+		return candidates, nil
+	}
+	return nil, fmt.Errorf("no providers configured for model: %s", modelName)
+}
+
 func (lb *LoadBalancer) SelectCandidates(ctx context.Context, modelName string, preference string, cooldownStore cooldown.Store) ([]cooldown.Candidate, error) {
 	lb.mu.Lock()
 	defer lb.mu.Unlock()
@@ -136,32 +180,12 @@ func (lb *LoadBalancer) SelectCandidates(ctx context.Context, modelName string, 
 	routes, ok := lb.routes[modelName]
 	hasPrimaryRoutes := ok && len(routes) > 0
 
-	// Read fallback config from cache (includes runtime_config overrides).
-	fb := lb.cfg.Fallback
-	if lb.cache != nil {
-		if snap := lb.cache.Get(); snap != nil {
-			fb = snap.Fallback()
-		}
-	}
+	fb := lb.resolveFallbackConfig()
 
 	// Model not in registry — try downgrade fallback before erroring.
 	// Uses the same dashboard-configured algorithm (cheapest/specific/none).
 	if !hasPrimaryRoutes {
-		if !fb.Enabled || fb.ModelDowngrade == "" || fb.ModelDowngrade == "none" {
-			return nil, fmt.Errorf("no providers configured for model: %s", modelName)
-		}
-		downgradeModels := lb.resolveDowngradeModels(modelName, fb)
-		var candidates []cooldown.Candidate
-		for _, dm := range downgradeModels {
-			if dRoutes, ok := lb.routes[dm]; ok && len(dRoutes) > 0 {
-				extra := lb.buildCandidates(ctx, dRoutes, dm, preference, true, cooldownStore)
-				candidates = append(candidates, extra...)
-			}
-		}
-		if len(candidates) > 0 {
-			return candidates, nil
-		}
-		return nil, fmt.Errorf("no providers configured for model: %s", modelName)
+		return lb.selectDowngradeOnlyCandidates(ctx, modelName, fb, preference, cooldownStore)
 	}
 
 	candidates := lb.buildCandidates(ctx, routes, modelName, preference, false, cooldownStore)
@@ -169,18 +193,43 @@ func (lb *LoadBalancer) SelectCandidates(ctx context.Context, modelName string, 
 	// Append ModelDowngrade candidates when the fallback config requests it.
 	if fb.Enabled && fb.ModelDowngrade != "" && fb.ModelDowngrade != "none" {
 		downgradeModels := lb.resolveDowngradeModels(modelName, fb)
-		for _, dm := range downgradeModels {
-			if dm == modelName {
-				continue
-			}
-			if dRoutes, ok := lb.routes[dm]; ok && len(dRoutes) > 0 {
-				extra := lb.buildCandidates(ctx, dRoutes, dm, preference, true, cooldownStore)
-				candidates = append(candidates, extra...)
-			}
-		}
+		candidates = append(candidates, lb.buildDowngradeCandidates(ctx, downgradeModels, modelName, preference, cooldownStore)...)
 	}
 
 	return candidates, nil
+}
+
+// candidatesForRoute builds one cooldown.Candidate per API key configured
+// for r's provider (or a single default-keyed candidate when it exposes
+// none), splitting them into ready vs. in-cooldown buckets.
+func candidatesForRoute(ctx context.Context, r Route, isDowngrade bool, cooldownStore cooldown.Store) (ready, inCooldown []cooldown.Candidate) {
+	var keys []string
+	if kp, ok := r.Provider.(interface{ APIKeys() []string }); ok {
+		keys = kp.APIKeys()
+	}
+	if len(keys) == 0 {
+		keys = []string{""}
+	}
+
+	for i, k := range keys {
+		keyID := "default"
+		if len(keys) > 1 {
+			keyID = fmt.Sprintf("key_%d", i+1) // 1-indexed, only when multi-key
+		}
+		cand := cooldown.Candidate{
+			Provider:    r.Provider.Name(),
+			Model:       r.Model.Name,
+			APIKey:      strings.TrimSpace(k),
+			KeyID:       keyID,
+			IsDowngrade: isDowngrade,
+		}
+		if cooldownStore != nil && cooldownStore.InCooldown(ctx, cand) {
+			inCooldown = append(inCooldown, cand)
+		} else {
+			ready = append(ready, cand)
+		}
+	}
+	return ready, inCooldown
 }
 
 // buildCandidates creates candidate entries from routes, optionally marking them as IsDowngrade.
@@ -200,32 +249,9 @@ func (lb *LoadBalancer) buildCandidates(ctx context.Context, routes []Route, mod
 	var inCooldown []cooldown.Candidate
 
 	for _, r := range avail {
-		var keys []string
-		if kp, ok := r.Provider.(interface{ APIKeys() []string }); ok {
-			keys = kp.APIKeys()
-		}
-		if len(keys) == 0 {
-			keys = []string{""}
-		}
-
-		for i, k := range keys {
-			keyID := "default"
-			if len(keys) > 1 {
-				keyID = fmt.Sprintf("key_%d", i+1) // 1-indexed, only when multi-key
-			}
-			cand := cooldown.Candidate{
-				Provider:    r.Provider.Name(),
-				Model:       r.Model.Name,
-				APIKey:      strings.TrimSpace(k),
-				KeyID:       keyID,
-				IsDowngrade: isDowngrade,
-			}
-			if cooldownStore != nil && cooldownStore.InCooldown(ctx, cand) {
-				inCooldown = append(inCooldown, cand)
-			} else {
-				candidates = append(candidates, cand)
-			}
-		}
+		ready, cd := candidatesForRoute(ctx, r, isDowngrade, cooldownStore)
+		candidates = append(candidates, ready...)
+		inCooldown = append(inCooldown, cd...)
 	}
 
 	candidates = append(candidates, inCooldown...)
@@ -265,65 +291,79 @@ func (lb *LoadBalancer) resolveDowngradeModels(primaryModel string, fb config.Fa
 // list (first added = tried first), not an arbitrary/alphabetical order —
 // FallbackExecutor stops at the first candidate that succeeds, so list order
 // decides the winner.
-func (lb *LoadBalancer) findCheapestDowngrade(primaryModel string, allowedModels []string) []string {
+// candidateDowngradeModels lists every registered model other than
+// primaryModel, restricted to allowedModels when that list is non-empty.
+func candidateDowngradeModels(routes map[string][]Route, primaryModel string, allowedModels []string) []string {
 	var candidates []string
-	for name := range lb.routes {
+	for name := range routes {
 		if name == primaryModel {
 			continue
 		}
-		if len(allowedModels) > 0 {
-			found := slices.Contains(allowedModels, name)
-			if !found {
-				continue
-			}
+		if len(allowedModels) > 0 && !slices.Contains(allowedModels, name) {
+			continue
 		}
 		candidates = append(candidates, name)
 	}
-	if len(candidates) == 0 {
-		return nil
-	}
+	return candidates
+}
 
+// modelCost returns a model's per-token cost (input+output), or ok=false if
+// it has no registered route.
+func modelCost(routes map[string][]Route, name string) (cost float64, ok bool) {
+	rs := routes[name]
+	if len(rs) == 0 {
+		return 0, false
+	}
+	return rs[0].Model.CostPerInputToken + rs[0].Model.CostPerOutputToken, true
+}
+
+// cheapestModelsAmong finds the minimum cost among candidates and returns
+// the set of candidate names tied at that minimum.
+func cheapestModelsAmong(routes map[string][]Route, candidates []string) map[string]bool {
 	minCost := math.MaxFloat64
 	for _, name := range candidates {
-		routes := lb.routes[name]
-		if len(routes) == 0 {
-			continue
-		}
-		cost := routes[0].Model.CostPerInputToken + routes[0].Model.CostPerOutputToken
-		if cost < minCost {
+		if cost, ok := modelCost(routes, name); ok && cost < minCost {
 			minCost = cost
 		}
 	}
 
 	inCheapest := make(map[string]bool, len(candidates))
 	for _, name := range candidates {
-		routes := lb.routes[name]
-		if len(routes) == 0 {
-			continue
-		}
-		cost := routes[0].Model.CostPerInputToken + routes[0].Model.CostPerOutputToken
-		if cost == minCost {
+		if cost, ok := modelCost(routes, name); ok && cost == minCost {
 			inCheapest[name] = true
 		}
 	}
+	return inCheapest
+}
 
-	var cheapest []string
+// orderCheapestModels renders the cheapest-model set as a deterministic
+// list: following allowedModels' priority order when given, else
+// alphabetical.
+func orderCheapestModels(inCheapest map[string]bool, allowedModels []string) []string {
 	if len(allowedModels) > 0 {
+		var cheapest []string
 		for _, name := range allowedModels {
 			if inCheapest[name] {
 				cheapest = append(cheapest, name)
 			}
 		}
-	} else {
-		names := make([]string, 0, len(inCheapest))
-		for name := range inCheapest {
-			names = append(names, name)
-		}
-		sort.Strings(names)
-		cheapest = names
+		return cheapest
 	}
+	names := make([]string, 0, len(inCheapest))
+	for name := range inCheapest {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
 
-	return cheapest
+func (lb *LoadBalancer) findCheapestDowngrade(primaryModel string, allowedModels []string) []string {
+	candidates := candidateDowngradeModels(lb.routes, primaryModel, allowedModels)
+	if len(candidates) == 0 {
+		return nil
+	}
+	inCheapest := cheapestModelsAmong(lb.routes, candidates)
+	return orderCheapestModels(inCheapest, allowedModels)
 }
 
 // RebuildProviders clears all routes and reloads them from the given provider catalog.
@@ -461,6 +501,72 @@ type ProviderStatus struct {
 	APIKeySource        string     `json:"api_key_source"`
 }
 
+// providerAPIKeyInfo looks up the configured API key count/source for a
+// named provider from the boot config.
+func (lb *LoadBalancer) providerAPIKeyInfo(name string) (count int, set bool, source string) {
+	if lb.cfg == nil {
+		return 0, false, ""
+	}
+	for _, p := range lb.cfg.Providers {
+		if p.Name != name {
+			continue
+		}
+		keys := p.GetAPIKeys()
+		return len(keys), len(keys) > 0, p.APIKeySource
+	}
+	return 0, false, ""
+}
+
+// healthStatusForCircuitState maps a circuit breaker state to a
+// provider-status health label.
+func healthStatusForCircuitState(cbState string) string {
+	switch cbState {
+	case "open":
+		return "offline"
+	case "half-open":
+		return "degraded"
+	default:
+		return "online"
+	}
+}
+
+// buildProviderStatus assembles one provider's status row from its live
+// circuit-breaker metrics and configured API key info.
+func (lb *LoadBalancer) buildProviderStatus(r Route) ProviderStatus {
+	name := r.Provider.Name()
+
+	cbState := "unknown"
+	var totalReqs, totalErrs int64
+	var lastErr, lastSuc *time.Time
+
+	if client := r.Provider.Client(); client != nil && client.Transport != nil {
+		cbState = circuitbreaker.State(client.Transport)
+		totalReqs, totalErrs, lastErr, lastSuc = circuitbreaker.Metrics(client.Transport)
+	}
+
+	successRate := 0.0
+	if totalReqs > 0 {
+		successRate = float64(totalReqs-totalErrs) / float64(totalReqs) * 100
+	}
+
+	apiKeysCount, apiKeySet, apiKeySource := lb.providerAPIKeyInfo(name)
+
+	return ProviderStatus{
+		Name:                name,
+		Type:                r.Provider.Type(),
+		Status:              healthStatusForCircuitState(cbState),
+		CircuitBreakerState: cbState,
+		LastErrorTime:       lastErr,
+		LastSuccessTime:     lastSuc,
+		TotalRequests:       totalReqs,
+		TotalErrors:         totalErrs,
+		SuccessRate:         successRate,
+		APIKeysCount:        apiKeysCount,
+		APIKeySet:           apiKeySet,
+		APIKeySource:        apiKeySource,
+	}
+}
+
 func (lb *LoadBalancer) GetProviderStatus() []ProviderStatus {
 	lb.mu.RLock()
 	defer lb.mu.RUnlock()
@@ -475,59 +581,7 @@ func (lb *LoadBalancer) GetProviderStatus() []ProviderStatus {
 				continue
 			}
 			seen[name] = true
-
-			cbState := "unknown"
-			var totalReqs, totalErrs int64
-			var lastErr, lastSuc *time.Time
-
-			client := r.Provider.Client()
-			if client != nil && client.Transport != nil {
-				cbState = circuitbreaker.State(client.Transport)
-				totalReqs, totalErrs, lastErr, lastSuc = circuitbreaker.Metrics(client.Transport)
-			}
-
-			healthStatus := "online"
-			switch cbState {
-			case "open":
-				healthStatus = "offline"
-			case "half-open":
-				healthStatus = "degraded"
-			}
-
-			successRate := 0.0
-			if totalReqs > 0 {
-				successRate = float64(totalReqs-totalErrs) / float64(totalReqs) * 100
-			}
-
-			apiKeySet := false
-			apiKeysCount := 0
-			apiKeySource := ""
-			if lb.cfg != nil {
-				for _, p := range lb.cfg.Providers {
-					if p.Name == name {
-						keys := p.GetAPIKeys()
-						apiKeysCount = len(keys)
-						apiKeySet = apiKeysCount > 0
-						apiKeySource = p.APIKeySource
-						break
-					}
-				}
-			}
-
-			statuses = append(statuses, ProviderStatus{
-				Name:                name,
-				Type:                r.Provider.Type(),
-				Status:              healthStatus,
-				CircuitBreakerState: cbState,
-				LastErrorTime:       lastErr,
-				LastSuccessTime:     lastSuc,
-				TotalRequests:       totalReqs,
-				TotalErrors:         totalErrs,
-				SuccessRate:         successRate,
-				APIKeysCount:        apiKeysCount,
-				APIKeySet:           apiKeySet,
-				APIKeySource:        apiKeySource,
-			})
+			statuses = append(statuses, lb.buildProviderStatus(r))
 		}
 	}
 

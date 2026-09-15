@@ -213,7 +213,7 @@ func (h *MCPHandler) CreateServer(w http.ResponseWriter, r *http.Request) {
 		if req.AuthKeyEnv != "" {
 			vals["auth_key_env"] = "***"
 		}
-		if err := h.configAuditor.LogCreate("mcp_server", req.ID, vals, reqmeta.GetKeyID(r.Context())); err != nil {
+		if err := h.configAuditor.LogCreate(r.Context(), "mcp_server", req.ID, vals, reqmeta.GetKeyID(r.Context())); err != nil {
 			slog.Error("failed to log audit create mcp_server", "error", err)
 		}
 	}
@@ -224,52 +224,51 @@ func (h *MCPHandler) CreateServer(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (h *MCPHandler) UpdateServer(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
-	if id == "" {
-		model.WriteJSONError(w, http.StatusBadRequest, "invalid_request_error", "Server ID is required")
-		return
-	}
+// updateMCPServerRequest is the PATCH body accepted by UpdateServer.
+type updateMCPServerRequest struct {
+	Name            string `json:"name"`
+	Description     string `json:"description"`
+	Transport       string `json:"transport"`
+	URL             string `json:"url,omitempty"`
+	Command         string `json:"command,omitempty"`
+	Args            string `json:"args,omitempty"`
+	Env             string `json:"env,omitempty"`
+	Handler         string `json:"handler,omitempty"`
+	Enabled         *bool  `json:"enabled,omitempty"`
+	TimeoutMs       *int   `json:"timeout_ms,omitempty"`
+	MaxRetries      *int   `json:"max_retries,omitempty"`
+	AuthType        string `json:"auth_type,omitempty"`
+	AuthKeyEnv      string `json:"auth_key_env,omitempty"`
+	ProtocolVersion string `json:"protocol_version,omitempty"`
+}
 
-	defer func() { _ = r.Body.Close() }()
-	var req struct {
-		Name            string `json:"name"`
-		Description     string `json:"description"`
-		Transport       string `json:"transport"`
-		URL             string `json:"url,omitempty"`
-		Command         string `json:"command,omitempty"`
-		Args            string `json:"args,omitempty"`
-		Env             string `json:"env,omitempty"`
-		Handler         string `json:"handler,omitempty"`
-		Enabled         *bool  `json:"enabled,omitempty"`
-		TimeoutMs       *int   `json:"timeout_ms,omitempty"`
-		MaxRetries      *int   `json:"max_retries,omitempty"`
-		AuthType        string `json:"auth_type,omitempty"`
-		AuthKeyEnv      string `json:"auth_key_env,omitempty"`
-		ProtocolVersion string `json:"protocol_version,omitempty"`
-	}
+// oldMCPServerValues holds an mcp_servers row's pre-update column values,
+// for audit diffing.
+type oldMCPServerValues struct {
+	name, desc, transport, url, cmd, args, env, handler, authType, authKeyEnv string
+	enabled                                                                   bool
+	timeoutMs, maxRetries                                                     int
+}
 
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		model.WriteJSONError(w, http.StatusBadRequest, "invalid_request_error", "Invalid request body")
-		return
-	}
-
-	// Capture old values for audit
-	var oldName, oldDesc, oldTransport, oldURL, oldCmd, oldArgs, oldEnv, oldHandler, oldAuthType, oldAuthKeyEnv string
-	var oldEnabled bool
-	var oldTimeoutMs, oldMaxRetries int
-	if err := h.store.DB.QueryRow(
+// loadOldMCPServerValues reads id's current column values for audit
+// diffing, logging (not failing) on error.
+func loadOldMCPServerValues(store *db.SQLiteStore, id string) oldMCPServerValues {
+	var v oldMCPServerValues
+	if err := store.DB.QueryRow(
 		`SELECT name, description, transport, url, command, args, env, handler,
 		       enabled, timeout_ms, max_retries, auth_type, auth_key_env
 		 FROM mcp_servers WHERE id = ?`, id,
-	).Scan(&oldName, &oldDesc, &oldTransport, &oldURL, &oldCmd, &oldArgs, &oldEnv, &oldHandler,
-		&oldEnabled, &oldTimeoutMs, &oldMaxRetries, &oldAuthType, &oldAuthKeyEnv); err != nil {
+	).Scan(&v.name, &v.desc, &v.transport, &v.url, &v.cmd, &v.args, &v.env, &v.handler,
+		&v.enabled, &v.timeoutMs, &v.maxRetries, &v.authType, &v.authKeyEnv); err != nil {
 		slog.Warn("Failed to read old server values for audit", "server_id", id, "error", err)
 	}
+	return v
+}
 
-	sets := []string{}
-	args := []any{}
-
+// buildMCPServerUpdateSets builds the "SET col = ?" clauses and matching
+// args for every field req actually sets. description is always included
+// since it can legitimately be cleared to "".
+func buildMCPServerUpdateSets(req updateMCPServerRequest) (sets []string, args []any) {
 	if req.Name != "" {
 		sets = append(sets, "name = ?")
 		args = append(args, req.Name)
@@ -300,7 +299,6 @@ func (h *MCPHandler) UpdateServer(w http.ResponseWriter, r *http.Request) {
 		sets = append(sets, "handler = ?")
 		args = append(args, req.Handler)
 	}
-
 	if req.Enabled != nil {
 		sets = append(sets, "enabled = ?")
 		args = append(args, boolToInt(*req.Enabled))
@@ -325,12 +323,48 @@ func (h *MCPHandler) UpdateServer(w http.ResponseWriter, r *http.Request) {
 		sets = append(sets, "protocol_version = ?")
 		args = append(args, req.ProtocolVersion)
 	}
+	return sets, args
+}
 
+// auditMCPServerUpdate logs an mcp_server update, if a configAuditor is
+// configured, diffing req's set fields against old.
+func (h *MCPHandler) auditMCPServerUpdate(r *http.Request, id string, req updateMCPServerRequest, old oldMCPServerValues) {
+	if h.configAuditor == nil {
+		return
+	}
+	oldVals := auditServerVals(old.name, old.desc, old.transport, old.url, old.cmd, old.enabled, old.timeoutMs, old.maxRetries, old.authType, old.authKeyEnv)
+	newVals := auditServerVals(req.Name, req.Description, req.Transport, req.URL, req.Command,
+		(req.Enabled != nil && *req.Enabled) || (req.Enabled == nil && old.enabled),
+		timeoutOrDefault(req.TimeoutMs, old.timeoutMs),
+		maxRetriesOrDefault(req.MaxRetries, old.maxRetries),
+		req.AuthType, req.AuthKeyEnv)
+	if err := h.configAuditor.LogUpdate(r.Context(), "mcp_server", id, oldVals, newVals, reqmeta.GetKeyID(r.Context())); err != nil {
+		slog.Error("failed to log audit update mcp_server", "error", err)
+	}
+}
+
+func (h *MCPHandler) UpdateServer(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if id == "" {
+		model.WriteJSONError(w, http.StatusBadRequest, "invalid_request_error", "Server ID is required")
+		return
+	}
+
+	defer func() { _ = r.Body.Close() }()
+	var req updateMCPServerRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		model.WriteJSONError(w, http.StatusBadRequest, "invalid_request_error", "Invalid request body")
+		return
+	}
+
+	old := loadOldMCPServerValues(h.store, id)
+
+	sets, args := buildMCPServerUpdateSets(req)
 	sets = append(sets, "updated_at = datetime('now')")
 	args = append(args, id)
 
-	sql := "UPDATE mcp_servers SET " + strings.Join(sets, ", ") + " WHERE id = ?"
-	res, err := h.store.DB.Exec(sql, args...)
+	sqlStmt := "UPDATE mcp_servers SET " + strings.Join(sets, ", ") + " WHERE id = ?" //nolint:gosec // sets are static literals, values are parameterized via args
+	res, err := h.store.DB.Exec(sqlStmt, args...)
 	if err != nil {
 		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", "Failed to update server: "+err.Error())
 		return
@@ -347,17 +381,7 @@ func (h *MCPHandler) UpdateServer(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if h.configAuditor != nil {
-		oldVals := auditServerVals(oldName, oldDesc, oldTransport, oldURL, oldCmd, oldEnabled, oldTimeoutMs, oldMaxRetries, oldAuthType, oldAuthKeyEnv)
-		newVals := auditServerVals(req.Name, req.Description, req.Transport, req.URL, req.Command,
-			(req.Enabled != nil && *req.Enabled) || (req.Enabled == nil && oldEnabled),
-			timeoutOrDefault(req.TimeoutMs, oldTimeoutMs),
-			maxRetriesOrDefault(req.MaxRetries, oldMaxRetries),
-			req.AuthType, req.AuthKeyEnv)
-		if err := h.configAuditor.LogUpdate("mcp_server", id, oldVals, newVals, reqmeta.GetKeyID(r.Context())); err != nil {
-			slog.Error("failed to log audit update mcp_server", "error", err)
-		}
-	}
+	h.auditMCPServerUpdate(r, id, req, old)
 
 	model.WriteJSON(w, http.StatusOK, map[string]any{"status": "ok"})
 }
@@ -431,7 +455,7 @@ func (h *MCPHandler) DeleteServer(w http.ResponseWriter, r *http.Request) {
 
 	if h.configAuditor != nil && fetchErr == nil {
 		vals := auditServerVals(oldName, oldDesc, oldTransport, oldURL, oldCmd, oldEnabled, oldTimeoutMs, oldMaxRetries, oldAuthType, oldAuthKeyEnv)
-		if err := h.configAuditor.LogDelete("mcp_server", id, vals, reqmeta.GetKeyID(r.Context())); err != nil {
+		if err := h.configAuditor.LogDelete(r.Context(), "mcp_server", id, vals, reqmeta.GetKeyID(r.Context())); err != nil {
 			slog.Error("failed to log audit delete mcp_server", "error", err)
 		}
 	}

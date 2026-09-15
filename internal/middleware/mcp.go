@@ -105,7 +105,7 @@ func (m *MCPInjectMiddleware) Handler(next http.Handler) http.Handler {
 		}
 
 		body, err := io.ReadAll(r.Body)
-		r.Body.Close()
+		_ = r.Body.Close()
 		if err != nil {
 			next.ServeHTTP(w, r)
 			return

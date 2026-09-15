@@ -39,7 +39,7 @@ func (h *PromptHandler) ListTemplates(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (h *PromptHandler) CreateTemplate(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 	var req createTemplateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		model.WriteJSONError(w, http.StatusBadRequest, "invalid_request_error", "Invalid request body")
@@ -94,7 +94,7 @@ func (h *PromptHandler) CreateTemplate(w http.ResponseWriter, r *http.Request) {
 			"is_active":   isActive,
 			"labels":      req.Labels,
 		}
-		if err := h.auditor.LogCreate("prompt_template", strconv.Itoa(id), vals, reqmeta.GetKeyID(r.Context())); err != nil {
+		if err := h.auditor.LogCreate(r.Context(), "prompt_template", strconv.Itoa(id), vals, reqmeta.GetKeyID(r.Context())); err != nil {
 			slog.Error("failed to log audit create prompt_template", "error", err)
 		}
 	}
@@ -137,6 +137,46 @@ type updateTemplateRequest struct {
 	Labels      []string `json:"labels,omitempty"`
 }
 
+// applyPromptTemplateUpdate mutates existing in place with req's set
+// fields, validating req.Content as a template (if set) before applying it.
+func applyPromptTemplateUpdate(existing *config.PromptTemplate, req updateTemplateRequest) error {
+	if req.Name != "" {
+		existing.Name = req.Name
+	}
+	if req.Description != "" {
+		existing.Description = req.Description
+	}
+	if req.Content != "" {
+		if err := config.ValidateTemplate(req.Content); err != nil {
+			return err
+		}
+		existing.Content = req.Content
+	}
+	if req.Version != "" {
+		existing.Version = req.Version
+	}
+	if req.IsActive != nil {
+		existing.IsActive = *req.IsActive
+	}
+	if req.Labels != nil {
+		existing.Labels = req.Labels
+	}
+	return nil
+}
+
+// promptTemplateAuditVals renders t's audited fields as a map, for
+// before/after diffing in the audit log.
+func promptTemplateAuditVals(t config.PromptTemplate) map[string]any {
+	return map[string]any{
+		"name":        t.Name,
+		"description": t.Description,
+		"content":     t.Content,
+		"version":     t.Version,
+		"is_active":   t.IsActive,
+		"labels":      t.Labels,
+	}
+}
+
 func (h *PromptHandler) UpdateTemplate(w http.ResponseWriter, r *http.Request) {
 	idStr := chi.URLParam(r, "id")
 	id, err := strconv.Atoi(idStr)
@@ -145,7 +185,7 @@ func (h *PromptHandler) UpdateTemplate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 	var req updateTemplateRequest
 	if err = json.NewDecoder(r.Body).Decode(&req); err != nil {
 		model.WriteJSONError(w, http.StatusBadRequest, "invalid_request_error", "Invalid request body")
@@ -163,27 +203,9 @@ func (h *PromptHandler) UpdateTemplate(w http.ResponseWriter, r *http.Request) {
 	}
 	existingOld := *existing
 
-	if req.Name != "" {
-		existing.Name = req.Name
-	}
-	if req.Description != "" {
-		existing.Description = req.Description
-	}
-	if req.Content != "" {
-		if err := config.ValidateTemplate(req.Content); err != nil {
-			model.WriteJSONError(w, http.StatusBadRequest, "invalid_template", "Invalid template syntax: "+err.Error())
-			return
-		}
-		existing.Content = req.Content
-	}
-	if req.Version != "" {
-		existing.Version = req.Version
-	}
-	if req.IsActive != nil {
-		existing.IsActive = *req.IsActive
-	}
-	if req.Labels != nil {
-		existing.Labels = req.Labels
+	if err := applyPromptTemplateUpdate(existing, req); err != nil {
+		model.WriteJSONError(w, http.StatusBadRequest, "invalid_template", "Invalid template syntax: "+err.Error())
+		return
 	}
 
 	if err := h.store.UpdatePromptTemplate(*existing); err != nil {
@@ -192,23 +214,9 @@ func (h *PromptHandler) UpdateTemplate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.auditor != nil {
-		oldVals := map[string]any{
-			"name":        existingOld.Name,
-			"description": existingOld.Description,
-			"content":     existingOld.Content,
-			"version":     existingOld.Version,
-			"is_active":   existingOld.IsActive,
-			"labels":      existingOld.Labels,
-		}
-		newVals := map[string]any{
-			"name":        existing.Name,
-			"description": existing.Description,
-			"content":     existing.Content,
-			"version":     existing.Version,
-			"is_active":   existing.IsActive,
-			"labels":      existing.Labels,
-		}
-		if err := h.auditor.LogUpdate("prompt_template", strconv.Itoa(id), oldVals, newVals, reqmeta.GetKeyID(r.Context())); err != nil {
+		oldVals := promptTemplateAuditVals(existingOld)
+		newVals := promptTemplateAuditVals(*existing)
+		if err := h.auditor.LogUpdate(r.Context(), "prompt_template", strconv.Itoa(id), oldVals, newVals, reqmeta.GetKeyID(r.Context())); err != nil {
 			slog.Error("failed to log audit update prompt_template", "error", err)
 		}
 	}
@@ -240,7 +248,7 @@ func (h *PromptHandler) DeleteTemplate(w http.ResponseWriter, r *http.Request) {
 			"is_active":   oldTmpl.IsActive,
 			"labels":      oldTmpl.Labels,
 		}
-		if err := h.auditor.LogDelete("prompt_template", strconv.Itoa(id), vals, reqmeta.GetKeyID(r.Context())); err != nil {
+		if err := h.auditor.LogDelete(r.Context(), "prompt_template", strconv.Itoa(id), vals, reqmeta.GetKeyID(r.Context())); err != nil {
 			slog.Error("failed to log audit delete prompt_template", "error", err)
 		}
 	}
@@ -277,7 +285,7 @@ func (h *PromptHandler) GetTemplateByName(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	tmpl, err := h.store.GetPromptTemplateByName(name)
+	tmpl, err := h.store.GetPromptTemplateByName(r.Context(), name)
 	if err != nil {
 		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", "Failed to get prompt template")
 		return

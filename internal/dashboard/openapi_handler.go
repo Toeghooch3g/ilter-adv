@@ -41,7 +41,7 @@ func LoadEnabledOpenAPISpecs(store *db.SQLiteStore) ([]config.OpenAPISpecConfig,
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var specs []config.OpenAPISpecConfig
 	for rows.Next() {
@@ -77,7 +77,7 @@ func (h *OpenAPIHandler) SetProvider(p *openapi.ToolProvider) {
 	h.provider = p
 }
 
-func (h *OpenAPIHandler) reloadProvider() {
+func (h *OpenAPIHandler) reloadProvider(ctx context.Context) {
 	if h.provider == nil {
 		return
 	}
@@ -86,7 +86,7 @@ func (h *OpenAPIHandler) reloadProvider() {
 		adminOpenapiLog.Warn("failed to load specs for reload", "error", err)
 		return
 	}
-	if err := h.provider.Reload(specs); err != nil {
+	if err := h.provider.Reload(ctx, specs); err != nil {
 		adminOpenapiLog.Warn("reload failed", "error", err)
 	}
 }
@@ -97,7 +97,7 @@ func (h *OpenAPIHandler) ListSpecs(w http.ResponseWriter, _ *http.Request) {
 		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", "Failed to list OpenAPI specs")
 		return
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	specs := make([]map[string]any, 0)
 	for rows.Next() {
@@ -158,7 +158,7 @@ type apiErr string
 func (e apiErr) Error() string { return string(e) }
 
 func (h *OpenAPIHandler) CreateSpec(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 	var req struct {
 		Name        string          `json:"name"`
 		Description string          `json:"description"`
@@ -205,7 +205,7 @@ func (h *OpenAPIHandler) CreateSpec(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.reloadProvider()
+	h.reloadProvider(r.Context())
 
 	if h.auditor != nil {
 		vals := map[string]any{
@@ -222,7 +222,7 @@ func (h *OpenAPIHandler) CreateSpec(w http.ResponseWriter, r *http.Request) {
 		if req.AuthKey != "" {
 			vals["auth_key"] = "***"
 		}
-		if err := h.auditor.LogCreate("openapi_spec", id, vals, reqmeta.GetKeyID(r.Context())); err != nil {
+		if err := h.auditor.LogCreate(r.Context(), "openapi_spec", id, vals, reqmeta.GetKeyID(r.Context())); err != nil {
 			slog.Error("failed to log audit create openapi_spec", "error", err)
 		}
 	}
@@ -230,33 +230,24 @@ func (h *OpenAPIHandler) CreateSpec(w http.ResponseWriter, r *http.Request) {
 	model.WriteJSON(w, http.StatusCreated, map[string]any{"status": "ok", "id": id})
 }
 
-func (h *OpenAPIHandler) UpdateSpec(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
-	if id == "" {
-		model.WriteJSONError(w, http.StatusBadRequest, "invalid_request_error", "Spec ID is required")
-		return
-	}
+// updateSpecRequest is the PATCH body accepted by UpdateSpec.
+type updateSpecRequest struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description"`
+	SpecURL     string          `json:"spec_url"`
+	Ops         operationsOrRaw `json:"operations"`
+	AuthType    string          `json:"auth_type"`
+	AuthValue   string          `json:"auth_value"`
+	AuthKey     string          `json:"auth_key"`
+	TimeoutMs   *int            `json:"timeout_ms,omitempty"`
+	Enabled     *bool           `json:"enabled,omitempty"`
+}
 
-	defer r.Body.Close()
-	var req struct {
-		Name        string          `json:"name"`
-		Description string          `json:"description"`
-		SpecURL     string          `json:"spec_url"`
-		Ops         operationsOrRaw `json:"operations"`
-		AuthType    string          `json:"auth_type"`
-		AuthValue   string          `json:"auth_value"`
-		AuthKey     string          `json:"auth_key"`
-		TimeoutMs   *int            `json:"timeout_ms,omitempty"`
-		Enabled     *bool           `json:"enabled,omitempty"`
-	}
-
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		model.WriteJSONError(w, http.StatusBadRequest, "invalid_request_error", "Invalid request body")
-		return
-	}
-
-	sets := []string{}
-	args := []any{}
+// buildOpenAPISpecUpdateSets builds the "SET col = ?" clauses and matching
+// args for every field req actually sets.
+func buildOpenAPISpecUpdateSets(req updateSpecRequest) (sets []string, args []any) {
+	sets = []string{}
+	args = []any{}
 
 	if req.Name != "" {
 		sets = append(sets, "name = ?")
@@ -266,7 +257,6 @@ func (h *OpenAPIHandler) UpdateSpec(w http.ResponseWriter, r *http.Request) {
 		sets = append(sets, "description = ?")
 		args = append(args, req.Description)
 	}
-
 	if req.SpecURL != "" {
 		sets = append(sets, "spec_url = ?")
 		args = append(args, req.SpecURL)
@@ -295,6 +285,25 @@ func (h *OpenAPIHandler) UpdateSpec(w http.ResponseWriter, r *http.Request) {
 		sets = append(sets, "enabled = ?")
 		args = append(args, boolToInt(*req.Enabled))
 	}
+	return sets, args
+}
+
+func (h *OpenAPIHandler) UpdateSpec(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if id == "" {
+		model.WriteJSONError(w, http.StatusBadRequest, "invalid_request_error", "Spec ID is required")
+		return
+	}
+
+	defer func() { _ = r.Body.Close() }()
+	var req updateSpecRequest
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		model.WriteJSONError(w, http.StatusBadRequest, "invalid_request_error", "Invalid request body")
+		return
+	}
+
+	sets, args := buildOpenAPISpecUpdateSets(req)
 
 	// Capture old values for audit
 	var oldName, oldSpecURL, oldOps, oldAuthType, oldAuthValue, oldAuthKey sql.NullString
@@ -309,7 +318,7 @@ func (h *OpenAPIHandler) UpdateSpec(w http.ResponseWriter, r *http.Request) {
 	sets = append(sets, "updated_at = datetime('now')")
 	args = append(args, id)
 
-	q := "UPDATE openapi_specs SET " + strings.Join(sets, ", ") + " WHERE id = ?"
+	q := "UPDATE openapi_specs SET " + strings.Join(sets, ", ") + " WHERE id = ?" //nolint:gosec // sets are static literals, values are parameterized via args
 	res, err := h.store.DB.Exec(q, args...)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE") {
@@ -325,20 +334,32 @@ func (h *OpenAPIHandler) UpdateSpec(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.auditor != nil {
-		oldVals := openapiSpecVals(nullToEmpty(oldName), nullToEmpty(oldSpecURL), nullToEmpty(oldOps), nullToEmpty(oldAuthType), nullToEmpty(oldAuthValue), nullToEmpty(oldAuthKey), int(oldTimeoutMs.Int64), oldEnabled.Int64 == 1)
-		newVals := openapiSpecVals(
-			ifStr(req.Name, nullToEmpty(oldName)), ifStr(req.SpecURL, nullToEmpty(oldSpecURL)), string(req.Ops),
-			ifStr(req.AuthType, nullToEmpty(oldAuthType)), req.AuthValue, req.AuthKey,
-			ifInt(req.TimeoutMs, int(oldTimeoutMs.Int64)), ifBool(req.Enabled, oldEnabled.Int64 == 1),
-		)
-		if err := h.auditor.LogUpdate("openapi_spec", id, oldVals, newVals, reqmeta.GetKeyID(r.Context())); err != nil {
-			slog.Error("failed to log audit update openapi_spec", "error", err)
-		}
-	}
+	h.auditOpenAPISpecUpdate(r, id, req, oldName, oldSpecURL, oldOps, oldAuthType, oldAuthValue, oldAuthKey, oldTimeoutMs, oldEnabled)
 
-	h.reloadProvider()
+	h.reloadProvider(r.Context())
 	model.WriteJSON(w, http.StatusOK, map[string]any{"status": "ok"})
+}
+
+// auditOpenAPISpecUpdate logs an openapi_spec update, if an auditor is
+// configured, diffing req's set fields against the spec's pre-update
+// column values.
+func (h *OpenAPIHandler) auditOpenAPISpecUpdate(
+	r *http.Request, id string, req updateSpecRequest,
+	oldName, oldSpecURL, oldOps, oldAuthType, oldAuthValue, oldAuthKey sql.NullString,
+	oldTimeoutMs, oldEnabled sql.NullInt64,
+) {
+	if h.auditor == nil {
+		return
+	}
+	oldVals := openapiSpecVals(nullToEmpty(oldName), nullToEmpty(oldSpecURL), nullToEmpty(oldOps), nullToEmpty(oldAuthType), nullToEmpty(oldAuthValue), nullToEmpty(oldAuthKey), int(oldTimeoutMs.Int64), oldEnabled.Int64 == 1)
+	newVals := openapiSpecVals(
+		ifStr(req.Name, nullToEmpty(oldName)), ifStr(req.SpecURL, nullToEmpty(oldSpecURL)), string(req.Ops),
+		ifStr(req.AuthType, nullToEmpty(oldAuthType)), req.AuthValue, req.AuthKey,
+		ifInt(req.TimeoutMs, int(oldTimeoutMs.Int64)), ifBool(req.Enabled, oldEnabled.Int64 == 1),
+	)
+	if err := h.auditor.LogUpdate(r.Context(), "openapi_spec", id, oldVals, newVals, reqmeta.GetKeyID(r.Context())); err != nil {
+		slog.Error("failed to log audit update openapi_spec", "error", err)
+	}
 }
 
 func (h *OpenAPIHandler) ToggleSpec(w http.ResponseWriter, r *http.Request) {
@@ -370,7 +391,7 @@ func (h *OpenAPIHandler) ToggleSpec(w http.ResponseWriter, r *http.Request) {
 	}
 	enabled := enabledInt != 0
 
-	h.reloadProvider()
+	h.reloadProvider(r.Context())
 	model.WriteJSON(w, http.StatusOK, map[string]any{"enabled": enabled})
 }
 
@@ -401,12 +422,12 @@ func (h *OpenAPIHandler) DeleteSpec(w http.ResponseWriter, r *http.Request) {
 
 	if h.auditor != nil && fetchErr == nil {
 		vals := openapiSpecVals(nullToEmpty(oldName), nullToEmpty(oldSpecURL), nullToEmpty(oldOps), nullToEmpty(oldAuthType), nullToEmpty(oldAuthValue), nullToEmpty(oldAuthKey), int(oldTimeoutMs.Int64), oldEnabled.Int64 == 1)
-		if err := h.auditor.LogDelete("openapi_spec", id, vals, reqmeta.GetKeyID(r.Context())); err != nil {
+		if err := h.auditor.LogDelete(r.Context(), "openapi_spec", id, vals, reqmeta.GetKeyID(r.Context())); err != nil {
 			slog.Error("failed to log audit delete openapi_spec", "error", err)
 		}
 	}
 
-	h.reloadProvider()
+	h.reloadProvider(r.Context())
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -423,7 +444,7 @@ func (h *OpenAPIHandler) SyncOperationsFromProvider(ctx context.Context) {
 		log.Error("failed to query enabled OpenAPI specs", "error", err)
 		return
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	opsByAPI := h.provider.OperationsByAPI()
 	updatedAny := false
@@ -464,7 +485,60 @@ func (h *OpenAPIHandler) SyncOperationsFromProvider(ctx context.Context) {
 	log.Info("synced OpenAPI operations from provider", "specs", len(ids), "updated", updatedAny)
 }
 
-func (h *OpenAPIHandler) validateSpecByID(_ context.Context, id string, forceUpdate bool) (int, bool, error) {
+// discoverOpenAPIPaths lists every "METHOD /path" operation in doc, skipping
+// .well-known (metadata/discovery) paths.
+func discoverOpenAPIPaths(doc *openapi3.T) []string {
+	discoveredPaths := []string{}
+	for path, pathItem := range doc.Paths.Map() {
+		if strings.HasPrefix(path, "/.well-known/") {
+			continue
+		}
+		discoveredPaths = append(discoveredPaths, pathOperations(path, pathItem)...)
+	}
+	return discoveredPaths
+}
+
+// pathOperations lists "METHOD path" for every HTTP method pathItem defines.
+func pathOperations(path string, pathItem *openapi3.PathItem) []string {
+	methods := []struct {
+		name string
+		op   *openapi3.Operation
+	}{
+		{"GET", pathItem.Get},
+		{"POST", pathItem.Post},
+		{"PUT", pathItem.Put},
+		{"DELETE", pathItem.Delete},
+		{"PATCH", pathItem.Patch},
+		{"HEAD", pathItem.Head},
+		{"OPTIONS", pathItem.Options},
+	}
+	var ops []string
+	for _, m := range methods {
+		if m.op != nil {
+			ops = append(ops, m.name+" "+path)
+		}
+	}
+	return ops
+}
+
+// maybeUpdateOpenAPIOperations persists discoveredPaths as the spec's
+// operations column when forced (e.g. Sync/Validate) or when the column is
+// currently empty/unconfigured, returning whether it updated.
+func (h *OpenAPIHandler) maybeUpdateOpenAPIOperations(id, existingOps string, discoveredPaths []string, forceUpdate bool) bool {
+	if !forceUpdate && existingOps != "" && existingOps != "[]" && existingOps != "null" {
+		return false
+	}
+	opsJSON, err := json.Marshal(discoveredPaths)
+	if err != nil {
+		return false
+	}
+	if _, err := h.store.DB.Exec(`UPDATE openapi_specs SET operations = ?, updated_at = datetime('now') WHERE id = ?`, string(opsJSON), id); err != nil {
+		slog.Error("failed to update openapi operations", "id", id, "error", err)
+	}
+	return true
+}
+
+func (h *OpenAPIHandler) validateSpecByID(ctx context.Context, id string, forceUpdate bool) (int, bool, error) {
 	var name, specURL, existingOps string
 	err := h.store.DB.QueryRow(`SELECT name, spec_url, COALESCE(operations, '') FROM openapi_specs WHERE id = ?`, id).Scan(&name, &specURL, &existingOps)
 	if err != nil {
@@ -472,60 +546,21 @@ func (h *OpenAPIHandler) validateSpecByID(_ context.Context, id string, forceUpd
 	}
 
 	cfg := &config.OpenAPISpecConfig{Name: name, SpecURL: specURL}
-	doc, err := openapi.LoadSpec(cfg)
+	doc, err := openapi.LoadSpec(ctx, cfg)
 	if err != nil {
 		return 0, false, fmt.Errorf("failed to load spec: %w", err)
 	}
 
 	loader := openapi3.NewLoader()
 	loader.IsExternalRefsAllowed = false
-	if err := doc.Validate(loader.Context); err != nil {
+	if err := doc.Validate(ctx); err != nil {
 		return 0, false, fmt.Errorf("spec validation failed: %w", err)
 	}
 
-	discoveredPaths := []string{}
-	for path, pathItem := range doc.Paths.Map() {
-		// Skip .well-known paths (metadata, discovery endpoints)
-		if strings.HasPrefix(path, "/.well-known/") {
-			continue
-		}
-		if pathItem.Get != nil {
-			discoveredPaths = append(discoveredPaths, "GET "+path)
-		}
-		if pathItem.Post != nil {
-			discoveredPaths = append(discoveredPaths, "POST "+path)
-		}
-		if pathItem.Put != nil {
-			discoveredPaths = append(discoveredPaths, "PUT "+path)
-		}
-		if pathItem.Delete != nil {
-			discoveredPaths = append(discoveredPaths, "DELETE "+path)
-		}
-		if pathItem.Patch != nil {
-			discoveredPaths = append(discoveredPaths, "PATCH "+path)
-		}
-		if pathItem.Head != nil {
-			discoveredPaths = append(discoveredPaths, "HEAD "+path)
-		}
-		if pathItem.Options != nil {
-			discoveredPaths = append(discoveredPaths, "OPTIONS "+path)
-		}
-	}
+	discoveredPaths := discoverOpenAPIPaths(doc)
+	opsUpdated := h.maybeUpdateOpenAPIOperations(id, existingOps, discoveredPaths, forceUpdate)
 
-	opsCount := len(discoveredPaths)
-	opsUpdated := false
-
-	// Update operations column if forced (e.g. Sync) or if empty/unconfigured
-	if forceUpdate || existingOps == "" || existingOps == "[]" || existingOps == "null" {
-		if opsJSON, err := json.Marshal(discoveredPaths); err == nil {
-			if _, err := h.store.DB.Exec(`UPDATE openapi_specs SET operations = ?, updated_at = datetime('now') WHERE id = ?`, string(opsJSON), id); err != nil {
-				slog.Error("failed to update openapi operations", "id", id, "error", err)
-			}
-			opsUpdated = true
-		}
-	}
-
-	return opsCount, opsUpdated, nil
+	return len(discoveredPaths), opsUpdated, nil
 }
 
 func (h *OpenAPIHandler) ValidateSpec(w http.ResponseWriter, r *http.Request) {
@@ -550,7 +585,7 @@ func (h *OpenAPIHandler) ValidateSpec(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.reloadProvider()
+	h.reloadProvider(r.Context())
 	model.WriteJSON(w, http.StatusOK, map[string]any{
 		"status":           "success",
 		"operations_count": opsCount,

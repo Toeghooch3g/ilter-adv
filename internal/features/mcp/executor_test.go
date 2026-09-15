@@ -54,7 +54,7 @@ func TestExecutor_ExecuteTool_Success(t *testing.T) {
 	}
 
 	clients := NewClientManager(nil)
-	insertMockClient(clients, "test-server", "sse", mock)
+	insertMockClient(clients, mock)
 	reg := &Registry{servers: map[string]*ServerInfo{"test-server": server}}
 
 	ex := NewExecutor(reg, clients, nil, nil, nil)
@@ -258,8 +258,8 @@ func cleanBreakers() {
 	breakersMu.Unlock()
 }
 
-func insertMockClient(m *ClientManager, serverID, transport string, cl TransportClient) {
-	key := clientKey{serverID: serverID, transport: transport}
+func insertMockClient(m *ClientManager, cl TransportClient) {
+	key := clientKey{serverID: "test-server", transport: "sse"}
 	m.mu.Lock()
 	m.clients[key] = cl
 	m.mu.Unlock()
@@ -271,7 +271,7 @@ func TestExecutor_ExecuteTool_DestructiveBlocked(t *testing.T) {
 	cleanBreakers()
 	mock := &mockTransportForExecutor{connected: true}
 	clients := NewClientManager(nil)
-	insertMockClient(clients, "test-server", "sse", mock)
+	insertMockClient(clients, mock)
 
 	reg := &Registry{servers: map[string]*ServerInfo{
 		"test-server": {
@@ -297,7 +297,7 @@ func TestExecutor_ExecuteTool_RequiresConfirmationBlocked(t *testing.T) {
 	cleanBreakers()
 	mock := &mockTransportForExecutor{connected: true}
 	clients := NewClientManager(nil)
-	insertMockClient(clients, "test-server", "sse", mock)
+	insertMockClient(clients, mock)
 
 	reg := &Registry{servers: map[string]*ServerInfo{
 		"test-server": {
@@ -323,7 +323,7 @@ func TestExecutor_ExecuteTool_RateLimited(t *testing.T) {
 	cleanBreakers()
 	mock := &mockTransportForExecutor{connected: true}
 	clients := NewClientManager(nil)
-	insertMockClient(clients, "test-server", "sse", mock)
+	insertMockClient(clients, mock)
 
 	reg := &Registry{servers: map[string]*ServerInfo{
 		"test-server": {
@@ -358,7 +358,7 @@ func TestExecutor_ExecuteTool_NoConfigMeansNoRestriction(t *testing.T) {
 	cleanBreakers()
 	mock := &mockTransportForExecutor{connected: true}
 	clients := NewClientManager(nil)
-	insertMockClient(clients, "test-server", "sse", mock)
+	insertMockClient(clients, mock)
 
 	reg := &Registry{servers: map[string]*ServerInfo{
 		"test-server": {

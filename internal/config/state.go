@@ -202,7 +202,8 @@ func ResolveRuntime(boot *BootConfig, state *StateConfig) *RuntimeConfigSnapshot
 // middleware or other subsystems that read the raw values independently.
 // ─────────────────────────────────────────────────────────────────────
 
-func mergeRuntimeConfigValues(snap *RuntimeConfigSnapshot, values map[string]string) {
+// mergeFallbackOverrides applies "fallback:*" runtime_config values onto snap.
+func mergeFallbackOverrides(snap *RuntimeConfigSnapshot, values map[string]string) {
 	if v, ok := values["fallback:enabled"]; ok {
 		if parsed, ok := parseBool(v); ok {
 			snap.Fallback.Enabled = parsed
@@ -222,27 +223,42 @@ func mergeRuntimeConfigValues(snap *RuntimeConfigSnapshot, values map[string]str
 		}
 	}
 	if v, ok := values["fallback:allowed_models"]; ok && v != "" {
-		parts := strings.Split(v, ",")
-		cleaned := make([]string, 0, len(parts))
-		for _, p := range parts {
-			if trimmed := strings.TrimSpace(p); trimmed != "" {
-				cleaned = append(cleaned, trimmed)
-			}
-		}
-		snap.Fallback.AllowedModels = cleaned
+		snap.Fallback.AllowedModels = splitCleanCSV(v)
 	}
+}
 
+// splitCleanCSV splits a comma-separated string, trimming whitespace and
+// dropping empty entries.
+func splitCleanCSV(v string) []string {
+	parts := strings.Split(v, ",")
+	cleaned := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if trimmed := strings.TrimSpace(p); trimmed != "" {
+			cleaned = append(cleaned, trimmed)
+		}
+	}
+	return cleaned
+}
+
+// mergeCacheAuditOverrides applies "cache:*"/"audit:*" runtime_config
+// values onto snap.
+func mergeCacheAuditOverrides(snap *RuntimeConfigSnapshot, values map[string]string) {
 	if v, ok := values["cache:similarity_threshold"]; ok {
 		if parsed, err := strconv.ParseFloat(v, 64); err == nil {
 			snap.CacheSimilarityThreshold = parsed
 		}
 	}
-
 	if v, ok := values["audit:retention_days"]; ok {
 		if parsed, err := strconv.ParseInt(v, 10, 64); err == nil {
 			snap.AuditRetentionDays = parsed
 		}
 	}
+}
+
+// mergeScalarOverrides applies the remaining single-key runtime_config
+// overrides (cache/audit/guardrails/pii/dashboard/metrics) onto snap.
+func mergeScalarOverrides(snap *RuntimeConfigSnapshot, values map[string]string) {
+	mergeCacheAuditOverrides(snap, values)
 
 	if v, ok := values["guardrails:mode"]; ok && v != "" {
 		snap.GuardrailsMode = v
@@ -260,10 +276,13 @@ func mergeRuntimeConfigValues(snap *RuntimeConfigSnapshot, values map[string]str
 			snap.Metrics.ListenAddr = fmt.Sprintf("0.0.0.0:%d", parsed)
 		}
 	}
+}
 
-	// feature:<key> entries toggle typed feature enabled/disabled fields.
-	// Unlike the old feature_flag section, these override the boot default
-	// directly into the snapshot's typed field — no separate lookup required.
+// mergeFeatureFlagOverrides applies "feature:<key>" runtime_config
+// overrides directly onto the snapshot's typed enabled/disabled fields.
+// Unlike the old feature_flag section, these override the boot default
+// directly into the snapshot's typed field — no separate lookup required.
+func mergeFeatureFlagOverrides(snap *RuntimeConfigSnapshot, values map[string]string) {
 	featureBools := map[string]*bool{
 		"feature:rate_limit":     &snap.RateLimit.Enabled,
 		"feature:budget":         &snap.Budget.Enabled,
@@ -272,6 +291,8 @@ func mergeRuntimeConfigValues(snap *RuntimeConfigSnapshot, values map[string]str
 		"feature:guardrails":     &snap.GuardrailsEnabled,
 		"feature:mcp":            &snap.MCPEnabled,
 		"feature:openapi":        &snap.OpenAPIEnabled,
+		"feature:smart_router":   &snap.Routing.Enabled,
+		"feature:semantic_cache": &snap.CacheEnabled,
 	}
 	for sectionKey, ptr := range featureBools {
 		if v, ok := values[sectionKey]; ok {
@@ -280,16 +301,12 @@ func mergeRuntimeConfigValues(snap *RuntimeConfigSnapshot, values map[string]str
 			}
 		}
 	}
-	if v, ok := values["feature:smart_router"]; ok {
-		if parsed, ok := parseBool(v); ok {
-			snap.Routing.Enabled = parsed
-		}
-	}
-	if v, ok := values["feature:semantic_cache"]; ok {
-		if parsed, ok := parseBool(v); ok {
-			snap.CacheEnabled = parsed
-		}
-	}
+}
+
+func mergeRuntimeConfigValues(snap *RuntimeConfigSnapshot, values map[string]string) {
+	mergeFallbackOverrides(snap, values)
+	mergeScalarOverrides(snap, values)
+	mergeFeatureFlagOverrides(snap, values)
 }
 
 // parseBool wraps strconv.ParseBool with the same (value, ok) signature.

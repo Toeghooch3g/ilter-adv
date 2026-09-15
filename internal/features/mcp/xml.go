@@ -48,17 +48,40 @@ func FindToolCallsOpen(s string, from int) (start, contentStart int, ok bool) {
 	}
 }
 
-// StripToolCallXML replaces tool call XML blocks with position markers.
-// markerOffset is the starting index for emitted markers; callers that
-// need marker indices to be globally unique across turns (e.g. the
-// streaming handler that maps each marker to a toolEvents slot) must pass
-// their per-request toolOffset. Callers without offset tracking pass 0.
-func StripToolCallXML(content string, markerOffset int) (string, int) {
-	if content == "" {
-		return content, 0
+// countInvokes counts "<invoke" tag occurrences in inner, treating any
+// "<invoke" not immediately followed by a tag-boundary character as a false
+// match (e.g. "<invokeX").
+func countInvokes(inner string) int {
+	count := 0
+	scanOff := 0
+	for {
+		ii := strings.Index(inner[scanOff:], "<invoke")
+		if ii < 0 {
+			break
+		}
+		invokeStart := scanOff + ii
+		if len(inner) > invokeStart+7 {
+			ic := inner[invokeStart+7]
+			if ic != ' ' && ic != '>' && ic != '\n' && ic != '\r' && ic != '\t' && ic != '/' {
+				scanOff = invokeStart + 7
+				continue
+			}
+		}
+		count++
+		iiClose := strings.Index(inner[invokeStart:], "</invoke>")
+		if iiClose < 0 {
+			scanOff = invokeStart + 7
+		} else {
+			scanOff = invokeStart + iiClose + len("</invoke>")
+		}
 	}
-	markerIdx := markerOffset
+	return count
+}
 
+// stripToolCallsBlocks replaces every <tool_calls>...</tool_calls> block in
+// content with one position marker per <invoke> it contains (at least one,
+// even if none were found — a malformed block still consumed a turn).
+func stripToolCallsBlocks(content string, markerIdx int) (string, int) {
 	tcOff := 0
 	for {
 		iStart, iContentEnd, ok := FindToolCallsOpen(content, tcOff)
@@ -73,30 +96,7 @@ func StripToolCallXML(content string, markerOffset int) (string, int) {
 			continue
 		}
 		fullEnd := iContentEnd + end + len(closeTag)
-		inner := content[iContentEnd:fullEnd]
-		invokeCount := 0
-		scanOff := 0
-		for {
-			ii := strings.Index(inner[scanOff:], "<invoke")
-			if ii < 0 {
-				break
-			}
-			invokeStart := scanOff + ii
-			if len(inner) > invokeStart+7 {
-				ic := inner[invokeStart+7]
-				if ic != ' ' && ic != '>' && ic != '\n' && ic != '\r' && ic != '\t' && ic != '/' {
-					scanOff = invokeStart + 7
-					continue
-				}
-			}
-			invokeCount++
-			iiClose := strings.Index(inner[invokeStart:], "</invoke>")
-			if iiClose < 0 {
-				scanOff = invokeStart + 7
-			} else {
-				scanOff = invokeStart + iiClose + len("</invoke>")
-			}
-		}
+		invokeCount := countInvokes(content[iContentEnd:fullEnd])
 		if invokeCount == 0 {
 			invokeCount = 1
 		}
@@ -110,7 +110,12 @@ func StripToolCallXML(content string, markerOffset int) (string, int) {
 		content = content[:iStart] + replacement + content[fullEnd:]
 		tcOff = iStart + len(replacement)
 	}
+	return content, markerIdx
+}
 
+// stripBareInvokes replaces every bare <invoke>...</invoke> block (not
+// already consumed inside a <tool_calls> block) with one position marker.
+func stripBareInvokes(content string, markerIdx int) (string, int) {
 	invokeOff := 0
 	for {
 		i := strings.Index(content[invokeOff:], "<invoke")
@@ -136,7 +141,12 @@ func StripToolCallXML(content string, markerOffset int) (string, int) {
 		content = content[:start] + marker + content[start+end+len("</invoke>"):]
 		invokeOff = start + len(marker)
 	}
+	return content, markerIdx
+}
 
+// stripOrphanParameters removes any <parameter>...</parameter> blocks left
+// over outside a stripped <invoke>/<tool_calls> block.
+func stripOrphanParameters(content string) string {
 	for {
 		idx := strings.Index(content, "<parameter")
 		if idx < 0 {
@@ -152,6 +162,12 @@ func StripToolCallXML(content string, markerOffset int) (string, int) {
 			content = strings.TrimSpace(content[:idx])
 		}
 	}
+	return content
+}
+
+// stripDanglingCloseTags removes any leftover closing tags (</tool_calls>,
+// </invoke>, </parameter>) that the earlier passes didn't already consume.
+func stripDanglingCloseTags(content string) string {
 	for _, tag := range []string{"</tool_calls>", "</invoke>", "</parameter>"} {
 		for {
 			idx := strings.Index(content, tag)
@@ -161,6 +177,24 @@ func StripToolCallXML(content string, markerOffset int) (string, int) {
 			content = content[:idx] + content[idx+len(tag):]
 		}
 	}
+	return content
+}
+
+// StripToolCallXML replaces tool call XML blocks with position markers.
+// markerOffset is the starting index for emitted markers; callers that
+// need marker indices to be globally unique across turns (e.g. the
+// streaming handler that maps each marker to a toolEvents slot) must pass
+// their per-request toolOffset. Callers without offset tracking pass 0.
+func StripToolCallXML(content string, markerOffset int) (string, int) {
+	if content == "" {
+		return content, 0
+	}
+	markerIdx := markerOffset
+
+	content, markerIdx = stripToolCallsBlocks(content, markerIdx)
+	content, markerIdx = stripBareInvokes(content, markerIdx)
+	content = stripOrphanParameters(content)
+	content = stripDanglingCloseTags(content)
 
 	return strings.TrimSpace(content), markerIdx
 }
@@ -179,24 +213,12 @@ func ParseXMLArgValue(v string) any {
 	return v
 }
 
-// parseXMLToolCall parses a single <invoke> block and returns the ToolCall and remaining text.
-func parseXMLToolCall(text string) (*model.ToolCall, string) {
-	startTag := "<invoke name=\""
-	found := strings.Contains(text, startTag)
-	if !found {
-		return nil, ""
-	}
-
-	nameStart := strings.Index(text, startTag) + len(startTag)
-	nameEnd := strings.IndexByte(text[nameStart:], '"')
-	if nameEnd < 0 {
-		return nil, ""
-	}
-	toolName := text[nameStart : nameStart+nameEnd]
-
+// parseXMLParams extracts every <parameter name="...">value</parameter>
+// entry from rest, stopping once a </invoke> boundary is reached (or a
+// malformed parameter tag breaks the scan).
+func parseXMLParams(rest string) map[string]any {
 	args := make(map[string]any)
 	paramTag := "<parameter name=\""
-	rest := text[nameStart+nameEnd:]
 	for {
 		invEnd := strings.Index(rest, "</invoke>")
 		pIdx := strings.Index(rest, paramTag)
@@ -210,8 +232,7 @@ func parseXMLToolCall(text string) (*model.ToolCall, string) {
 		}
 		key := rest[keyStart : keyStart+keyEnd]
 		valStart := keyStart + keyEnd + 1
-		valTag := ">"
-		vIdx := strings.Index(rest[valStart:], valTag)
+		vIdx := strings.Index(rest[valStart:], ">")
 		if vIdx < 0 {
 			break
 		}
@@ -225,10 +246,42 @@ func parseXMLToolCall(text string) (*model.ToolCall, string) {
 		args[key] = ParseXMLArgValue(val)
 		rest = rest[actualValStart+eIdx+len(endTag):]
 	}
+	return args
+}
 
+// remainingTextAfterToolCall returns the text following the enclosing
+// </tool_calls> tag if present, else the text following this <invoke>'s own
+// </invoke> tag (searched starting at invokeSearchStart), else empty.
+func remainingTextAfterToolCall(text string, invokeSearchStart int) string {
+	closeTag := "</tool_calls>"
+	if _, after, ok := strings.Cut(text, closeTag); ok {
+		return after
+	}
+	invClose := "</invoke>"
+	if icIdx := strings.Index(text[invokeSearchStart:], invClose); icIdx >= 0 {
+		return text[invokeSearchStart+icIdx+len(invClose):]
+	}
+	return ""
+}
+
+// parseXMLToolCall parses a single <invoke> block and returns the ToolCall and remaining text.
+func parseXMLToolCall(text string) (*model.ToolCall, string) {
+	startTag := "<invoke name=\""
+	if !strings.Contains(text, startTag) {
+		return nil, ""
+	}
+
+	nameStart := strings.Index(text, startTag) + len(startTag)
+	nameEnd := strings.IndexByte(text[nameStart:], '"')
+	if nameEnd < 0 {
+		return nil, ""
+	}
+	toolName := text[nameStart : nameStart+nameEnd]
 	if toolName == "" {
 		return nil, ""
 	}
+
+	args := parseXMLParams(text[nameStart+nameEnd:])
 
 	argsJSON, _ := json.Marshal(args)
 	var idBuf [8]byte
@@ -242,53 +295,51 @@ func parseXMLToolCall(text string) (*model.ToolCall, string) {
 		},
 	}
 
+	return tc, remainingTextAfterToolCall(text, nameStart+nameEnd)
+}
+
+// tryParseToolCallsBlock looks for a <tool_calls>...</tool_calls> block in
+// text and parses every <invoke> inside it. found reports whether an
+// opening <tool_calls> tag was located at all (xmlOffset is only
+// meaningful when found is true); tcs may still be empty even when found.
+func tryParseToolCallsBlock(text string) (tcs []model.ToolCall, xmlOffset int, found bool) {
+	start, contentEnd, found := FindToolCallsOpen(text, 0)
+	if !found {
+		return nil, -1, false
+	}
+	xmlOffset = start
+
 	closeTag := "</tool_calls>"
-	cIdx := strings.Index(text, closeTag)
-	if cIdx >= 0 {
-		end := cIdx + len(closeTag)
-		return tc, text[end:]
+	closeIdx := strings.Index(text[contentEnd:], closeTag)
+	if closeIdx < 0 {
+		return nil, xmlOffset, true
 	}
 
-	invClose := "</invoke>"
-	icIdx := strings.Index(text[nameStart+nameEnd:], invClose)
-	if icIdx >= 0 {
-		end := nameStart + nameEnd + icIdx + len(invClose)
-		return tc, text[end:]
+	afterClose := contentEnd + closeIdx + len(closeTag)
+	if _, _, ok2 := FindToolCallsOpen(text, afterClose); ok2 {
+		mcpLog.Warn("multiple <tool_calls> blocks found, only first parsed", "first_offset", start)
 	}
 
-	return tc, ""
+	remaining := text[contentEnd : contentEnd+closeIdx]
+	for {
+		tc, after := parseXMLToolCall(remaining)
+		if tc == nil {
+			break
+		}
+		tcs = append(tcs, *tc)
+		remaining = after
+	}
+	return tcs, xmlOffset, true
 }
 
 // FindAllToolCallsInText scans text for <tool_calls> and bare <invoke> XML blocks.
 func FindAllToolCallsInText(text string) ([]model.ToolCall, int) {
-	var tcs []model.ToolCall
-	xmlOffset := -1
-
-	start, contentEnd, ok := FindToolCallsOpen(text, 0)
-	if ok {
-		xmlOffset = start
-		closeTag := "</tool_calls>"
-		closeIdx := strings.Index(text[contentEnd:], closeTag)
-		if closeIdx >= 0 {
-			afterClose := contentEnd + closeIdx + len(closeTag)
-			if _, _, ok2 := FindToolCallsOpen(text, afterClose); ok2 {
-				mcpLog.Warn("multiple <tool_calls> blocks found, only first parsed", "first_offset", start)
-			}
-
-			inner := text[contentEnd : contentEnd+closeIdx]
-			remaining := inner
-			for {
-				tc, after := parseXMLToolCall(remaining)
-				if tc == nil {
-					break
-				}
-				tcs = append(tcs, *tc)
-				remaining = after
-			}
-			if len(tcs) > 0 {
-				return tcs, xmlOffset
-			}
-		}
+	tcs, xmlOffset, found := tryParseToolCallsBlock(text)
+	if found && len(tcs) > 0 {
+		return tcs, xmlOffset
+	}
+	if !found {
+		xmlOffset = -1
 	}
 
 	tc, _ := parseXMLToolCall(text)

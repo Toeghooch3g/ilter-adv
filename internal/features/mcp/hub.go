@@ -118,11 +118,14 @@ func (hub *Hub) Dispatch(req *JSONRPCRequest, session *Session) *JSONRPCResponse
 // switch does.
 func (hub *Hub) finish(resp *JSONRPCResponse, start time.Time) *JSONRPCResponse {
 	if resp != nil {
+		// Background context is intentional: Dispatch has no context.Context
+		// (it takes a *Session instead), so there is nothing request-scoped
+		// to inherit here — these are fire-and-forget metric recordings.
 		if MCPRequestsTotal != nil {
-			MCPRequestsTotal.Add(context.Background(), 1)
+			MCPRequestsTotal.Add(context.Background(), 1) //nolint:contextcheck // Dispatch has no context.Context to inherit
 		}
 		if MCPRequestDuration != nil {
-			MCPRequestDuration.Record(context.Background(), float64(time.Since(start).Microseconds())/1000.0)
+			MCPRequestDuration.Record(context.Background(), float64(time.Since(start).Microseconds())/1000.0) //nolint:contextcheck // Dispatch has no context.Context to inherit
 		}
 	}
 	return resp

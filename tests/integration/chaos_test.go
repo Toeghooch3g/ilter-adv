@@ -27,7 +27,7 @@ import (
 // newDeadRedis creates a miniredis, a go-redis client wired to it, and a
 // guard. The caller must call mini.Close() to kill Redis before the request
 // so every middleware operation fails open.
-func newDeadRedis(t *testing.T) (*redis.Client, *circuitbreaker.RedisBreaker, *miniredis.Miniredis) {
+func newDeadRedis(t *testing.T) (*circuitbreaker.RedisBreaker, *miniredis.Miniredis) {
 	t.Helper()
 
 	mini, err := miniredis.Run()
@@ -44,13 +44,13 @@ func newDeadRedis(t *testing.T) (*redis.Client, *circuitbreaker.RedisBreaker, *m
 	})
 
 	guard := circuitbreaker.NewRedisBreaker(rdb, 200*time.Millisecond, gobreaker.Settings{})
-	return rdb, guard, mini
+	return guard, mini
 }
 
 // newTestSetup creates the common plumbing: provider registry, load balancer,
 // auth middleware, and proxy handler.  Tests add the middleware they care
 // about on top before serving.
-func newTestSetup(t *testing.T) (*config.Config, *smartrouter.LoadBalancer, *middleware.AuthMiddleware, *proxy.Handler) {
+func newTestSetup(t *testing.T) (*middleware.AuthMiddleware, *proxy.Handler) {
 	t.Helper()
 
 	cfg := &config.Config{
@@ -70,7 +70,7 @@ func newTestSetup(t *testing.T) (*config.Config, *smartrouter.LoadBalancer, *mid
 
 	authMw := middleware.NewAuthMiddleware(cfg.Auth, nil)
 	proxyHandler := proxy.NewHandler(lb, nil, nil, nil)
-	return cfg, lb, authMw, proxyHandler
+	return authMw, proxyHandler
 }
 
 // newRequest builds a POST /v1/chat/completions with the given model name
@@ -93,8 +93,8 @@ func newRequest(modelName string) *http.Request {
 func TestChaos_RateLimiterRedisDown(t *testing.T) {
 	t.Parallel()
 
-	_, guard, mini := newDeadRedis(t)
-	_, _, authMw, proxyHandler := newTestSetup(t)
+	guard, mini := newDeadRedis(t)
+	authMw, proxyHandler := newTestSetup(t)
 
 	rlMw, err := middleware.NewRateLimitMiddleware(
 		&config.RateLimitConfig{Enabled: true, AdminBypass: false, DefaultRPM: 10},
@@ -127,8 +127,8 @@ func TestChaos_RateLimiterRedisDown(t *testing.T) {
 func TestChaos_BudgetRedisDown(t *testing.T) {
 	t.Parallel()
 
-	_, guard, mini := newDeadRedis(t)
-	_, _, authMw, proxyHandler := newTestSetup(t)
+	guard, mini := newDeadRedis(t)
+	authMw, proxyHandler := newTestSetup(t)
 
 	budgetMw := middleware.NewBudgetMiddleware(
 		config.BudgetConfig{Enabled: true, DefaultMonthlyLimit: 100.0, DefaultDailyLimit: 10.0},
@@ -158,8 +158,8 @@ func TestChaos_BudgetRedisDown(t *testing.T) {
 func TestChaos_SemanticCacheRedisDown(t *testing.T) {
 	t.Parallel()
 
-	_, guard, mini := newDeadRedis(t)
-	_, _, authMw, proxyHandler := newTestSetup(t)
+	guard, mini := newDeadRedis(t)
+	authMw, proxyHandler := newTestSetup(t)
 
 	cacheMw := middleware.NewSemanticCacheMiddleware(
 		config.CacheConfig{Enabled: true, Type: "exact"},

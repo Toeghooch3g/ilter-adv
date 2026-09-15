@@ -91,8 +91,36 @@ func (h *Handler) HandleGetFallback(w http.ResponseWriter, r *http.Request) {
 	model.WriteJSON(w, http.StatusOK, resp)
 }
 
+// applyFallbackUpdate persists req's set fields as runtime_config rows,
+// validating cooldown_duration parses as a time.Duration first.
+func (h *Handler) applyFallbackUpdate(req updateFallbackRequest) error {
+	if req.Enabled != nil {
+		val := "false"
+		if *req.Enabled {
+			val = "true"
+		}
+		h.saveRuntimeConfig("enabled", val)
+	}
+	if req.CooldownDuration != nil {
+		if _, err := time.ParseDuration(*req.CooldownDuration); err != nil {
+			return fmt.Errorf("invalid cooldown_duration format (e.g. 5m, 1m)")
+		}
+		h.saveRuntimeConfig("cooldown_duration", *req.CooldownDuration)
+	}
+	if req.ModelDowngrade != nil {
+		h.saveRuntimeConfig("model_downgrade", *req.ModelDowngrade)
+	}
+	if req.MaxAttempts != nil {
+		h.saveRuntimeConfig("max_attempts", fmt.Sprintf("%d", *req.MaxAttempts))
+	}
+	if req.AllowedModels != nil {
+		h.saveRuntimeConfig("allowed_models", strings.Join(req.AllowedModels, ","))
+	}
+	return nil
+}
+
 func (h *Handler) HandleUpdateFallback(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 	var req updateFallbackRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		model.WriteJSONError(w, http.StatusBadRequest, "invalid_request_error", "Invalid request body")
@@ -100,28 +128,9 @@ func (h *Handler) HandleUpdateFallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.store != nil && h.store.DB != nil {
-		if req.Enabled != nil {
-			val := "false"
-			if *req.Enabled {
-				val = "true"
-			}
-			h.saveRuntimeConfig("fallback", "enabled", val)
-		}
-		if req.CooldownDuration != nil {
-			if _, err := time.ParseDuration(*req.CooldownDuration); err != nil {
-				model.WriteJSONError(w, http.StatusBadRequest, "invalid_request_error", "Invalid cooldown_duration format (e.g. 5m, 1m)")
-				return
-			}
-			h.saveRuntimeConfig("fallback", "cooldown_duration", *req.CooldownDuration)
-		}
-		if req.ModelDowngrade != nil {
-			h.saveRuntimeConfig("fallback", "model_downgrade", *req.ModelDowngrade)
-		}
-		if req.MaxAttempts != nil {
-			h.saveRuntimeConfig("fallback", "max_attempts", fmt.Sprintf("%d", *req.MaxAttempts))
-		}
-		if req.AllowedModels != nil {
-			h.saveRuntimeConfig("fallback", "allowed_models", strings.Join(req.AllowedModels, ","))
+		if err := h.applyFallbackUpdate(req); err != nil {
+			model.WriteJSONError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
+			return
 		}
 	}
 
@@ -140,7 +149,7 @@ type toggleFallbackRequest struct {
 }
 
 func (h *Handler) HandleToggleFallback(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 	var req toggleFallbackRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		model.WriteJSONError(w, http.StatusBadRequest, "invalid_request_error", "Invalid request body")
@@ -161,13 +170,13 @@ func (h *Handler) HandleToggleFallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.store != nil && h.store.DB != nil {
-		h.saveRuntimeConfig("fallback", "enabled", val)
+		h.saveRuntimeConfig("enabled", val)
 	}
 
 	if h.auditor != nil {
 		oldVals := map[string]any{"enabled": oldEnabled == "true"}
 		newVals := map[string]any{"enabled": req.Enabled}
-		if err := h.auditor.LogUpdate("fallback", "enabled", oldVals, newVals, reqmeta.GetKeyID(r.Context())); err != nil {
+		if err := h.auditor.LogUpdate(r.Context(), "fallback", "enabled", oldVals, newVals, reqmeta.GetKeyID(r.Context())); err != nil {
 			slog.Warn("audit log failed for fallback toggle", "error", err)
 		}
 	}
@@ -183,7 +192,7 @@ func (h *Handler) HandleToggleFallback(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) HandleClearCooldown(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 	var req clearCooldownRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		model.WriteJSONError(w, http.StatusBadRequest, "invalid_request_error", "Invalid request body")
@@ -217,7 +226,8 @@ func (h *Handler) getFallbackConfig() config.FallbackConfig {
 	}
 }
 
-func (h *Handler) saveRuntimeConfig(section, key, value string) {
+func (h *Handler) saveRuntimeConfig(key, value string) {
+	const section = "fallback"
 	_, err := h.store.DB.Exec(
 		`INSERT INTO runtime_config (section, key, value, updated_at, version)
 		 VALUES (?, ?, ?, datetime('now'), 1)

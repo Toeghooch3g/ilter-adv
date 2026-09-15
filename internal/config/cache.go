@@ -15,8 +15,8 @@ import (
 // RuntimeConfigReader abstracts direct read access over the runtime_config table
 // to decouple configuration cache from the storage layer and avoid import cycles.
 type RuntimeConfigReader interface {
-	GetAll() (map[string]string, error)
-	GetBySection(section string) (map[string]string, error)
+	GetAll(ctx context.Context) (map[string]string, error)
+	GetBySection(ctx context.Context, section string) (map[string]string, error)
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -169,14 +169,48 @@ func StartConfigPolling(ctx context.Context, cache *Cache, stores *RuntimeStores
 // State loading from stores
 // ─────────────────────────────────────────────────────────────────────
 
+// loadGuardrailRulesFromStore loads and parses the guardrail_rule section
+// of runtime_config into StateConfig's GuardRules/CustomRules shape.
+// hadEntries reports whether the section had any rows at all (regardless
+// of whether they parsed), matching loadStateFromStores' original
+// "assign these fields only if the section was non-empty" behavior.
+func loadGuardrailRulesFromStore(ctx context.Context, store RuntimeConfigReader) (names []string, rules []CustomRuleConfig, hadEntries bool, err error) {
+	grEntries, err := store.GetBySection(ctx, "guardrail_rule")
+	if err != nil {
+		return nil, nil, false, fmt.Errorf("guardrail rules: %w", err)
+	}
+	if len(grEntries) == 0 {
+		return nil, nil, false, nil
+	}
+
+	customRules := make([]CustomRuleConfig, 0, len(grEntries))
+	guardRuleNames := make([]string, 0, len(grEntries))
+	for key, val := range grEntries {
+		var gr model.GuardrailRule
+		if uErr := json.Unmarshal([]byte(val), &gr); uErr != nil {
+			slog.Warn("config cache: skipping unparseable guardrail rule", "key", key, "error", uErr)
+			continue
+		}
+		guardRuleNames = append(guardRuleNames, gr.Name)
+		customRules = append(customRules, CustomRuleConfig{
+			ID:       gr.Name,
+			Patterns: []string{gr.Pattern},
+			Mode:     gr.Action,
+			Severity: gr.Severity,
+			Enabled:  gr.Enabled,
+		})
+	}
+	return guardRuleNames, customRules, true, nil
+}
+
 // loadStateFromStores reads every runtime configuration section from the
 // given stores and assembles a StateConfig. Stores that are nil are skipped.
-func loadStateFromStores(_ context.Context, stores *RuntimeStores) (*StateConfig, error) {
+func loadStateFromStores(ctx context.Context, stores *RuntimeStores) (*StateConfig, error) {
 	state := &StateConfig{}
 
 	// ── Generic runtime_config entries ──
 	if stores.RuntimeConfig != nil {
-		values, err := stores.RuntimeConfig.GetAll()
+		values, err := stores.RuntimeConfig.GetAll(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("runtime_config: %w", err)
 		}
@@ -185,28 +219,11 @@ func loadStateFromStores(_ context.Context, stores *RuntimeStores) (*StateConfig
 		}
 
 		// ── Guardrail rules ──
-		grEntries, err := stores.RuntimeConfig.GetBySection("guardrail_rule")
+		guardRuleNames, customRules, hadEntries, err := loadGuardrailRulesFromStore(ctx, stores.RuntimeConfig)
 		if err != nil {
-			return nil, fmt.Errorf("guardrail rules: %w", err)
+			return nil, err
 		}
-		if len(grEntries) > 0 {
-			customRules := make([]CustomRuleConfig, 0, len(grEntries))
-			guardRuleNames := make([]string, 0, len(grEntries))
-			for key, val := range grEntries {
-				var gr model.GuardrailRule
-				if uErr := json.Unmarshal([]byte(val), &gr); uErr != nil {
-					slog.Warn("config cache: skipping unparseable guardrail rule", "key", key, "error", uErr)
-					continue
-				}
-				guardRuleNames = append(guardRuleNames, gr.Name)
-				customRules = append(customRules, CustomRuleConfig{
-					ID:       gr.Name,
-					Patterns: []string{gr.Pattern},
-					Mode:     gr.Action,
-					Severity: gr.Severity,
-					Enabled:  gr.Enabled,
-				})
-			}
+		if hadEntries {
 			state.GuardRules = guardRuleNames
 			state.CustomRules = customRules
 		}

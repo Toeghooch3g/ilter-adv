@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -100,7 +101,7 @@ func TestRegistry_OnToolsChanged_FiresOnSyncTools(t *testing.T) {
 		}
 	})
 
-	if err := r.SyncTools("s1", []ToolDefinition{{Name: "t1"}}); err != nil {
+	if err := r.SyncTools(context.Background(), "s1", []ToolDefinition{{Name: "t1"}}); err != nil {
 		t.Fatalf("SyncTools error: %v", err)
 	}
 

@@ -23,7 +23,7 @@ func TestNewProviderFromConfig_OpenAI(t *testing.T) {
 }
 
 func TestNewProviderFromConfig_Anthropic(t *testing.T) {
-	p, err := NewProviderFromConfig(config.ProviderConfig{
+	p, err := NewProviderFromConfig(config.ProviderConfig{ //nolint:gosec // test fixture API key, not a real credential
 		Name:   "test-anthropic",
 		Type:   "anthropic",
 		APIKey: "sk-ant-test",
@@ -34,7 +34,7 @@ func TestNewProviderFromConfig_Anthropic(t *testing.T) {
 }
 
 func TestNewProviderFromConfig_DeepSeek(t *testing.T) {
-	p, err := NewProviderFromConfig(config.ProviderConfig{
+	p, err := NewProviderFromConfig(config.ProviderConfig{ //nolint:gosec // test fixture API key, not a real credential
 		Name:   "test-deepseek",
 		Type:   "deepseek",
 		APIKey: "sk-ds-test",
@@ -44,7 +44,7 @@ func TestNewProviderFromConfig_DeepSeek(t *testing.T) {
 }
 
 func TestNewProviderFromConfig_Gemini(t *testing.T) {
-	p, err := NewProviderFromConfig(config.ProviderConfig{
+	p, err := NewProviderFromConfig(config.ProviderConfig{ //nolint:gosec // test fixture API key, not a real credential
 		Name:   "test-gemini",
 		Type:   "gemini",
 		APIKey: "sk-gem-test",
@@ -78,7 +78,7 @@ func TestNewProviderFromConfig_Ollama(t *testing.T) {
 }
 
 func TestNewProviderFromConfig_Qwen(t *testing.T) {
-	p, err := NewProviderFromConfig(config.ProviderConfig{
+	p, err := NewProviderFromConfig(config.ProviderConfig{ //nolint:gosec // test fixture API key, not a real credential
 		Name:   "test-qwen",
 		Type:   "qwen",
 		APIKey: "sk-qw-test",
@@ -88,7 +88,7 @@ func TestNewProviderFromConfig_Qwen(t *testing.T) {
 }
 
 func TestNewProviderFromConfig_OpenCodeGo(t *testing.T) {
-	p, err := NewProviderFromConfig(config.ProviderConfig{
+	p, err := NewProviderFromConfig(config.ProviderConfig{ //nolint:gosec // test fixture API key, not a real credential
 		Name:   "test-oc-go",
 		Type:   "opencode_go",
 		APIKey: "sk-oc-test",
@@ -98,7 +98,7 @@ func TestNewProviderFromConfig_OpenCodeGo(t *testing.T) {
 }
 
 func TestNewProviderFromConfig_OpenCodeZen(t *testing.T) {
-	p, err := NewProviderFromConfig(config.ProviderConfig{
+	p, err := NewProviderFromConfig(config.ProviderConfig{ //nolint:gosec // test fixture API key, not a real credential
 		Name:   "test-oc-zen",
 		Type:   "opencode_zen",
 		APIKey: "sk-oc-test",
@@ -130,7 +130,7 @@ func TestNewProviderFromConfig_UnsupportedType(t *testing.T) {
 func TestNewProviderFromConfig_DecryptedAPIKey(t *testing.T) {
 	// Simulate a provider config where the API key is the decrypted secret
 	// from the config cache (as returned by providerRegistrationToConfig).
-	p, err := NewProviderFromConfig(config.ProviderConfig{
+	p, err := NewProviderFromConfig(config.ProviderConfig{ //nolint:gosec // test fixture API key, not a real credential
 		Name:   "test-with-key",
 		Type:   "openai",
 		APIKey: "sk-decrypted-secret-12345",
@@ -168,7 +168,7 @@ func TestInitFromCache_MergeWithExistingProviders(t *testing.T) {
 	snap := &config.Snapshot{
 		RuntimeConfigSnapshot: &config.RuntimeConfigSnapshot{
 			Providers: []config.ProviderConfig{
-				{Name: "db-provider", Type: "anthropic", APIKey: "sk-ant-db"},
+				{Name: "db-provider", Type: "anthropic", APIKey: "sk-ant-db"}, //nolint:gosec // test fixture API key, not a real credential
 			},
 		},
 	}

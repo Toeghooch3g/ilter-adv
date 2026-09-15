@@ -3,6 +3,7 @@
 package integration
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"testing"
@@ -308,7 +309,7 @@ func TestSmartRouterE2E_AuditLogRecordsRouting(t *testing.T) {
 
 	store := dbtest.New(t)
 
-	_, _, err := store.CreateAPIKey("smart-router-test-key", nil, nil, 1000.0, 0, 100, 0, nil, nil, nil)
+	_, _, err := store.CreateAPIKey(context.Background(), "smart-router-test-key", nil, nil, 1000.0, 0, 100, 0, nil, nil, nil)
 	require.NoError(t, err)
 
 	auditLogger := middleware.NewAuditLoggerMiddleware(store)

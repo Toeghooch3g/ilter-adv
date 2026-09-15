@@ -61,13 +61,13 @@ func (mc *moderationClient) Moderate(ctx context.Context, content string) (*Mode
 	body, err := json.Marshal(map[string]string{"input": content})
 	if err != nil {
 		mc.logger.Warn("moderation: marshal request", "error", err)
-		return nil, nil // fail-open
+		return nil, nil //nolint:nilnil // documented fail-open contract, see doc comment above
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, mc.url, bytes.NewReader(body))
 	if err != nil {
 		mc.logger.Warn("moderation: create request", "error", err)
-		return nil, nil
+		return nil, nil //nolint:nilnil // documented fail-open contract, see doc comment above
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if mc.apiKey != "" {
@@ -77,19 +77,19 @@ func (mc *moderationClient) Moderate(ctx context.Context, content string) (*Mode
 	resp, err := mc.client.Do(req)
 	if err != nil {
 		mc.logger.Warn("moderation: request failed, failing open", "url", mc.url, "error", err)
-		return nil, nil
+		return nil, nil //nolint:nilnil // documented fail-open contract, see doc comment above
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		mc.logger.Warn("moderation: non-2xx response, failing open", "status", resp.StatusCode)
-		return nil, nil
+		return nil, nil //nolint:nilnil // documented fail-open contract, see doc comment above
 	}
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		mc.logger.Warn("moderation: read response body, failing open", "error", err)
-		return nil, nil
+		return nil, nil //nolint:nilnil // documented fail-open contract, see doc comment above
 	}
 
 	// Parse the OpenAI Moderation API response format (the de-facto standard).
@@ -105,7 +105,7 @@ func (mc *moderationClient) Moderate(ctx context.Context, content string) (*Mode
 	var modResp moderationResponse
 	if err := json.Unmarshal(respBody, &modResp); err != nil {
 		mc.logger.Warn("moderation: parse response, failing open", "error", err)
-		return nil, nil
+		return nil, nil //nolint:nilnil // documented fail-open contract, see doc comment above
 	}
 
 	if len(modResp.Results) == 0 {

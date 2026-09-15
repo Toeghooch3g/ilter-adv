@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"testing"
 )
 
@@ -9,7 +10,7 @@ func TestGuardrailRules_CreateListToggleUpdateDelete(t *testing.T) {
 	defer ts.close()
 	s := ts.store
 
-	err := s.CreateGuardrailRule(CreateGuardrailRuleParams{
+	err := s.CreateGuardrailRule(context.Background(), CreateGuardrailRuleParams{
 		ID:          "rule-1",
 		Name:        "Block SSNs",
 		Description: "blocks US social security numbers",
@@ -24,14 +25,14 @@ func TestGuardrailRules_CreateListToggleUpdateDelete(t *testing.T) {
 	}
 
 	// Duplicate ID must fail (primary key).
-	err = s.CreateGuardrailRule(CreateGuardrailRuleParams{
+	err = s.CreateGuardrailRule(context.Background(), CreateGuardrailRuleParams{
 		ID: "rule-1", Name: "dup", Patterns: "[]", Mode: "block", Severity: "low", TargetType: "global", Type: "custom",
 	})
 	if err == nil {
 		t.Fatal("expected error creating duplicate rule ID")
 	}
 
-	rules, err := s.ListGuardrailRules()
+	rules, err := s.ListGuardrailRules(context.Background())
 	if err != nil {
 		t.Fatalf("ListGuardrailRules: %v", err)
 	}
@@ -42,7 +43,7 @@ func TestGuardrailRules_CreateListToggleUpdateDelete(t *testing.T) {
 		t.Errorf("unexpected rule: %+v", rules[0])
 	}
 
-	enabled, err := s.GetEnabledGuardrailRules()
+	enabled, err := s.GetEnabledGuardrailRules(context.Background())
 	if err != nil {
 		t.Fatalf("GetEnabledGuardrailRules: %v", err)
 	}
@@ -50,14 +51,14 @@ func TestGuardrailRules_CreateListToggleUpdateDelete(t *testing.T) {
 		t.Fatalf("expected rule-1 in enabled rules, got %+v", enabled)
 	}
 
-	found, err := s.ToggleGuardrailRule("rule-1", false)
+	found, err := s.ToggleGuardrailRule(context.Background(), "rule-1", false)
 	if err != nil {
 		t.Fatalf("ToggleGuardrailRule: %v", err)
 	}
 	if !found {
 		t.Fatal("expected ToggleGuardrailRule to find rule-1")
 	}
-	enabled, err = s.GetEnabledGuardrailRules()
+	enabled, err = s.GetEnabledGuardrailRules(context.Background())
 	if err != nil {
 		t.Fatalf("GetEnabledGuardrailRules after disable: %v", err)
 	}
@@ -65,7 +66,7 @@ func TestGuardrailRules_CreateListToggleUpdateDelete(t *testing.T) {
 		t.Fatalf("expected 0 enabled rules after disable, got %d", len(enabled))
 	}
 
-	found, err = s.ToggleGuardrailRule("no-such-rule", true)
+	found, err = s.ToggleGuardrailRule(context.Background(), "no-such-rule", true)
 	if err != nil {
 		t.Fatalf("ToggleGuardrailRule nonexistent: %v", err)
 	}
@@ -74,7 +75,7 @@ func TestGuardrailRules_CreateListToggleUpdateDelete(t *testing.T) {
 	}
 
 	newTargetID := 42
-	found, err = s.UpdateGuardrailRule(UpdateGuardrailRuleParams{
+	found, err = s.UpdateGuardrailRule(context.Background(), UpdateGuardrailRuleParams{
 		ID:         "rule-1",
 		Name:       "Block SSNs v2",
 		TargetType: new("user"),
@@ -87,7 +88,7 @@ func TestGuardrailRules_CreateListToggleUpdateDelete(t *testing.T) {
 		t.Fatal("expected UpdateGuardrailRule to find rule-1")
 	}
 
-	rules, err = s.ListGuardrailRules()
+	rules, err = s.ListGuardrailRules(context.Background())
 	if err != nil {
 		t.Fatalf("ListGuardrailRules after update: %v", err)
 	}
@@ -108,7 +109,7 @@ func TestGuardrailRules_CreateListToggleUpdateDelete(t *testing.T) {
 		t.Errorf("expected enabled to remain false (untouched by update), got true")
 	}
 
-	deleted, err := s.DeleteGuardrailRule("rule-1")
+	deleted, err := s.DeleteGuardrailRule(context.Background(), "rule-1")
 	if err != nil {
 		t.Fatalf("DeleteGuardrailRule: %v", err)
 	}
@@ -116,7 +117,7 @@ func TestGuardrailRules_CreateListToggleUpdateDelete(t *testing.T) {
 		t.Fatal("expected DeleteGuardrailRule to find rule-1")
 	}
 
-	deleted, err = s.DeleteGuardrailRule("rule-1")
+	deleted, err = s.DeleteGuardrailRule(context.Background(), "rule-1")
 	if err != nil {
 		t.Fatalf("DeleteGuardrailRule second time: %v", err)
 	}
@@ -124,7 +125,7 @@ func TestGuardrailRules_CreateListToggleUpdateDelete(t *testing.T) {
 		t.Fatal("expected DeleteGuardrailRule to report not-found the second time")
 	}
 
-	rules, err = s.ListGuardrailRules()
+	rules, err = s.ListGuardrailRules(context.Background())
 	if err != nil {
 		t.Fatalf("ListGuardrailRules after delete: %v", err)
 	}
@@ -138,7 +139,7 @@ func TestGuardrailEvents_InsertAndProviderLookup(t *testing.T) {
 	defer ts.close()
 	s := ts.store
 
-	if err := s.InsertGuardrailEvent("key-1", "pii", "blocked", "gpt-4o", "openai", "matched SSN"); err != nil {
+	if err := s.InsertGuardrailEvent(context.Background(), "key-1", "pii", "blocked", "gpt-4o", "openai", "matched SSN"); err != nil {
 		t.Fatalf("InsertGuardrailEvent: %v", err)
 	}
 
@@ -150,7 +151,7 @@ func TestGuardrailEvents_InsertAndProviderLookup(t *testing.T) {
 		t.Fatalf("expected 1 guardrail_events row, got %d", count)
 	}
 
-	if err := s.SaveDiscoveredModels("openai", nil); err != nil {
+	if err := s.SaveDiscoveredModels(context.Background(), "openai", nil); err != nil {
 		t.Fatalf("SaveDiscoveredModels: %v", err)
 	}
 	if _, err := ts.store.DB.Exec(
@@ -160,7 +161,7 @@ func TestGuardrailEvents_InsertAndProviderLookup(t *testing.T) {
 		t.Fatalf("seed provider_models: %v", err)
 	}
 
-	provider, err := s.GetProviderForModel("gpt-4o")
+	provider, err := s.GetProviderForModel(context.Background(), "gpt-4o")
 	if err != nil {
 		t.Fatalf("GetProviderForModel: %v", err)
 	}
@@ -168,7 +169,7 @@ func TestGuardrailEvents_InsertAndProviderLookup(t *testing.T) {
 		t.Errorf("expected provider 'openai', got %q", provider)
 	}
 
-	if _, err := s.GetProviderForModel("no-such-model"); err == nil {
+	if _, err := s.GetProviderForModel(context.Background(), "no-such-model"); err == nil {
 		t.Fatal("expected error (sql.ErrNoRows) for unknown model")
 	}
 }

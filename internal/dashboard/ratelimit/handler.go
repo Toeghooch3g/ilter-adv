@@ -123,7 +123,7 @@ func (h *Handler) HandleRateLimits(w http.ResponseWriter, _ *http.Request) {
 		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
-	defer keyRows.Close()
+	defer func() { _ = keyRows.Close() }()
 
 	keys := make([]KeyItem, 0)
 	for keyRows.Next() {
@@ -193,7 +193,7 @@ func queryRateLimitChart(db *sql.DB, defaultLimit int) ([]ChartPoint, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	points := make([]ChartPoint, 0)
 	for rows.Next() {

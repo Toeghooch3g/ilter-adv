@@ -38,7 +38,7 @@ func userFromSQLC(u sqlc.User) (*auth.User, error) {
 }
 
 // CreateUser inserts a new user and returns the created user with timestamps.
-func (s *SQLiteStore) CreateUser(req auth.CreateUserRequest) (auth.User, error) {
+func (s *SQLiteStore) CreateUser(ctx context.Context, req auth.CreateUserRequest) (auth.User, error) {
 	status := req.Status
 	if status == "" {
 		status = "active"
@@ -59,7 +59,7 @@ func (s *SQLiteStore) CreateUser(req auth.CreateUserRequest) (auth.User, error) 
 	}
 	budget := req.Budget
 
-	res, err := s.queries.CreateUser(context.Background(), sqlc.CreateUserParams{
+	res, err := s.queries.CreateUser(ctx, sqlc.CreateUserParams{
 		Name:         req.Name,
 		Email:        req.Email,
 		Status:       status,
@@ -75,7 +75,7 @@ func (s *SQLiteStore) CreateUser(req auth.CreateUserRequest) (auth.User, error) 
 		return auth.User{}, err
 	}
 
-	sqlcUser, err := s.queries.GetUser(context.Background(), id)
+	sqlcUser, err := s.queries.GetUser(ctx, id)
 	if err != nil {
 		return auth.User{}, err
 	}
@@ -89,8 +89,8 @@ func (s *SQLiteStore) CreateUser(req auth.CreateUserRequest) (auth.User, error) 
 
 // GetUser retrieves a user by their primary key.
 // Returns nil, sql.ErrNoRows if the user does not exist.
-func (s *SQLiteStore) GetUser(id int) (*auth.User, error) {
-	sqlcUser, err := s.queries.GetUser(context.Background(), int64(id))
+func (s *SQLiteStore) GetUser(ctx context.Context, id int) (*auth.User, error) {
+	sqlcUser, err := s.queries.GetUser(ctx, int64(id))
 	if err != nil {
 		return nil, err
 	}
@@ -108,8 +108,8 @@ func (s *SQLiteStore) GetUserByEmail(email string) (*auth.User, error) {
 }
 
 // ListUsers returns all users ordered by id ascending.
-func (s *SQLiteStore) ListUsers() ([]auth.User, error) {
-	sqlcUsers, err := s.queries.ListUsers(context.Background())
+func (s *SQLiteStore) ListUsers(ctx context.Context) ([]auth.User, error) {
+	sqlcUsers, err := s.queries.ListUsers(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -145,7 +145,7 @@ func (s *SQLiteStore) GetUserBudget(id int) (budget float64, dailyLimit float64,
 
 // UpdateUser applies partial updates to a user. Only non-nil fields in the
 // request are updated. Returns the updated user or sql.ErrNoRows if not found.
-func (s *SQLiteStore) UpdateUser(id int, req auth.UpdateUserRequest) (*auth.User, error) {
+func (s *SQLiteStore) UpdateUser(ctx context.Context, id int, req auth.UpdateUserRequest) (*auth.User, error) {
 	var sets []string
 	var args []any
 
@@ -184,7 +184,7 @@ func (s *SQLiteStore) UpdateUser(id int, req auth.UpdateUserRequest) (*auth.User
 
 	if len(sets) == 0 {
 		// Nothing to update — still fetch and return the current user.
-		return s.GetUser(id)
+		return s.GetUser(ctx, id)
 	}
 
 	sets = append(sets, "updated_at = CURRENT_TIMESTAMP")
@@ -205,13 +205,13 @@ func (s *SQLiteStore) UpdateUser(id int, req auth.UpdateUserRequest) (*auth.User
 		return nil, sql.ErrNoRows
 	}
 
-	return s.GetUser(id)
+	return s.GetUser(ctx, id)
 }
 
 // DeleteUser deletes a user by their primary key.
 // Returns sql.ErrNoRows if the user does not exist.
-func (s *SQLiteStore) DeleteUser(id int) error {
-	n, err := s.queries.DeleteUser(context.Background(), int64(id))
+func (s *SQLiteStore) DeleteUser(ctx context.Context, id int) error {
+	n, err := s.queries.DeleteUser(ctx, int64(id))
 	if err != nil {
 		return err
 	}

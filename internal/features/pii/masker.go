@@ -260,15 +260,16 @@ func (m *Masker) findPIIRanges(text string) []piiRange {
 			indexes := p.Re.FindAllStringIndex(text, -1)
 			for _, idx := range indexes {
 				val := text[idx[0]:idx[1]]
-				if name == "credit_card" {
+				switch name {
+				case "credit_card":
 					if !isValidLuhn(val) {
 						continue
 					}
-				} else if name == "tckn" || name == "turkish_id" {
+				case "tckn", "turkish_id":
 					if !isValidTurkishID(val) {
 						continue
 					}
-				} else if name == "us_zip" {
+				case "us_zip":
 					// "port=70000" are common in prompts and rarely real ZIP disclosure.
 					// Full ZIP validation needs a DB; this heuristic handles 90%+ FPs.
 					if idx[0] > 0 && (text[idx[0]-1] == '=' || text[idx[0]-1] == ':') {

@@ -22,7 +22,7 @@ func (s *JobStore) ListStuckRuns() ([]JobRun, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list stuck runs: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	runs := make([]JobRun, 0)
 	for rows.Next() {
@@ -155,7 +155,7 @@ func (s *JobStore) ListPendingRuns(ctx context.Context, maxAttempts int) ([]JobR
 	if err != nil {
 		return nil, fmt.Errorf("list pending runs: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	runs := make([]JobRun, 0)
 	for rows.Next() {
@@ -198,7 +198,7 @@ func (s *JobStore) ListDeadLetterRuns(ctx context.Context) ([]JobRun, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list dead letter runs: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	runs := make([]JobRun, 0)
 	for rows.Next() {

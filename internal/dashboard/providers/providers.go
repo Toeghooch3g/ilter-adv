@@ -6,6 +6,7 @@ import (
 
 	"github.com/ilter-ai/ilter/internal/model"
 
+	"github.com/ilter-ai/ilter/internal/config"
 	"github.com/ilter-ai/ilter/internal/features/smartrouter"
 )
 
@@ -33,58 +34,66 @@ type ProviderSummary struct {
 	APIKeySource        string              `json:"api_key_source"`
 }
 
+// buildProviderSummary builds one provider's summary row, merging its
+// static config with live status from statusMap and DB-persisted model
+// overrides (falling back to the config's own model list when the DB has
+// none).
+func (h *Handler) buildProviderSummary(p config.ProviderConfig, statusMap map[string]smartrouter.ProviderStatus) ProviderSummary {
+	summary := ProviderSummary{
+		Name:         p.Name,
+		Type:         p.Type,
+		BaseURL:      p.BaseURL,
+		APIKeySet:    p.APIKey != "",
+		APIKeySource: p.APIKeySource,
+	}
+
+	dbModels, err := h.store.GetProviderModels(p.Name)
+	if err == nil && len(dbModels) > 0 {
+		summary.Models = make([]ProviderModelItem, len(dbModels))
+		for i, m := range dbModels {
+			summary.Models[i] = ProviderModelItem{
+				Name:   m.Model,
+				Active: m.Active,
+				Tier:   m.Tier,
+			}
+		}
+	} else {
+		summary.Models = make([]ProviderModelItem, len(p.Models))
+		for i, m := range p.Models {
+			summary.Models[i] = ProviderModelItem{Name: m.Name, Active: true}
+		}
+	}
+
+	summary.TotalModels = len(summary.Models)
+	for _, m := range summary.Models {
+		if m.Active {
+			summary.ActiveModels++
+		}
+	}
+
+	if ps, ok := statusMap[p.Name]; ok {
+		summary.Status = ps.Status
+		summary.CircuitBreakerState = ps.CircuitBreakerState
+		summary.TotalRequests = ps.TotalRequests
+		summary.TotalErrors = ps.TotalErrors
+		summary.SuccessRate = ps.SuccessRate
+		summary.LastErrorTime = ps.LastErrorTime
+		summary.LastSuccessTime = ps.LastSuccessTime
+	} else {
+		summary.Status = "offline"
+	}
+	return summary
+}
+
 func (h *Handler) HandleProviders(w http.ResponseWriter, _ *http.Request) {
 	statusMap := make(map[string]smartrouter.ProviderStatus, 8)
 	for _, ps := range h.lb.GetProviderStatus() {
 		statusMap[ps.Name] = ps
 	}
 
-	summaries := make([]ProviderSummary, 0)
+	summaries := make([]ProviderSummary, 0, len(h.cfg.Providers))
 	for _, p := range h.cfg.Providers {
-		summary := ProviderSummary{
-			Name:         p.Name,
-			Type:         p.Type,
-			BaseURL:      p.BaseURL,
-			APIKeySet:    p.APIKey != "",
-			APIKeySource: p.APIKeySource,
-		}
-
-		dbModels, err := h.store.GetProviderModels(p.Name)
-		if err == nil && len(dbModels) > 0 {
-			summary.Models = make([]ProviderModelItem, len(dbModels))
-			for i, m := range dbModels {
-				summary.Models[i] = ProviderModelItem{
-					Name:   m.Model,
-					Active: m.Active,
-					Tier:   m.Tier,
-				}
-			}
-		} else {
-			summary.Models = make([]ProviderModelItem, len(p.Models))
-			for i, m := range p.Models {
-				summary.Models[i] = ProviderModelItem{Name: m.Name, Active: true}
-			}
-		}
-
-		summary.TotalModels = len(summary.Models)
-		for _, m := range summary.Models {
-			if m.Active {
-				summary.ActiveModels++
-			}
-		}
-
-		if ps, ok := statusMap[p.Name]; ok {
-			summary.Status = ps.Status
-			summary.CircuitBreakerState = ps.CircuitBreakerState
-			summary.TotalRequests = ps.TotalRequests
-			summary.TotalErrors = ps.TotalErrors
-			summary.SuccessRate = ps.SuccessRate
-			summary.LastErrorTime = ps.LastErrorTime
-			summary.LastSuccessTime = ps.LastSuccessTime
-		} else {
-			summary.Status = "offline"
-		}
-		summaries = append(summaries, summary)
+		summaries = append(summaries, h.buildProviderSummary(p, statusMap))
 	}
 	model.WriteJSON(w, http.StatusOK, summaries)
 }

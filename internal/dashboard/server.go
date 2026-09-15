@@ -263,8 +263,9 @@ func (s *Server) BuildServer() (*http.Server, error) {
 	s.registerSPARoutes(r, fileServer, s.makePageAuthMiddleware())
 
 	s.srv = &http.Server{
-		Addr:    fmt.Sprintf(":%d", s.cfg.Dashboard.Port),
-		Handler: r,
+		Addr:              fmt.Sprintf(":%d", s.cfg.Dashboard.Port),
+		Handler:           r,
+		ReadHeaderTimeout: 10 * time.Second,
 	}
 
 	return s.srv, nil
@@ -305,7 +306,7 @@ func requestToken(r *http.Request) string {
 // isAuthorized reports whether token is a valid dashboard/admin credential:
 // the configured dashboard auth token, the admin key, an "admin"-group API
 // key, or a valid user JWT.
-func (s *Server) isAuthorized(token string) bool {
+func (s *Server) isAuthorized(ctx context.Context, token string) bool {
 	if token == "" {
 		return false
 	}
@@ -317,13 +318,13 @@ func (s *Server) isAuthorized(token string) bool {
 		return true
 	}
 
-	if s.store != nil && s.store.IsAdminAPIKey(token) {
+	if s.store != nil && s.store.IsAdminAPIKey(ctx, token) {
 		return true
 	}
 
 	jwtSecret := s.cfg.Dashboard.UserAuthJWTSecret
 	if jwtSecret == "" {
-		jwtSecret = "user-auth-dev-secret"
+		jwtSecret = "user-auth-dev-secret" //nolint:gosec // dev-only fallback default when UserAuthJWTSecret is unconfigured
 	}
 	parsedToken, err := jwt.Parse(token, func(_ *jwt.Token) (any, error) {
 		return []byte(jwtSecret), nil
@@ -341,7 +342,7 @@ func (s *Server) makeAuthMiddleware() func(http.Handler) http.Handler {
 				model.WriteJSONError(w, http.StatusUnauthorized, "unauthorized", "Authentication required. Please provide a valid token via Authorization header, X-Admin-Token header, X-Admin-Key header, x-api-key header, or token cookie")
 				return
 			}
-			if s.isAuthorized(token) {
+			if s.isAuthorized(r.Context(), token) {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -356,7 +357,7 @@ func (s *Server) makeAuthMiddleware() func(http.Handler) http.Handler {
 func (s *Server) makePageAuthMiddleware() func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if s.isAuthorized(requestToken(r)) {
+			if s.isAuthorized(r.Context(), requestToken(r)) {
 				next.ServeHTTP(w, r)
 				return
 			}

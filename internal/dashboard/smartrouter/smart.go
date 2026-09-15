@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ilter-ai/ilter/internal/config"
 	"github.com/ilter-ai/ilter/internal/features/smartrouter"
 	"github.com/ilter-ai/ilter/internal/model"
 	"github.com/ilter-ai/ilter/internal/model/catalog"
@@ -40,6 +41,42 @@ type updateProviderRequest struct {
 	APIKeys []string `json:"api_keys"` // optional list of multi-keys
 }
 
+// qualityImpactForScore labels how risky it is to downgrade to an economy/
+// free-tier model, given the prompt's complexity score.
+func qualityImpactForScore(score float64) string {
+	switch {
+	case score >= 50:
+		return "medium — quality may degrade for complex reasoning tasks"
+	case score >= 20:
+		return "low — sufficient for standard tasks"
+	default:
+		return "minimal — sufficient for simple questions"
+	}
+}
+
+// buildOptimizeRecommendation returns a cheaper-model recommendation for
+// mName/mInfo if it's a cheaper economy/free-tier alternative to
+// currentModel with a positive estimated saving, or ok=false otherwise.
+func buildOptimizeRecommendation(mName string, mInfo catalog.ModelInfo, currentModel string, inputTokens, outputTokens int, currentCostEstimate, score float64) (rec Recommendation, ok bool) {
+	if (mInfo.Tier != "economy" && mInfo.Tier != "free") || mName == currentModel {
+		return rec, false
+	}
+	estCost := float64(inputTokens)*mInfo.CostPerInputToken + float64(outputTokens)*mInfo.CostPerOutputToken
+	if currentCostEstimate <= 0 || estCost >= currentCostEstimate {
+		return rec, false
+	}
+	savingsPercent := int((1.0 - estCost/currentCostEstimate) * 100)
+	if savingsPercent <= 0 {
+		return rec, false
+	}
+	return Recommendation{
+		Model:          mName,
+		EstimatedCost:  estCost,
+		SavingsPercent: savingsPercent,
+		QualityImpact:  qualityImpactForScore(score),
+	}, true
+}
+
 func (h *Handler) HandleOptimize(w http.ResponseWriter, r *http.Request) {
 	var req OptimizeRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -62,34 +99,15 @@ func (h *Handler) HandleOptimize(w http.ResponseWriter, r *http.Request) {
 	currentCostEstimate := float64(inputTokens)*currentInputCost + float64(outputTokens)*currentOutputCost
 
 	messages := []model.Message{{Role: "user", Content: req.Prompt}}
-	score := smartrouter.ScoreComplexity(messages)
+	score := smartrouter.ScoreComplexity(r.Context(), messages)
 
 	var recommendations []Recommendation
 	for mName, mInfos := range catalog.Models {
 		if len(mInfos) == 0 {
 			continue
 		}
-		mInfo := mInfos[0]
-		if (mInfo.Tier == "economy" || mInfo.Tier == "free") && mName != req.CurrentModel {
-			estCost := float64(inputTokens)*mInfo.CostPerInputToken + float64(outputTokens)*mInfo.CostPerOutputToken
-			if estCost < currentCostEstimate && currentCostEstimate > 0 {
-				savingsPercent := int((1.0 - estCost/currentCostEstimate) * 100)
-				if savingsPercent > 0 {
-					impact := "minimal — sufficient for simple questions"
-					if score >= 50 {
-						impact = "medium — quality may degrade for complex reasoning tasks"
-					} else if score >= 20 {
-						impact = "low — sufficient for standard tasks"
-					}
-
-					recommendations = append(recommendations, Recommendation{
-						Model:          mName,
-						EstimatedCost:  estCost,
-						SavingsPercent: savingsPercent,
-						QualityImpact:  impact,
-					})
-				}
-			}
+		if rec, ok := buildOptimizeRecommendation(mName, mInfos[0], req.CurrentModel, inputTokens, outputTokens, currentCostEstimate, score); ok {
+			recommendations = append(recommendations, rec)
 		}
 	}
 
@@ -106,8 +124,94 @@ func (h *Handler) HandleOptimize(w http.ResponseWriter, r *http.Request) {
 	model.WriteJSON(w, http.StatusOK, resp)
 }
 
+// resolveUpdateProviderKeys extracts the effective single API key and
+// cleaned multi-key list from req, with APIKeys taking precedence for the
+// single-key fallback when APIKey itself isn't set.
+func resolveUpdateProviderKeys(req updateProviderRequest) (apiKeyToSave string, cleanedAPIKeys []string) {
+	if req.APIKey != nil {
+		apiKeyToSave = *req.APIKey
+	}
+	for _, k := range req.APIKeys {
+		if trimmed := strings.TrimSpace(k); trimmed != "" {
+			cleanedAPIKeys = append(cleanedAPIKeys, trimmed)
+		}
+	}
+	if len(cleanedAPIKeys) > 0 && apiKeyToSave == "" {
+		apiKeyToSave = cleanedAPIKeys[0]
+	}
+	return apiKeyToSave, cleanedAPIKeys
+}
+
+// applyProviderKeysAtRuntime pushes the new base URL/keys into the live
+// provider registry entry, if one exists and supports runtime
+// reconfiguration.
+func (h *Handler) applyProviderKeysAtRuntime(name, baseURL, apiKeyToSave string, cleanedAPIKeys []string) {
+	prov, err := h.reg.Get(name)
+	if err != nil {
+		slog.Debug("Provider not found in registry for runtime update", "provider", name, "error", err)
+		return
+	}
+	cp, ok := prov.(provider.ConfigurableProvider)
+	if !ok {
+		return
+	}
+	if len(cleanedAPIKeys) > 0 {
+		cp.UpdateKeys(baseURL, apiKeyToSave, cleanedAPIKeys)
+	} else {
+		cp.UpdateConfig(baseURL, apiKeyToSave)
+	}
+}
+
+// updateProviderConfigEntry finds req.Name in providers and applies req's
+// set fields to it in place.
+func updateProviderConfigEntry(providers []config.ProviderConfig, req updateProviderRequest, apiKeyToSave string, cleanedAPIKeys []string) {
+	for i := range providers {
+		p := &providers[i]
+		if p.Name != req.Name {
+			continue
+		}
+		if req.BaseURL != "" {
+			p.BaseURL = req.BaseURL
+		}
+		if req.APIKey != nil || len(cleanedAPIKeys) > 0 {
+			p.APIKey = apiKeyToSave
+		}
+		if len(cleanedAPIKeys) > 0 {
+			p.APIKeys = cleanedAPIKeys
+		} else if req.APIKey != nil && *req.APIKey == "" {
+			p.APIKeys = nil
+		}
+		return
+	}
+}
+
+// syncProviderModelsAsync discovers and persists name's models in the
+// background so the HTTP response doesn't wait on a live provider call.
+// Background context is intentional: this must outlive the HTTP request
+// that triggered the provider update.
+func (h *Handler) syncProviderModelsAsync(name string) {
+	go func() { //nolint:contextcheck // detached background sync, not request-scoped
+		syncCtx, syncCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer syncCancel()
+		prov, err := h.reg.Get(name)
+		if err != nil {
+			return
+		}
+		models, err := prov.DiscoverModels(syncCtx)
+		if err != nil {
+			slog.Warn("Failed to discover models after provider update", "provider", name, "error", err)
+			return
+		}
+		if err := h.store.SaveDiscoveredModels(syncCtx, name, models); err != nil {
+			slog.Warn("Failed to save discovered models after provider update", "provider", name, "error", err)
+			return
+		}
+		slog.Debug("Discovered and saved models after provider update", "provider", name, "count", len(models))
+	}()
+}
+
 func (h *Handler) HandleUpdateProvider(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 	var req updateProviderRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		model.WriteJSONError(w, http.StatusBadRequest, "invalid_request_error", "Invalid request body")
@@ -118,68 +222,11 @@ func (h *Handler) HandleUpdateProvider(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	apiKeyToSave := ""
-	if req.APIKey != nil {
-		apiKeyToSave = *req.APIKey
-	}
+	apiKeyToSave, cleanedAPIKeys := resolveUpdateProviderKeys(req)
 
-	var cleanedAPIKeys []string
-	for _, k := range req.APIKeys {
-		if trimmed := strings.TrimSpace(k); trimmed != "" {
-			cleanedAPIKeys = append(cleanedAPIKeys, trimmed)
-		}
-	}
-	if len(cleanedAPIKeys) > 0 && apiKeyToSave == "" {
-		apiKeyToSave = cleanedAPIKeys[0]
-	}
-
-	prov, err := h.reg.Get(req.Name)
-	if err == nil {
-		if cp, ok := prov.(provider.ConfigurableProvider); ok {
-			if len(cleanedAPIKeys) > 0 {
-				cp.UpdateKeys(req.BaseURL, apiKeyToSave, cleanedAPIKeys)
-			} else {
-				cp.UpdateConfig(req.BaseURL, apiKeyToSave)
-			}
-		}
-	} else {
-		slog.Debug("Provider not found in registry for runtime update", "provider", req.Name, "error", err)
-	}
-
-	for i := range h.cfg.Providers {
-		p := &h.cfg.Providers[i]
-		if p.Name == req.Name {
-			if req.BaseURL != "" {
-				p.BaseURL = req.BaseURL
-			}
-			if req.APIKey != nil || len(cleanedAPIKeys) > 0 {
-				p.APIKey = apiKeyToSave
-			}
-			if len(cleanedAPIKeys) > 0 {
-				p.APIKeys = cleanedAPIKeys
-			} else if req.APIKey != nil && *req.APIKey == "" {
-				p.APIKeys = nil
-			}
-			break
-		}
-	}
-
-	// Auto-sync: discover models from this provider and save to DB.
-	go func() {
-		syncCtx, syncCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer syncCancel()
-		prov, err := h.reg.Get(req.Name)
-		if err == nil {
-			models, err := prov.DiscoverModels(syncCtx)
-			if err != nil {
-				slog.Warn("Failed to discover models after provider update", "provider", req.Name, "error", err)
-			} else if err := h.store.SaveDiscoveredModels(req.Name, models); err != nil {
-				slog.Warn("Failed to save discovered models after provider update", "provider", req.Name, "error", err)
-			} else {
-				slog.Debug("Discovered and saved models after provider update", "provider", req.Name, "count", len(models))
-			}
-		}
-	}()
+	h.applyProviderKeysAtRuntime(req.Name, req.BaseURL, apiKeyToSave, cleanedAPIKeys)
+	updateProviderConfigEntry(h.cfg.Providers, req, apiKeyToSave, cleanedAPIKeys)
+	h.syncProviderModelsAsync(req.Name) //nolint:contextcheck // detached background sync, not request-scoped (must outlive this HTTP request)
 
 	model.WriteJSON(w, http.StatusOK, map[string]any{"status": "ok"})
 }

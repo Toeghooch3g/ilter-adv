@@ -93,7 +93,7 @@ func (ct *CronTrigger) Start(_ context.Context) error {
 		if all[i].Kind != TriggerKindCron {
 			continue
 		}
-		if err := ct.register(all[i]); err != nil {
+		if err := ct.register(all[i]); err != nil { //nolint:contextcheck // registers a scheduler callback (fire) that runs at an arbitrary future time, detached from this ctx, see fire()
 			ct.logger.Warn(
 				"cron: skipping trigger with invalid config",
 				"trigger_id", all[i].ID,
@@ -197,7 +197,9 @@ func (ct *CronTrigger) fire(triggerID, jobID string) {
 
 	// Best-effort lock: if another instance already holds it, skip.
 	// Fall open on error so a Redis outage doesn't silence cron fires.
-	if ok, err := ct.lock.TryLock(context.Background(), lockKey, 65*time.Second); err != nil {
+	// Background context is intentional: fire is invoked by the cron
+	// scheduler at an arbitrary future time, detached from Start()'s ctx.
+	if ok, err := ct.lock.TryLock(context.Background(), lockKey, 65*time.Second); err != nil { //nolint:contextcheck // detached scheduled callback, not request-scoped
 		ct.logger.Warn("cron: fire lock error (falling open)", "trigger_id", triggerID, "error", err)
 	} else if !ok {
 		ct.logger.Debug(

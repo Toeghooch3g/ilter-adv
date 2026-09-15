@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"path"
@@ -48,46 +49,48 @@ type AuthResult struct {
 // toolName is the bare tool name (no server prefix).
 func (a *Authorizer) CheckAccess(keyPrefix string, groupIDs []int, keyID string, serverID string, toolName string) *AuthResult {
 	if a.store != nil {
-		denied, allowed := a.resolveGrants(keyPrefix, groupIDs, keyID, serverID, toolName)
-		if denied {
-			return &AuthResult{
-				Allowed:     false,
-				Tool:        toolName,
-				MatchedRule: fmt.Sprintf("grant:deny:%s", toolName),
-			}
-		}
-		if allowed {
-			return &AuthResult{
-				Allowed:     true,
-				Tool:        toolName,
-				MatchedRule: fmt.Sprintf("grant:allow:%s", toolName),
-			}
+		if result := a.checkGrantAccess(keyPrefix, groupIDs, keyID, serverID, toolName); result != nil {
+			return result
 		}
 	}
 
-	configDenied := false
-	configAllowed := false
-	configMatched := ""
-	for _, rule := range a.rules {
-		if !matchRuleSubject(rule, keyPrefix, groupIDs, keyID) {
-			continue
-		}
-		ruleEffect := rule.Effect
-		if ruleEffect == "" {
-			ruleEffect = "allow"
-		}
-		for _, pattern := range rule.Tools {
-			if configToolMatches(pattern, serverID, toolName) {
-				if ruleEffect == "deny" {
-					configDenied = true
-					configMatched = pattern
-				} else if !configAllowed {
-					configAllowed = true
-					configMatched = pattern
-				}
-			}
+	if result := a.checkConfigRuleAccess(keyPrefix, groupIDs, keyID, serverID, toolName); result != nil {
+		return result
+	}
+
+	allowed := a.resolveDefaultPolicy() == "allow"
+	return &AuthResult{
+		Allowed: allowed,
+		Tool:    toolName,
+	}
+}
+
+// checkGrantAccess evaluates DB grants for the request, returning a
+// non-nil AuthResult when a deny or allow grant matched (deny-overrides).
+func (a *Authorizer) checkGrantAccess(keyPrefix string, groupIDs []int, keyID string, serverID, toolName string) *AuthResult {
+	denied, allowed := a.resolveGrants(keyPrefix, groupIDs, keyID, serverID, toolName)
+	if denied {
+		return &AuthResult{
+			Allowed:     false,
+			Tool:        toolName,
+			MatchedRule: fmt.Sprintf("grant:deny:%s", toolName),
 		}
 	}
+	if allowed {
+		return &AuthResult{
+			Allowed:     true,
+			Tool:        toolName,
+			MatchedRule: fmt.Sprintf("grant:allow:%s", toolName),
+		}
+	}
+	return nil
+}
+
+// checkConfigRuleAccess evaluates the static config.MCPAccessRule list,
+// returning a non-nil AuthResult when a deny or allow rule matched
+// (deny-overrides across all matching rules).
+func (a *Authorizer) checkConfigRuleAccess(keyPrefix string, groupIDs []int, keyID string, serverID, toolName string) *AuthResult {
+	configDenied, configAllowed, configMatched := evaluateConfigRules(a.rules, keyPrefix, groupIDs, keyID, serverID, toolName)
 	if configDenied {
 		return &AuthResult{
 			Allowed:     false,
@@ -102,12 +105,36 @@ func (a *Authorizer) CheckAccess(keyPrefix string, groupIDs []int, keyID string,
 			MatchedRule: configMatched,
 		}
 	}
+	return nil
+}
 
-	allowed := a.resolveDefaultPolicy() == "allow"
-	return &AuthResult{
-		Allowed: allowed,
-		Tool:    toolName,
+// evaluateConfigRules scans rules for those whose subject matches the
+// caller, and among those, whether any pattern denies or allows toolName on
+// serverID (deny-overrides). matched names the pattern of the last denying
+// rule, or else the first allowing rule.
+func evaluateConfigRules(rules []config.MCPAccessRule, keyPrefix string, groupIDs []int, keyID, serverID, toolName string) (denied, allowed bool, matched string) {
+	for _, rule := range rules {
+		if !matchRuleSubject(rule, keyPrefix, groupIDs, keyID) {
+			continue
+		}
+		ruleEffect := rule.Effect
+		if ruleEffect == "" {
+			ruleEffect = "allow"
+		}
+		for _, pattern := range rule.Tools {
+			if !configToolMatches(pattern, serverID, toolName) {
+				continue
+			}
+			if ruleEffect == "deny" {
+				denied = true
+				matched = pattern
+			} else if !allowed {
+				allowed = true
+				matched = pattern
+			}
+		}
 	}
+	return denied, allowed, matched
 }
 
 // resolveGrants scans subject hierarchy (key→user→group). Deny-overrides: deny trumps all.
@@ -163,7 +190,7 @@ func (a *Authorizer) matchGrants(subjectType, subjectID, serverID, toolName stri
 	if err != nil {
 		return false, false
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	hasDeny := false
 	hasAllow := false
@@ -288,11 +315,11 @@ func toolMatches(tools, toolName string) bool {
 	return matched
 }
 
-func ExtractKeyInfo(keyID string, store *db.SQLiteStore) (keyPrefix string, err error) {
+func ExtractKeyInfo(ctx context.Context, keyID string, store *db.SQLiteStore) (keyPrefix string, err error) {
 	if keyID == "" {
 		return "", nil
 	}
-	vk, err := store.GetAPIKey(keyID)
+	vk, err := store.GetAPIKey(ctx, keyID)
 	if err != nil {
 		return "", fmt.Errorf("get virtual key: %w", err)
 	}

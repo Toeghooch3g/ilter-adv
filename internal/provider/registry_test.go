@@ -53,7 +53,9 @@ func TestRegistry_Register_Overwrite(t *testing.T) {
 	got, err := r.Get("dup")
 	require.NoError(t, err)
 	// Should be the last one registered
-	assert.Equal(t, "key2", got.(*OpenAIProvider).config.APIKey)
+	gotOpenAI, ok := got.(*OpenAIProvider)
+	require.True(t, ok)
+	assert.Equal(t, "key2", gotOpenAI.config.APIKey)
 }
 
 func TestRegistry_MultipleProviders(t *testing.T) {
@@ -132,14 +134,16 @@ func TestInitFromConfig_Ollama(t *testing.T) {
 	p, err := r.Get("my-ollama")
 	require.NoError(t, err)
 	assert.Equal(t, "ollama", p.Type())
-	assert.Equal(t, "ollama", p.(*OllamaProvider).Type())
+	pOllama, ok := p.(*OllamaProvider)
+	require.True(t, ok)
+	assert.Equal(t, "ollama", pOllama.Type())
 }
 
 func TestInitFromConfig_Anthropic(t *testing.T) {
 	r := NewRegistry()
 	cfg := &config.Config{
 		Providers: []config.ProviderConfig{
-			{
+			{ //nolint:gosec // test fixture API key, not a real credential
 				Name:   "my-anthropic",
 				Type:   "anthropic",
 				APIKey: "sk-ant-test",

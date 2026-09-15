@@ -63,7 +63,7 @@ func sqlcProviderModelsToDB(models []sqlc.ProviderModel) []ProviderModel {
 // Models discovered by upstream but not in the DB are added; models already
 // in the DB that upstream no longer returns are preserved (not deleted) so
 // a transient upstream blip doesn't wipe known models.
-func (s *SQLiteStore) SaveDiscoveredModels(provider string, models []catalog.ModelInfo) error {
+func (s *SQLiteStore) SaveDiscoveredModels(ctx context.Context, provider string, models []catalog.ModelInfo) error {
 	tx, err := s.DB.Begin()
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)
@@ -94,7 +94,7 @@ func (s *SQLiteStore) SaveDiscoveredModels(provider string, models []catalog.Mod
 		}
 	}
 
-	s.deactivateStaleModels(tx, provider, models)
+	s.deactivateStaleModels(ctx, tx, provider, models)
 
 	return tx.Commit()
 }
@@ -118,8 +118,8 @@ func upsertDiscoveredModel(stmt *sql.Stmt, provider string, m catalog.ModelInfo)
 // deactivateStaleModels marks models that upstream no longer returns as
 // inactive so they don't vanish from the UI — they stay available for
 // manual re-enable. Failures here are logged, not fatal to the save.
-func (s *SQLiteStore) deactivateStaleModels(tx *sql.Tx, provider string, models []catalog.ModelInfo) {
-	existing, err := s.queries.GetProviderModels(context.Background(), provider)
+func (s *SQLiteStore) deactivateStaleModels(ctx context.Context, tx *sql.Tx, provider string, models []catalog.ModelInfo) {
+	existing, err := s.queries.GetProviderModels(ctx, provider)
 	if err != nil {
 		return
 	}

@@ -40,7 +40,7 @@ func (v *VariablesConfig) Scan(src any) error {
 // Value implements driver.Valuer for writing to SQLite as TEXT.
 func (v VariablesConfig) Value() (driver.Value, error) {
 	if v == nil {
-		return nil, nil
+		return nil, nil //nolint:nilnil // driver.Valuer contract: nil value, nil error means SQL NULL
 	}
 	if len(v) == 0 {
 		return []byte("{}"), nil

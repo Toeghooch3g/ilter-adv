@@ -49,7 +49,7 @@ func (h *PIIHandler) HandleListPatterns(w http.ResponseWriter, _ *http.Request) 
 		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	items := make([]PatternItem, 0)
 	for rows.Next() {
@@ -71,7 +71,7 @@ func (h *PIIHandler) HandleListPatterns(w http.ResponseWriter, _ *http.Request) 
 
 // HandleCreatePattern creates a new PII pattern.
 func (h *PIIHandler) HandleCreatePattern(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 	var req piiPatternRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		model.WriteJSONError(w, http.StatusBadRequest, "invalid_request_error", "Invalid request body")
@@ -125,7 +125,7 @@ func (h *PIIHandler) HandleUpdatePattern(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 	var req piiPatternRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		model.WriteJSONError(w, http.StatusBadRequest, "invalid_request_error", "Invalid request body")
@@ -167,7 +167,7 @@ func (h *PIIHandler) HandleUpdatePattern(w http.ResponseWriter, r *http.Request)
 	args = append(args, name)
 
 	result, err := h.store.DB.Exec(
-		"UPDATE pii_patterns SET "+strings.Join(setClauses, ", ")+" WHERE name = ?",
+		"UPDATE pii_patterns SET "+strings.Join(setClauses, ", ")+" WHERE name = ?", //nolint:gosec // setClauses are static literals, values are parameterized via args
 		args...,
 	)
 	if err != nil {

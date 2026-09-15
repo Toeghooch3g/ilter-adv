@@ -18,8 +18,8 @@ import (
 )
 
 // GET /api/groups
-func (h *Handler) ListGroups(w http.ResponseWriter, _ *http.Request) {
-	all, err := h.store.ListGroups()
+func (h *Handler) ListGroups(w http.ResponseWriter, r *http.Request) {
+	all, err := h.store.ListGroups(r.Context())
 	if err != nil {
 		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", "Failed to list groups")
 		return
@@ -35,7 +35,7 @@ func (h *Handler) ListGroups(w http.ResponseWriter, _ *http.Request) {
 
 // POST /api/groups
 func (h *Handler) CreateGroup(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 	var req auth.CreateGroupRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		model.WriteJSONError(w, http.StatusBadRequest, "invalid_request_error", "Invalid request body")
@@ -47,7 +47,7 @@ func (h *Handler) CreateGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	group, err := h.store.CreateGroup(req)
+	group, err := h.store.CreateGroup(r.Context(), req)
 	if err != nil {
 		errStr := err.Error()
 		if strings.Contains(errStr, "UNIQUE") {
@@ -63,7 +63,7 @@ func (h *Handler) CreateGroup(w http.ResponseWriter, r *http.Request) {
 			"name":        group.Name,
 			"description": group.Description,
 		}
-		if err := h.auditor.LogCreate("group", strconv.Itoa(group.ID), vals, reqmeta.GetKeyID(r.Context())); err != nil {
+		if err := h.auditor.LogCreate(r.Context(), "group", strconv.Itoa(group.ID), vals, reqmeta.GetKeyID(r.Context())); err != nil {
 			slog.Error("failed to log audit create group", "error", err)
 		}
 	}
@@ -80,7 +80,7 @@ func (h *Handler) GetGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	group, err := h.store.GetGroup(id)
+	group, err := h.store.GetGroup(r.Context(), id)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			model.WriteJSONError(w, http.StatusNotFound, "not_found", "Group not found")
@@ -102,20 +102,20 @@ func (h *Handler) UpdateGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 	var req auth.UpdateGroupRequest
 	if err = json.NewDecoder(r.Body).Decode(&req); err != nil {
 		model.WriteJSONError(w, http.StatusBadRequest, "invalid_request_error", "Invalid request body")
 		return
 	}
 
-	oldGroup, err := h.store.GetGroup(id)
+	oldGroup, err := h.store.GetGroup(r.Context(), id)
 	if err != nil {
 		model.WriteJSONError(w, http.StatusNotFound, "not_found", "Group not found")
 		return
 	}
 
-	group, err := h.store.UpdateGroup(id, req)
+	group, err := h.store.UpdateGroup(r.Context(), id, req)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			model.WriteJSONError(w, http.StatusNotFound, "not_found", "Group not found")
@@ -139,7 +139,7 @@ func (h *Handler) UpdateGroup(w http.ResponseWriter, r *http.Request) {
 			"name":        group.Name,
 			"description": group.Description,
 		}
-		if err := h.auditor.LogUpdate("group", strconv.Itoa(id), oldVals, newVals, reqmeta.GetKeyID(r.Context())); err != nil {
+		if err := h.auditor.LogUpdate(r.Context(), "group", strconv.Itoa(id), oldVals, newVals, reqmeta.GetKeyID(r.Context())); err != nil {
 			slog.Error("failed to log audit update group", "error", err)
 		}
 	}
@@ -156,9 +156,9 @@ func (h *Handler) DeleteGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	oldGroup, fetchErr := h.store.GetGroup(id)
+	oldGroup, fetchErr := h.store.GetGroup(r.Context(), id)
 
-	if err := h.store.DeleteGroup(id); err != nil {
+	if err := h.store.DeleteGroup(r.Context(), id); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			model.WriteJSONError(w, http.StatusNotFound, "not_found", "Group not found")
 			return
@@ -172,7 +172,7 @@ func (h *Handler) DeleteGroup(w http.ResponseWriter, r *http.Request) {
 			"name":        oldGroup.Name,
 			"description": oldGroup.Description,
 		}
-		if err := h.auditor.LogDelete("group", strconv.Itoa(id), vals, reqmeta.GetKeyID(r.Context())); err != nil {
+		if err := h.auditor.LogDelete(r.Context(), "group", strconv.Itoa(id), vals, reqmeta.GetKeyID(r.Context())); err != nil {
 			slog.Error("failed to log audit delete group", "error", err)
 		}
 	}
@@ -187,7 +187,7 @@ func (h *Handler) AddMember(w http.ResponseWriter, r *http.Request) {
 		model.WriteJSONError(w, http.StatusBadRequest, "invalid_request_error", "Invalid group ID")
 		return
 	}
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 	var req struct {
 		UserID int    `json:"user_id"`
 		Role   string `json:"role,omitempty"`
@@ -201,7 +201,7 @@ func (h *Handler) AddMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, err := h.store.GetGroup(groupID); err != nil {
+	if _, err := h.store.GetGroup(r.Context(), groupID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			model.WriteJSONError(w, http.StatusNotFound, "not_found", "Group not found")
 			return
@@ -210,7 +210,7 @@ func (h *Handler) AddMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, err := h.store.GetUser(req.UserID); err != nil {
+	if _, err := h.store.GetUser(r.Context(), req.UserID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			model.WriteJSONError(w, http.StatusNotFound, "not_found", "User not found")
 			return
@@ -219,7 +219,7 @@ func (h *Handler) AddMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.store.AddUserToGroup(req.UserID, groupID, req.Role); err != nil {
+	if err := h.store.AddUserToGroup(r.Context(), req.UserID, groupID, req.Role); err != nil {
 		errStr := err.Error()
 		if strings.Contains(errStr, "UNIQUE") {
 			model.WriteJSONError(w, http.StatusConflict, "duplicate_membership", "User is already a member of this group")
@@ -235,7 +235,7 @@ func (h *Handler) AddMember(w http.ResponseWriter, r *http.Request) {
 			"user_id":  req.UserID,
 			"role":     req.Role,
 		}
-		if err := h.auditor.LogCreate("group_membership", strconv.Itoa(groupID)+":"+strconv.Itoa(req.UserID), vals, reqmeta.GetKeyID(r.Context())); err != nil {
+		if err := h.auditor.LogCreate(r.Context(), "group_membership", strconv.Itoa(groupID)+":"+strconv.Itoa(req.UserID), vals, reqmeta.GetKeyID(r.Context())); err != nil {
 			slog.Error("failed to log audit create group_membership", "error", err)
 		}
 	}
@@ -256,7 +256,7 @@ func (h *Handler) RemoveMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.store.RemoveUserFromGroup(userID, groupID); err != nil {
+	if err := h.store.RemoveUserFromGroup(r.Context(), userID, groupID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			model.WriteJSONError(w, http.StatusNotFound, "not_found", "Membership not found")
 			return
@@ -270,7 +270,7 @@ func (h *Handler) RemoveMember(w http.ResponseWriter, r *http.Request) {
 			"group_id": groupID,
 			"user_id":  userID,
 		}
-		if err := h.auditor.LogDelete("group_membership", strconv.Itoa(groupID)+":"+strconv.Itoa(userID), vals, reqmeta.GetKeyID(r.Context())); err != nil {
+		if err := h.auditor.LogDelete(r.Context(), "group_membership", strconv.Itoa(groupID)+":"+strconv.Itoa(userID), vals, reqmeta.GetKeyID(r.Context())); err != nil {
 			slog.Error("failed to log audit delete group_membership", "error", err)
 		}
 	}
@@ -286,7 +286,7 @@ func (h *Handler) ListMembers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	users, err := h.store.GetGroupUsers(groupID)
+	users, err := h.store.GetGroupUsers(r.Context(), groupID)
 	if err != nil {
 		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", "Failed to list members")
 		return
@@ -303,7 +303,7 @@ func (h *Handler) ListUserGroups(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	groups, err := h.store.GetUserGroups(userID)
+	groups, err := h.store.GetUserGroups(r.Context(), userID)
 	if err != nil {
 		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", "Failed to list user groups")
 		return

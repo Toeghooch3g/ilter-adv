@@ -236,7 +236,7 @@ func (o *OAuthEndpoints) authorizePost(w http.ResponseWriter, r *http.Request) {
 				rateLimitRPM = o.oauthCfg.DefaultRateLimit
 			}
 		}
-		_, rawKey, err := o.db.CreateAPIKey(keyName, nil, nil, monthlyBudget, 0, rateLimitRPM, 0, nil, nil, nil)
+		_, rawKey, err := o.db.CreateAPIKey(r.Context(), keyName, nil, nil, monthlyBudget, 0, rateLimitRPM, 0, nil, nil, nil)
 		if err != nil {
 			slog.Error("failed to create OAuth API key", "error", err)
 			writeOAuthError(w, http.StatusInternalServerError, "server_error", "failed to create API key")
@@ -255,7 +255,7 @@ func (o *OAuthEndpoints) authorizePost(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if req.KeyID != "" {
-			existingKey, err := o.db.GetAPIKey(req.KeyID)
+			existingKey, err := o.db.GetAPIKey(r.Context(), req.KeyID)
 			if err != nil {
 				writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "API key not found")
 				return
@@ -265,7 +265,7 @@ func (o *OAuthEndpoints) authorizePost(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			keyName := fmt.Sprintf("MCP OAuth - %s", authReq.ClientID)
-			_, rawKey, err := o.db.CreateAPIKey(keyName, existingKey.GroupID, existingKey.UserID, existingKey.MonthlyBudgetUSD, existingKey.MonthlyBudgetTokens, existingKey.RateLimitRPM, existingKey.RateLimitTPM, existingKey.AllowedModels, existingKey.AllowedProviders, existingKey.Tags)
+			_, rawKey, err := o.db.CreateAPIKey(r.Context(), keyName, existingKey.GroupID, existingKey.UserID, existingKey.MonthlyBudgetUSD, existingKey.MonthlyBudgetTokens, existingKey.RateLimitRPM, existingKey.RateLimitTPM, existingKey.AllowedModels, existingKey.AllowedProviders, existingKey.Tags)
 			if err != nil {
 				slog.Error("failed to clone OAuth API key", "error", err)
 				writeOAuthError(w, http.StatusInternalServerError, "server_error", "failed to create API key")
@@ -273,7 +273,7 @@ func (o *OAuthEndpoints) authorizePost(w http.ResponseWriter, r *http.Request) {
 			}
 			apiKey = rawKey
 		} else {
-			vk, err := o.db.GetActiveKeyByHash(req.APIKey)
+			vk, err := o.db.GetActiveKeyByHash(r.Context(), req.APIKey)
 			if err != nil || !vk.Enabled {
 				writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "API key is invalid or disabled")
 				return
@@ -447,11 +447,11 @@ var cimdHTTPClient = &http.Client{Timeout: 5 * time.Second}
 // Client Registration — the client's identity IS the URL, and that URL's
 // content is its self-asserted metadata).
 func resolveCIMDClientID(clientIDURL string) error {
-	resp, err := cimdHTTPClient.Get(clientIDURL)
+	resp, err := cimdHTTPClient.Get(clientIDURL) //nolint:gosec // fetching a client-supplied URL is the CIMD mechanism itself per spec; bounded by a 5s timeout and 64KB read cap below
 	if err != nil {
 		return fmt.Errorf("fetch failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("unexpected status %d", resp.StatusCode)

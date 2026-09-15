@@ -112,7 +112,7 @@ func (h *JobsHandler) CreateJob(w http.ResponseWriter, r *http.Request) {
 			"name":    job.Name,
 			"enabled": job.Enabled,
 		}
-		_ = h.auditor.LogCreate("job", job.ID, vals, reqmeta.GetKeyID(r.Context()))
+		_ = h.auditor.LogCreate(r.Context(), "job", job.ID, vals, reqmeta.GetKeyID(r.Context()))
 	}
 
 	revealTokenIDs := make(map[string]bool, len(createdTriggers))
@@ -241,7 +241,7 @@ func (h *JobsHandler) UpdateJob(w http.ResponseWriter, r *http.Request) {
 			"name":    existing.Name,
 			"enabled": existing.Enabled,
 		}
-		_ = h.auditor.LogUpdate("job", id, oldVals, newVals, reqmeta.GetKeyID(r.Context()))
+		_ = h.auditor.LogUpdate(r.Context(), "job", id, oldVals, newVals, reqmeta.GetKeyID(r.Context()))
 	}
 
 	var newlyCreatedIDs map[string]bool
@@ -450,7 +450,7 @@ func (h *JobsHandler) DeleteJob(w http.ResponseWriter, r *http.Request) {
 			"name":    oldJob.Name,
 			"enabled": oldJob.Enabled,
 		}
-		_ = h.auditor.LogDelete("job", id, vals, reqmeta.GetKeyID(r.Context()))
+		_ = h.auditor.LogDelete(r.Context(), "job", id, vals, reqmeta.GetKeyID(r.Context()))
 	}
 
 	w.WriteHeader(http.StatusNoContent)

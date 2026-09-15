@@ -58,8 +58,8 @@ func (m *MockProvider) DiscoverModels(_ context.Context) ([]catalog.ModelInfo, e
 	return nil, nil
 }
 
-func (m *MockProvider) TransformRequest(_ context.Context, _ *model.ChatCompletionRequest) (*http.Request, error) {
-	return http.NewRequestWithContext(context.Background(), "POST", "http://mock", nil)
+func (m *MockProvider) TransformRequest(ctx context.Context, _ *model.ChatCompletionRequest) (*http.Request, error) {
+	return http.NewRequestWithContext(ctx, "POST", "http://mock", nil)
 }
 
 func (m *MockProvider) TransformResponse(_ context.Context, _ *http.Response) (*model.ChatCompletionResponse, error) {

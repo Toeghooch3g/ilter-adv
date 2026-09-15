@@ -89,7 +89,7 @@ func (h *Handler) recordDataEndpointOutcome(ctx context.Context, r *http.Request
 
 // Embeddings handles POST /v1/embeddings.
 func (h *Handler) Embeddings(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 	start := time.Now()
 
 	var req model.EmbeddingRequest
@@ -115,7 +115,7 @@ func (h *Handler) Embeddings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, err := embedder.Embed(ctx, &req)
+	resp, err := embedder.Embed(ctx, &req) //nolint:contextcheck // ctx is r.Context() derived via resolveSingleCandidateProvider, linter loses the trace through the multi-return helper
 	if err != nil {
 		model.WriteJSONError(w, http.StatusBadGateway, model.ErrTypeProviderError, sanitizeProviderErrorMessage(err.Error()))
 		return
@@ -126,14 +126,14 @@ func (h *Handler) Embeddings(w http.ResponseWriter, r *http.Request) {
 	if resp.Model == "" {
 		resp.Model = req.Model
 	}
-	h.recordDataEndpointOutcome(ctx, r, pvd.Name(), req.Model, resp.Usage, http.StatusOK, start)
+	h.recordDataEndpointOutcome(ctx, r, pvd.Name(), req.Model, resp.Usage, http.StatusOK, start) //nolint:contextcheck // ctx is r.Context() derived via resolveSingleCandidateProvider, linter loses the trace through the multi-return helper
 
 	model.WriteJSON(w, http.StatusOK, resp)
 }
 
 // Rerank handles POST /v1/rerank.
 func (h *Handler) Rerank(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 	start := time.Now()
 
 	var req model.RerankRequest
@@ -163,7 +163,7 @@ func (h *Handler) Rerank(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, err := reranker.Rerank(ctx, &req)
+	resp, err := reranker.Rerank(ctx, &req) //nolint:contextcheck // ctx is r.Context() derived via resolveSingleCandidateProvider, linter loses the trace through the multi-return helper
 	if err != nil {
 		model.WriteJSONError(w, http.StatusBadGateway, model.ErrTypeProviderError, sanitizeProviderErrorMessage(err.Error()))
 		return
@@ -171,7 +171,7 @@ func (h *Handler) Rerank(w http.ResponseWriter, r *http.Request) {
 	if resp.Model == "" {
 		resp.Model = req.Model
 	}
-	h.recordDataEndpointOutcome(ctx, r, pvd.Name(), req.Model, resp.Usage, http.StatusOK, start)
+	h.recordDataEndpointOutcome(ctx, r, pvd.Name(), req.Model, resp.Usage, http.StatusOK, start) //nolint:contextcheck // ctx is r.Context() derived via resolveSingleCandidateProvider, linter loses the trace through the multi-return helper
 
 	model.WriteJSON(w, http.StatusOK, resp)
 }

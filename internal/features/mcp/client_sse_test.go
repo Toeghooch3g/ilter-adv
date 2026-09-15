@@ -31,14 +31,14 @@ func newFakeSSEServer(t *testing.T, handler func(method string, params json.RawM
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, "event: endpoint\ndata: http://%s/sse/post\n\n", r.Host)
+		_, _ = fmt.Fprintf(w, "event: endpoint\ndata: http://%s/sse/post\n\n", r.Host) //nolint:gosec // SSE data frame in a test fixture, not HTML
 		flusher.Flush()
 		for {
 			select {
 			case <-r.Context().Done():
 				return
 			case b := <-respCh:
-				fmt.Fprintf(w, "event: message\ndata: %s\n\n", b)
+				_, _ = fmt.Fprintf(w, "event: message\ndata: %s\n\n", b)
 				flusher.Flush()
 			}
 		}
@@ -99,7 +99,7 @@ func TestSSEClient_Start_NegotiatesNewestByDefault(t *testing.T) {
 		Config: config.MCPServerConfig{ID: "fake-sse", Transport: "sse", URL: srv.URL + "/sse", ProtocolVersion: "auto"},
 	}
 	c := NewSSEClient(server)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	if err := runStartWithTimeout(t, c, 5*time.Second); err != nil {
 		t.Fatalf("Start() error: %v", err)
@@ -135,7 +135,7 @@ func TestSSEClient_Start_FallsBackToOlderVersion(t *testing.T) {
 		Config: config.MCPServerConfig{ID: "fake-sse-old", Transport: "sse", URL: srv.URL + "/sse", ProtocolVersion: "auto"},
 	}
 	c := NewSSEClient(server)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	if err := runStartWithTimeout(t, c, 5*time.Second); err != nil {
 		t.Fatalf("Start() error: %v", err)
@@ -156,7 +156,7 @@ func TestSSEClient_Start_NoHandshakeAcceptedFails(t *testing.T) {
 		Config: config.MCPServerConfig{ID: "fake-sse-broken", Transport: "sse", URL: srv.URL + "/sse", ProtocolVersion: "auto"},
 	}
 	c := NewSSEClient(server)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	err := runStartWithTimeout(t, c, 5*time.Second)
 	if err == nil {

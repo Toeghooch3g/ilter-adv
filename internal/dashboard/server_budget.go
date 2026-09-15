@@ -141,7 +141,7 @@ func (s *Server) handleKeyBudget(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	key, err := s.store.GetAPIKey(id)
+	key, err := s.store.GetAPIKey(r.Context(), id)
 	if err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			model.WriteJSONError(w, http.StatusNotFound, "not_found", "API key not found")
@@ -155,11 +155,12 @@ func (s *Server) handleKeyBudget(w http.ResponseWriter, r *http.Request) {
 	dailySpent, _ := s.keyDailySpent(key.ID)
 
 	status := "ok"
-	if key.MonthlyBudgetUSD > 0 && monthlySpent >= key.MonthlyBudgetUSD {
+	switch {
+	case key.MonthlyBudgetUSD > 0 && monthlySpent >= key.MonthlyBudgetUSD:
 		status = "depleted"
-	} else if key.MonthlyBudgetUSD > 0 && monthlySpent >= key.MonthlyBudgetUSD*0.95 {
+	case key.MonthlyBudgetUSD > 0 && monthlySpent >= key.MonthlyBudgetUSD*0.95:
 		status = "critical"
-	} else if key.MonthlyBudgetUSD > 0 && monthlySpent >= key.MonthlyBudgetUSD*0.9 {
+	case key.MonthlyBudgetUSD > 0 && monthlySpent >= key.MonthlyBudgetUSD*0.9:
 		status = "warning"
 	}
 
@@ -217,7 +218,7 @@ func (s *Server) handleSetKeyBudget(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	key, err := s.store.GetAPIKey(id)
+	key, err := s.store.GetAPIKey(r.Context(), id)
 	if err != nil {
 		model.WriteJSONError(w, http.StatusInternalServerError, "db_error", err.Error())
 		return
@@ -254,7 +255,7 @@ func (s *Server) handleUserBudget(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := s.store.GetUser(id)
+	user, err := s.store.GetUser(r.Context(), id)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			model.WriteJSONError(w, http.StatusNotFound, "not_found", "user not found")
@@ -299,7 +300,7 @@ func (s *Server) handleSetUserBudget(w http.ResponseWriter, r *http.Request) {
 		Budget:     req.MonthlyBudget,
 		DailyLimit: req.DailyLimit,
 	}
-	user, err := s.store.UpdateUser(id, updateReq)
+	user, err := s.store.UpdateUser(r.Context(), id, updateReq)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			model.WriteJSONError(w, http.StatusNotFound, "not_found", "user not found")
@@ -331,7 +332,7 @@ func (s *Server) handleGroupBudget(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	group, err := s.store.GetGroup(id)
+	group, err := s.store.GetGroup(r.Context(), id)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			model.WriteJSONError(w, http.StatusNotFound, "not_found", "group not found")
@@ -376,7 +377,7 @@ func (s *Server) handleSetGroupBudget(w http.ResponseWriter, r *http.Request) {
 		Budget:     req.MonthlyBudget,
 		DailyLimit: req.DailyLimit,
 	}
-	group, err := s.store.UpdateGroup(id, updateReq)
+	group, err := s.store.UpdateGroup(r.Context(), id, updateReq)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			model.WriteJSONError(w, http.StatusNotFound, "not_found", "group not found")

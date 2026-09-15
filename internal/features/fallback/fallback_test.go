@@ -94,11 +94,11 @@ func (m *mockProvider) Name() string { return m.name }
 func (m *mockProvider) Type() string { return m.name }
 
 func (m *mockProvider) TransformRequest(_ context.Context, _ *model.ChatCompletionRequest) (*http.Request, error) {
-	return nil, nil
+	return nil, nil //nolint:nilnil // unused interface stub, never called by this test
 }
 
 func (m *mockProvider) TransformResponse(_ context.Context, _ *http.Response) (*model.ChatCompletionResponse, error) {
-	return nil, nil
+	return nil, nil //nolint:nilnil // unused interface stub, never called by this test
 }
 
 func (m *mockProvider) Client() *http.Client { return http.DefaultClient }

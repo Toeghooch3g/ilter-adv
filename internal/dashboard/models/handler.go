@@ -39,9 +39,87 @@ type ModelResponseItem struct {
 	CostPerOutputToken float64 `json:"cost_per_output_token,omitempty"`
 }
 
+// buildLBModelItems converts the load balancer's live model infos into
+// response items, enriching each from the catalog (preferred) or DB
+// fallback. Returns the items plus the set of provider:model keys seen, so
+// the caller can skip them when merging in DB-only models.
+func buildLBModelItems(lbInfos []smartrouter.ModelInfo, dbMap map[string]db.ProviderModel) ([]ModelResponseItem, map[string]bool) {
+	lbSeen := make(map[string]bool, len(lbInfos))
+	items := make([]ModelResponseItem, 0, len(lbInfos))
+	for _, info := range lbInfos {
+		lbSeen[info.Provider+":"+info.Name] = true
+		item := ModelResponseItem{
+			Name:       info.Name,
+			Provider:   info.Provider,
+			Type:       info.Type,
+			OwnedBy:    info.OwnedBy,
+			Active:     info.Active,
+			Configured: true,
+		}
+		if regInfo, ok := catalog.GetModel(info.Name); ok {
+			item.DisplayName = regInfo.DisplayName
+			item.Tier = regInfo.Tier
+			item.CostPerInputToken = regInfo.CostPerInputToken
+			item.CostPerOutputToken = regInfo.CostPerOutputToken
+		} else if dbEntry, ok := dbMap[info.Provider+":"+info.Name]; ok {
+			item.Tier = dbEntry.Tier
+			item.CostPerInputToken = dbEntry.CostIn
+			item.CostPerOutputToken = dbEntry.CostOut
+		}
+		items = append(items, item)
+	}
+	return items, lbSeen
+}
+
+// enrichModelItemFromCatalog overrides item's display fields with the
+// catalog's registered info for its model name, when present and more
+// specific than the DB-sourced default.
+func enrichModelItemFromCatalog(item *ModelResponseItem, modelName string) {
+	regInfo, ok := catalog.GetModel(modelName)
+	if !ok {
+		return
+	}
+	item.DisplayName = regInfo.DisplayName
+	if regInfo.Tier != "" && regInfo.Tier != "standard" {
+		item.Tier = regInfo.Tier
+	}
+	if regInfo.CostPerInputToken > 0 {
+		item.CostPerInputToken = regInfo.CostPerInputToken
+	}
+	if regInfo.CostPerOutputToken > 0 {
+		item.CostPerOutputToken = regInfo.CostPerOutputToken
+	}
+}
+
+// buildDBOnlyModelItems adds response items for DB-known models that
+// belong to a configured provider but weren't already returned by the load
+// balancer (lbSeen), enriching each from the catalog when available.
+func buildDBOnlyModelItems(dbModels []db.ProviderModel, configuredProviders, lbSeen map[string]bool) []ModelResponseItem {
+	items := make([]ModelResponseItem, 0, len(dbModels))
+	for _, pm := range dbModels {
+		if !configuredProviders[pm.Provider] || lbSeen[pm.Provider+":"+pm.Model] {
+			continue
+		}
+		lbSeen[pm.Provider+":"+pm.Model] = true
+		item := ModelResponseItem{
+			Name:               pm.Model,
+			Provider:           pm.Provider,
+			Type:               pm.Provider,
+			OwnedBy:            pm.Provider,
+			Active:             pm.Active,
+			Configured:         false,
+			Tier:               pm.Tier,
+			CostPerInputToken:  pm.CostIn,
+			CostPerOutputToken: pm.CostOut,
+		}
+		enrichModelItemFromCatalog(&item, pm.Model)
+		items = append(items, item)
+	}
+	return items
+}
+
 func (h *Handler) HandleModels(w http.ResponseWriter, _ *http.Request) {
 	lbInfos := h.lb.GetAvailableModelInfos()
-	lbSeen := make(map[string]bool, len(lbInfos))
 
 	configuredProviders := make(map[string]bool, len(h.cfg.Providers))
 	for _, p := range h.cfg.Providers {
@@ -63,64 +141,12 @@ func (h *Handler) HandleModels(w http.ResponseWriter, _ *http.Request) {
 	catalog.ModelsMu.RLock()
 	defer catalog.ModelsMu.RUnlock()
 
-	resp := make([]ModelResponseItem, 0, len(lbInfos)+len(dbModels))
+	lbItems, lbSeen := buildLBModelItems(lbInfos, dbMap)
+	dbOnlyItems := buildDBOnlyModelItems(dbModels, configuredProviders, lbSeen)
 
-	for _, info := range lbInfos {
-		lbSeen[info.Provider+":"+info.Name] = true
-		item := ModelResponseItem{
-			Name:       info.Name,
-			Provider:   info.Provider,
-			Type:       info.Type,
-			OwnedBy:    info.OwnedBy,
-			Active:     info.Active,
-			Configured: true,
-		}
-		if regInfo, ok := catalog.GetModel(info.Name); ok {
-			item.DisplayName = regInfo.DisplayName
-			item.Tier = regInfo.Tier
-			item.CostPerInputToken = regInfo.CostPerInputToken
-			item.CostPerOutputToken = regInfo.CostPerOutputToken
-		} else if dbEntry, ok := dbMap[info.Provider+":"+info.Name]; ok {
-			item.Tier = dbEntry.Tier
-			item.CostPerInputToken = dbEntry.CostIn
-			item.CostPerOutputToken = dbEntry.CostOut
-		}
-		resp = append(resp, item)
-	}
-
-	for _, pm := range dbModels {
-		if !configuredProviders[pm.Provider] {
-			continue
-		}
-		if lbSeen[pm.Provider+":"+pm.Model] {
-			continue
-		}
-		lbSeen[pm.Provider+":"+pm.Model] = true
-		item := ModelResponseItem{
-			Name:       pm.Model,
-			Provider:   pm.Provider,
-			Type:       pm.Provider,
-			OwnedBy:    pm.Provider,
-			Active:     pm.Active,
-			Configured: false,
-			Tier:       pm.Tier,
-		}
-		item.CostPerInputToken = pm.CostIn
-		item.CostPerOutputToken = pm.CostOut
-		if regInfo, ok := catalog.GetModel(pm.Model); ok {
-			item.DisplayName = regInfo.DisplayName
-			if regInfo.Tier != "" && regInfo.Tier != "standard" {
-				item.Tier = regInfo.Tier
-			}
-			if regInfo.CostPerInputToken > 0 {
-				item.CostPerInputToken = regInfo.CostPerInputToken
-			}
-			if regInfo.CostPerOutputToken > 0 {
-				item.CostPerOutputToken = regInfo.CostPerOutputToken
-			}
-		}
-		resp = append(resp, item)
-	}
+	resp := make([]ModelResponseItem, 0, len(lbItems)+len(dbOnlyItems))
+	resp = append(resp, lbItems...)
+	resp = append(resp, dbOnlyItems...)
 
 	model.WriteJSON(w, http.StatusOK, resp)
 }
@@ -131,7 +157,7 @@ type ToggleModelRequest struct {
 }
 
 func (h *Handler) HandleToggleModel(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 	var req ToggleModelRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		model.WriteJSONError(w, http.StatusBadRequest, "invalid_request_error", "Invalid request body")
@@ -196,7 +222,7 @@ type UpdateModelTierRequest struct {
 }
 
 func (h *Handler) HandleUpdateModelTier(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 	var req UpdateModelTierRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		model.WriteJSONError(w, http.StatusBadRequest, "invalid_request_error", "Invalid request body")

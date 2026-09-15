@@ -77,7 +77,7 @@ func (s *SQLiteStore) GetPromptTemplate(id int) (*config.PromptTemplate, error) 
 	p, err := s.queries.GetPromptTemplate(context.Background(), int64(id))
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, nil
+			return nil, nil //nolint:nilnil // documented not-found contract, see doc comment above
 		}
 		return nil, fmt.Errorf("query prompt %d: %w", id, err)
 	}
@@ -87,11 +87,11 @@ func (s *SQLiteStore) GetPromptTemplate(id int) (*config.PromptTemplate, error) 
 
 // GetPromptTemplateByName retrieves a prompt template by name.
 // It returns (nil, nil) if no prompt template with that name exists.
-func (s *SQLiteStore) GetPromptTemplateByName(name string) (*config.PromptTemplate, error) {
-	p, err := s.queries.GetPromptTemplateByName(context.Background(), name)
+func (s *SQLiteStore) GetPromptTemplateByName(ctx context.Context, name string) (*config.PromptTemplate, error) {
+	p, err := s.queries.GetPromptTemplateByName(ctx, name)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, nil
+			return nil, nil //nolint:nilnil // documented not-found contract, see doc comment above
 		}
 		return nil, fmt.Errorf("query prompt by name %q: %w", name, err)
 	}

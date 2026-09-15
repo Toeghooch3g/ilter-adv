@@ -108,7 +108,7 @@ func (h *MCPHandler) GetAuditLog(w http.ResponseWriter, r *http.Request) {
 		Source:   r.URL.Query().Get("source"),
 	}
 
-	entries, total, err := h.auditLogger.Query(filter)
+	entries, total, err := h.auditLogger.Query(r.Context(), filter)
 	if err != nil {
 		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", "Failed to query audit log")
 		return

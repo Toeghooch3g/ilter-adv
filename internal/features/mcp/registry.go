@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -187,41 +188,48 @@ func (r *Registry) ResolveTool(name string) (*ToolDefinition, *ServerInfo, error
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	conflicts := r.conflictingToolNamesUnlocked()
-
 	// 1. Try namespaced form first (server__toolname) - always works.
-	for _, s := range r.servers {
-		for _, t := range s.Tools {
-			if SanitizeToolName(s.ID, t.Name) == name {
-				return &t, s, nil
-			}
-		}
+	if t, s, ok := r.resolveNamespacedToolUnlocked(name); ok {
+		return t, s, nil
 	}
 
 	// 2. Bare name lookup.
 	// If this bare name has conflicts, reject - must use namespaced form.
-	if conflicts[name] {
+	if r.conflictingToolNamesUnlocked()[name] {
 		return nil, nil, fmt.Errorf("tool %q is ambiguous (exists on multiple servers); use namespaced form server__%s", name, name)
 	}
 
 	// No conflicts - bare name is fine.
-	var found *ToolDefinition
-	var foundServer *ServerInfo
+	if t, s, ok := r.resolveBareToolUnlocked(name); ok {
+		return t, s, nil
+	}
+	return nil, nil, fmt.Errorf("tool %q not found in any server", name)
+}
+
+// resolveNamespacedToolUnlocked looks up name against every server's
+// SanitizeToolName(serverID, toolName) form. Must be called with r.mu held.
+func (r *Registry) resolveNamespacedToolUnlocked(name string) (*ToolDefinition, *ServerInfo, bool) {
+	for _, s := range r.servers {
+		for _, t := range s.Tools {
+			if SanitizeToolName(s.ID, t.Name) == name {
+				return &t, s, true
+			}
+		}
+	}
+	return nil, nil, false
+}
+
+// resolveBareToolUnlocked looks up name against every server's bare tool
+// names. Must be called with r.mu held.
+func (r *Registry) resolveBareToolUnlocked(name string) (*ToolDefinition, *ServerInfo, bool) {
 	for _, s := range r.servers {
 		for _, t := range s.Tools {
 			if t.Name == name {
-				found, foundServer = &t, s
-				break
+				return &t, s, true
 			}
 		}
-		if found != nil {
-			break
-		}
 	}
-	if found != nil {
-		return found, foundServer, nil
-	}
-	return nil, nil, fmt.Errorf("tool %q not found in any server", name)
+	return nil, nil, false
 }
 
 // conflictingToolNamesUnlocked returns the set of bare tool names that exist on multiple servers.
@@ -271,7 +279,7 @@ func (r *Registry) UnregisterServer(id string) {
 
 // SyncTools updates the in-memory tool list for a server and persists to DB.
 // This is called after a successful tools/list discovery.
-func (r *Registry) SyncTools(serverID string, tools []ToolDefinition) error {
+func (r *Registry) SyncTools(ctx context.Context, serverID string, tools []ToolDefinition) error {
 	r.mu.Lock()
 	s, ok := r.servers[serverID]
 	if ok {
@@ -286,7 +294,7 @@ func (r *Registry) SyncTools(serverID string, tools []ToolDefinition) error {
 
 	// Persist to DB.
 	if r.store != nil {
-		if err := r.saveToolsToDB(serverID, tools); err != nil {
+		if err := r.saveToolsToDB(ctx, serverID, tools); err != nil {
 			return fmt.Errorf("persist tools: %w", err)
 		}
 	}
@@ -295,7 +303,7 @@ func (r *Registry) SyncTools(serverID string, tools []ToolDefinition) error {
 	return nil
 }
 
-func (r *Registry) saveToolsToDB(serverID string, tools []ToolDefinition) error {
+func (r *Registry) saveToolsToDB(ctx context.Context, serverID string, tools []ToolDefinition) error {
 	inputs := make([]db.MCPToolInput, 0, len(tools))
 	for _, tool := range tools {
 		inputs = append(inputs, db.MCPToolInput{
@@ -304,7 +312,7 @@ func (r *Registry) saveToolsToDB(serverID string, tools []ToolDefinition) error 
 			InputSchema: tool.InputSchema,
 		})
 	}
-	return r.store.SaveMCPTools(serverID, inputs)
+	return r.store.SaveMCPTools(ctx, serverID, inputs)
 }
 
 func (r *Registry) loadServersFromDB() error {
@@ -321,50 +329,61 @@ func (r *Registry) loadServersFromDB() error {
 		if !row.Enabled {
 			continue
 		}
-
-		timeout := fmt.Sprintf("%dms", row.TimeoutMs)
-		if row.TimeoutMs <= 0 {
-			timeout = "30s"
-		}
-
-		sc := config.MCPServerConfig{
-			ID:              row.ID,
-			Name:            row.Name,
-			Description:     row.Description,
-			Transport:       row.Transport,
-			URL:             row.URL,
-			Command:         row.Command,
-			Handler:         row.Handler,
-			Enabled:         true,
-			Timeout:         timeout,
-			MaxRetries:      row.MaxRetries,
-			AuthType:        row.AuthType,
-			AuthKeyEnv:      row.AuthKeyEnv,
-			ProtocolVersion: row.ProtocolVersion,
-		}
-
-		// Unmarshal JSON args and env.
-		if row.Args != "" {
-			if err := json.Unmarshal([]byte(row.Args), &sc.Args); err != nil {
-				mcpLog.Warn("failed to unmarshal args for server", "server_id", row.ID, "error", err)
-			}
-		}
-		if row.Env != "" {
-			if err := json.Unmarshal([]byte(row.Env), &sc.Env); err != nil {
-				mcpLog.Warn("failed to unmarshal env for server", "server_id", row.ID, "error", err)
-			}
-		}
-
-		// Only add if not already registered (config takes precedence).
-		if _, exists := r.servers[row.ID]; !exists {
-			r.servers[row.ID] = &ServerInfo{
-				ID:     row.ID,
-				Config: sc,
-			}
-		}
+		r.registerServerFromDBRow(row)
 	}
 
 	return nil
+}
+
+// registerServerFromDBRow converts a DB server row into a ServerInfo and
+// adds it to the registry, unless a server with the same ID is already
+// registered (config takes precedence over DB-persisted rows).
+func (r *Registry) registerServerFromDBRow(row db.MCPServerRow) {
+	if _, exists := r.servers[row.ID]; exists {
+		return
+	}
+	r.servers[row.ID] = &ServerInfo{
+		ID:     row.ID,
+		Config: buildServerConfigFromDBRow(row),
+	}
+}
+
+// buildServerConfigFromDBRow builds a config.MCPServerConfig from a DB
+// server row, unmarshaling its JSON-encoded args/env.
+func buildServerConfigFromDBRow(row db.MCPServerRow) config.MCPServerConfig {
+	timeout := fmt.Sprintf("%dms", row.TimeoutMs)
+	if row.TimeoutMs <= 0 {
+		timeout = "30s"
+	}
+
+	sc := config.MCPServerConfig{
+		ID:              row.ID,
+		Name:            row.Name,
+		Description:     row.Description,
+		Transport:       row.Transport,
+		URL:             row.URL,
+		Command:         row.Command,
+		Handler:         row.Handler,
+		Enabled:         true,
+		Timeout:         timeout,
+		MaxRetries:      row.MaxRetries,
+		AuthType:        row.AuthType,
+		AuthKeyEnv:      row.AuthKeyEnv,
+		ProtocolVersion: row.ProtocolVersion,
+	}
+
+	if row.Args != "" {
+		if err := json.Unmarshal([]byte(row.Args), &sc.Args); err != nil {
+			mcpLog.Warn("failed to unmarshal args for server", "server_id", row.ID, "error", err)
+		}
+	}
+	if row.Env != "" {
+		if err := json.Unmarshal([]byte(row.Env), &sc.Env); err != nil {
+			mcpLog.Warn("failed to unmarshal env for server", "server_id", row.ID, "error", err)
+		}
+	}
+
+	return sc
 }
 
 func (r *Registry) loadToolsFromDB(serverID string) error {

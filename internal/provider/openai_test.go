@@ -223,13 +223,24 @@ func TestOpenAIProvider_TransformRequest_TranslatesAnthropicImageBlock(t *testin
 	err = json.NewDecoder(httpReq.Body).Decode(&body)
 	require.NoError(t, err)
 
-	blocks := body["messages"].([]any)[0].(map[string]any)["content"].([]any)
-	imgBlock := blocks[1].(map[string]any)
+	messages, ok := body["messages"].([]any)
+	require.True(t, ok)
+	msg0, ok := messages[0].(map[string]any)
+	require.True(t, ok)
+	blocks, ok := msg0["content"].([]any)
+	require.True(t, ok)
+	imgBlock, ok := blocks[1].(map[string]any)
+	require.True(t, ok)
 	assert.Equal(t, "image_url", imgBlock["type"])
-	assert.Equal(t, "data:image/png;base64,QUJD", imgBlock["image_url"].(map[string]any)["url"])
+	imgURL, ok := imgBlock["image_url"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "data:image/png;base64,QUJD", imgURL["url"])
 
 	// Original request must be untouched (shared across load-balancer retries).
-	origBlock := req.Messages[0].Content.([]any)[1].(map[string]any)
+	origContent, ok := req.Messages[0].Content.([]any)
+	require.True(t, ok)
+	origBlock, ok := origContent[1].(map[string]any)
+	require.True(t, ok)
 	assert.Equal(t, "image", origBlock["type"])
 }
 
@@ -285,7 +296,7 @@ func TestOpenAIProvider_TransformResponse_Success(t *testing.T) {
 	httpReq, _ := http.NewRequestWithContext(context.Background(), "POST", server.URL, nil)
 	resp, err := http.DefaultClient.Do(httpReq)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	cfg := config.ProviderConfig{
 		Name:   "test-openai",
@@ -340,7 +351,7 @@ func TestOpenAIProvider_TransformResponse_MultipleChoices(t *testing.T) {
 	httpReq, _ := http.NewRequestWithContext(context.Background(), "POST", server.URL, nil)
 	resp, err := http.DefaultClient.Do(httpReq)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	p := NewOpenAIProvider(config.ProviderConfig{})
 	chatResp, err := p.TransformResponse(context.Background(), resp)
@@ -360,7 +371,7 @@ func TestOpenAIProvider_TransformResponse_ErrorStatus(t *testing.T) {
 	httpReq, _ := http.NewRequestWithContext(context.Background(), "POST", server.URL, nil)
 	resp, err := http.DefaultClient.Do(httpReq)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	p := NewOpenAIProvider(config.ProviderConfig{})
 	chatResp, err := p.TransformResponse(context.Background(), resp)
@@ -381,7 +392,7 @@ func TestOpenAIProvider_TransformResponse_ErrorEnvelopeWith200(t *testing.T) {
 	httpReq, _ := http.NewRequestWithContext(context.Background(), "POST", server.URL, nil)
 	resp, err := http.DefaultClient.Do(httpReq)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	p := NewOpenAIProvider(config.ProviderConfig{})
 	chatResp, err := p.TransformResponse(context.Background(), resp)
@@ -401,7 +412,7 @@ func TestOpenAIProvider_TransformResponse_EmptyChoiceContentWith200(t *testing.T
 	httpReq, _ := http.NewRequestWithContext(context.Background(), "POST", server.URL, nil)
 	resp, err := http.DefaultClient.Do(httpReq)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	p := NewOpenAIProvider(config.ProviderConfig{})
 	chatResp, err := p.TransformResponse(context.Background(), resp)
@@ -421,7 +432,7 @@ func TestOpenAIProvider_TransformResponse_EmptyChoicesWith200(t *testing.T) {
 	httpReq, _ := http.NewRequestWithContext(context.Background(), "POST", server.URL, nil)
 	resp, err := http.DefaultClient.Do(httpReq)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	p := NewOpenAIProvider(config.ProviderConfig{})
 	chatResp, err := p.TransformResponse(context.Background(), resp)
@@ -441,7 +452,7 @@ func TestOpenAIProvider_TransformResponse_InvalidJSON(t *testing.T) {
 	httpReq, _ := http.NewRequestWithContext(context.Background(), "POST", server.URL, nil)
 	resp, err := http.DefaultClient.Do(httpReq)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	p := NewOpenAIProvider(config.ProviderConfig{})
 	chatResp, err := p.TransformResponse(context.Background(), resp)

@@ -39,16 +39,45 @@ func (m *SmartRouterMiddleware) UpdateSmartRouter(sr *smartrouter.SmartRouter) {
 	m.smartRouter.Store(sr)
 }
 
+// resolveRoutingConfig returns the active routing config, and false if
+// smart routing shouldn't run for this request (no config snapshot, or the
+// feature is disabled).
+func (m *SmartRouterMiddleware) resolveRoutingConfig() (rc config.RoutingConfig, enabled bool) {
+	snap := m.configCache.Get()
+	if snap == nil {
+		return config.RoutingConfig{}, false
+	}
+	rc = snap.RoutingConfig()
+	return rc, rc.Enabled
+}
+
+// routeViaSmartRouter selects a model via the smart router, sets the
+// StrategyKey/PreferenceKey context values, and records the decision in
+// request metadata. Returns ctx with those values attached.
+func (m *SmartRouterMiddleware) routeViaSmartRouter(ctx context.Context, req *model.ChatCompletionRequest, rc config.RoutingConfig) context.Context {
+	sr := m.smartRouter.Load()
+	selectedModel, score, err := sr.RouteRequest(ctx, req)
+	if err != nil || selectedModel == "" {
+		return context.WithValue(ctx, StrategyKey, "")
+	}
+
+	preference := rc.ProviderPreference
+	if preference == "" {
+		preference = "cheapest"
+	}
+	newCtx := context.WithValue(ctx, StrategyKey, selectedModel)
+	newCtx = context.WithValue(newCtx, PreferenceKey, preference)
+	if meta := reqmeta.GetRequestMetadata(ctx); meta != nil {
+		meta.SetSmartRouted(true, selectedModel)
+		meta.SetComplexityScore(score)
+	}
+	return newCtx
+}
+
 func (m *SmartRouterMiddleware) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		snap := m.configCache.Get()
-		if snap == nil {
-			next.ServeHTTP(w, r)
-			return
-		}
-
-		rc := snap.RoutingConfig()
-		if !rc.Enabled {
+		rc, enabled := m.resolveRoutingConfig()
+		if !enabled {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -72,24 +101,7 @@ func (m *SmartRouterMiddleware) Handler(next http.Handler) http.Handler {
 			return
 		}
 
-		sr := m.smartRouter.Load()
-		selectedModel, score, err := sr.RouteRequest(r.Context(), &req)
-		if err != nil || selectedModel == "" {
-			ctx := context.WithValue(r.Context(), StrategyKey, "")
-			next.ServeHTTP(w, r.WithContext(ctx))
-			return
-		}
-
-		preference := rc.ProviderPreference
-		if preference == "" {
-			preference = "cheapest"
-		}
-		ctx := context.WithValue(r.Context(), StrategyKey, selectedModel)
-		ctx = context.WithValue(ctx, PreferenceKey, preference)
-		if meta := reqmeta.GetRequestMetadata(r.Context()); meta != nil {
-			meta.SetSmartRouted(true, selectedModel)
-			meta.SetComplexityScore(score)
-		}
+		ctx := m.routeViaSmartRouter(r.Context(), &req, rc)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }

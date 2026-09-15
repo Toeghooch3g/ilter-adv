@@ -31,12 +31,16 @@ func ensureFallbackMetrics() {
 // errors silently dropped — counter creation basically never fails with OTel;
 // if we ever need observability into init failures, bubble up from ensureFallbackMetrics.
 
+// Background context is intentional in both counters below: these are
+// fire-and-forget metric increments called deep in classification/cooldown
+// logic that has no context.Context of its own to thread through.
+
 func incRetryAfterCapped() {
 	ensureFallbackMetrics()
-	retryAfterCapped.Add(context.Background(), 1)
+	retryAfterCapped.Add(context.Background(), 1) //nolint:contextcheck // fire-and-forget metric, no ctx available in this call chain
 }
 
 func incCooldownCapped() {
 	ensureFallbackMetrics()
-	cooldownCapped.Add(context.Background(), 1)
+	cooldownCapped.Add(context.Background(), 1) //nolint:contextcheck // fire-and-forget metric, no ctx available in this call chain
 }

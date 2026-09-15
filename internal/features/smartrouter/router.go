@@ -118,7 +118,7 @@ func (sr *SmartRouter) selectModelForTier(tier string) (string, error) {
 	for _, t := range searchOrder {
 		candidates := modelsByTier[t]
 		if len(candidates) > 0 {
-			return candidates[rand.IntN(len(candidates))], nil
+			return candidates[rand.IntN(len(candidates))], nil //nolint:gosec // load-spreading choice among candidates, not a security context
 		}
 	}
 

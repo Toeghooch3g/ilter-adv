@@ -99,7 +99,7 @@ func deliverViaWebhook(ctx context.Context, cfg *DeliveryConfig, llmResult strin
 	if err != nil {
 		return fmt.Errorf("webhook request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode >= 400 {
 		return fmt.Errorf("webhook returned status %d", resp.StatusCode)

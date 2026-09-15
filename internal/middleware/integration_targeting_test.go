@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -27,7 +28,7 @@ func setupTargetingTestStore(t *testing.T) *db.SQLiteStore {
 // seedUserAPIKey creates a virtual API key owned by a user.
 func seedUserAPIKey(t *testing.T, store *db.SQLiteStore, name string, userID int) string {
 	t.Helper()
-	vk, rawToken, err := store.CreateAPIKey(name, nil, &userID, 100.0, 0, 50, 0, nil, nil, nil)
+	vk, rawToken, err := store.CreateAPIKey(context.Background(), name, nil, &userID, 100.0, 0, 50, 0, nil, nil, nil)
 	require.NoError(t, err)
 	require.NotEmpty(t, vk.ID)
 	return rawToken
@@ -37,7 +38,7 @@ func TestTargeting_AuthSetsUserContext(t *testing.T) {
 	store := setupTargetingTestStore(t)
 
 	// Create user first
-	user, err := store.CreateUser(auth.CreateUserRequest{Name: "TestUser", Email: "test@test.com"})
+	user, err := store.CreateUser(context.Background(), auth.CreateUserRequest{Name: "TestUser", Email: "test@test.com"})
 	require.NoError(t, err)
 
 	// Create API key owned by user
@@ -85,7 +86,7 @@ func TestTargeting_LegacyKeyNoOwner(t *testing.T) {
 	// Create key WITHOUT owner (legacy pattern)
 	var err error
 	var rawToken string
-	_, rawToken, err = store.CreateAPIKey("legacy-key", nil, nil, 100.0, 0, 50, 0, nil, nil, nil)
+	_, rawToken, err = store.CreateAPIKey(context.Background(), "legacy-key", nil, nil, 100.0, 0, 50, 0, nil, nil, nil)
 	require.NoError(t, err)
 
 	authCfg := config.AuthConfig{AdminKey: "admin-token"}
@@ -116,7 +117,7 @@ func TestTargeting_LegacyKeyNoOwner(t *testing.T) {
 func TestTargeting_AdminKeyNoUserContext(t *testing.T) {
 	store := setupTargetingTestStore(t)
 
-	adminToken := "admin-key-for-test"
+	adminToken := "admin-key-for-test" //nolint:gosec // test fixture token, not a real credential
 	authCfg := config.AuthConfig{AdminKey: adminToken}
 	auth := NewAuthMiddleware(authCfg, store)
 

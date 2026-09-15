@@ -73,29 +73,29 @@ func findPlaceholders(text string) []string {
 	return unique
 }
 
+// unmaskUsingMappings replaces every placeholder in text that has a hash
+// matching a key in mappings with its original value.
+func unmaskUsingMappings(text string, mappings map[string]string) string {
+	for placeholder, original := range mappings {
+		if hash := pii.ExtractHash(placeholder); hash != "" {
+			text = replacePIISingle(text, hash, original)
+		}
+	}
+	return text
+}
+
 // UnmaskResponse unmasks PII placeholders in text using the per-request
 // ReversibleState and the Redis mapping store from context.
 func UnmaskResponse(ctx context.Context, text string) string {
-	state := GetPIIState(ctx)
-	if state != nil {
-		for placeholder, original := range state.GetMappings() {
-			if hash := pii.ExtractHash(placeholder); hash != "" {
-				text = replacePIISingle(text, hash, original)
-			}
-		}
+	if state := GetPIIState(ctx); state != nil {
+		text = unmaskUsingMappings(text, state.GetMappings())
 	}
 
 	rs := GetPIIRedisStore(ctx)
 	keyID := reqmeta.GetKeyID(ctx)
 	if rs != nil && keyID != "" {
-		phs := findPlaceholders(text)
-		if len(phs) > 0 {
-			mappings := rs.GetMappings(ctx, keyID, phs)
-			for ph, original := range mappings {
-				if hash := pii.ExtractHash(ph); hash != "" {
-					text = replacePIISingle(text, hash, original)
-				}
-			}
+		if phs := findPlaceholders(text); len(phs) > 0 {
+			text = unmaskUsingMappings(text, rs.GetMappings(ctx, keyID, phs))
 		}
 	}
 	return text
@@ -160,6 +160,30 @@ func (s *PIIRedisStore) GetMapping(ctx context.Context, keyID, placeholder strin
 	return val, true
 }
 
+// fetchMappingsBatch runs the MGET + pipelined EXPIRE for GetMappings' Redis
+// call, populating result with every found placeholder→value pair.
+func (s *PIIRedisStore) fetchMappingsBatch(c context.Context, rdb *redis.Client, keys, placeholders []string, result map[string]string) error {
+	vals, err := rdb.MGet(c, keys...).Result()
+	if err != nil {
+		return err
+	}
+	pipe := rdb.Pipeline()
+	for i, val := range vals {
+		if val == nil {
+			continue
+		}
+		ph := placeholders[i]
+		if s, ok := val.(string); ok {
+			result[ph] = s
+			pipe.Expire(c, keys[i], 1*time.Hour)
+		}
+	}
+	if _, err := pipe.Exec(c); err != nil {
+		slog.Warn("Failed to execute PII batch pipeline", "error", err)
+	}
+	return nil
+}
+
 // GetMappings batch-lookup multiple placeholders. Returns only found mappings.
 func (s *PIIRedisStore) GetMappings(ctx context.Context, keyID string, placeholders []string) map[string]string {
 	if s == nil || s.guard == nil || len(placeholders) == 0 {
@@ -172,24 +196,7 @@ func (s *PIIRedisStore) GetMappings(ctx context.Context, keyID string, placehold
 
 	result := make(map[string]string, len(placeholders))
 	s.guard.Do(ctx, func(c context.Context, rdb *redis.Client) error {
-		vals, err := rdb.MGet(c, keys...).Result()
-		if err != nil {
-			return err
-		}
-		pipe := rdb.Pipeline()
-		for i, val := range vals {
-			if val != nil {
-				ph := placeholders[i]
-				if s, ok := val.(string); ok {
-					result[ph] = s
-					pipe.Expire(c, keys[i], 1*time.Hour)
-				}
-			}
-		}
-		if _, err := pipe.Exec(c); err != nil {
-			slog.Warn("Failed to execute PII batch pipeline", "error", err)
-		}
-		return nil
+		return s.fetchMappingsBatch(c, rdb, keys, placeholders, result)
 	})
 	return result
 }
@@ -234,6 +241,7 @@ func NewPIIMaskerMiddleware(store *db.SQLiteStore, cfg config.PIIConfig, redisGu
 // piiResponseWriter intercepts writes to perform response unmasking for reversible PII mode.
 type piiResponseWriter struct {
 	http.ResponseWriter
+	ctx        context.Context
 	state      *pii.ReversibleState
 	masker     *pii.Masker
 	buffer     []byte
@@ -286,7 +294,7 @@ func (w *piiResponseWriter) unmaskFromRedis(text string) string {
 	if len(phs) == 0 {
 		return text
 	}
-	mappings := w.redisStore.GetMappings(context.Background(), w.keyID, phs)
+	mappings := w.redisStore.GetMappings(w.ctx, w.keyID, phs)
 	for ph, original := range mappings {
 		if hash := pii.ExtractHash(ph); hash != "" {
 			text = replacePIISingle(text, hash, original)
@@ -302,6 +310,123 @@ func (w *piiResponseWriter) Flush() {
 	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
 		flusher.Flush()
 	}
+}
+
+// piiPreviewMaxLen caps how much of a PII-affected message is stored/logged
+// as a preview.
+const piiPreviewMaxLen = 200
+
+// truncatePIIPreview caps s to piiPreviewMaxLen characters for storage/logging.
+func truncatePIIPreview(s string) string {
+	if len(s) > piiPreviewMaxLen {
+		return s[:piiPreviewMaxLen]
+	}
+	return s
+}
+
+// recordPIIEvent inserts one pii_events row, if a store is configured.
+func (m *PIIMaskerMiddleware) recordPIIEvent(keyID, clientIP string, match pii.Match, preview string) {
+	if m.store == nil {
+		return
+	}
+	_, _ = m.store.DB.Exec("INSERT INTO pii_events (key_id, pii_type, action_taken, masked_prompt_preview, pii_value, client_ip) VALUES (?, ?, ?, ?, ?, ?)", keyID, match.Type, piiActionToAuditLabel(match.Action), preview, match.Value, clientIP)
+}
+
+// handleBlockedPII marks the request as PII-blocked in meta, records a
+// pii_events row per match, and writes the standard PII-blocked error
+// response.
+func (m *PIIMaskerMiddleware) handleBlockedPII(w http.ResponseWriter, meta *reqmeta.RequestLoggingMetadata, keyID, clientIP, contentStr string, matches []pii.Match) {
+	if meta != nil {
+		meta.SetPIIBlocked(true)
+	}
+	preview := truncatePIIPreview(contentStr)
+	for _, match := range matches {
+		m.recordPIIEvent(keyID, clientIP, match, preview)
+	}
+	writePIIBlockedError(w)
+}
+
+// recordMaskedPII records request metadata and audit events for a message
+// whose content was changed by masking.
+func (m *PIIMaskerMiddleware) recordMaskedPII(meta *reqmeta.RequestLoggingMetadata, keyID, clientIP, masked string, matches []pii.Match) {
+	preview := truncatePIIPreview(masked)
+	if meta != nil {
+		meta.SetPIIMasked(true)
+		for _, match := range matches {
+			meta.AddPIIEvent(match.Type, piiActionToAuditLabel(match.Action), preview, match.Value, clientIP)
+		}
+	}
+	for _, match := range matches {
+		m.recordPIIEvent(keyID, clientIP, match, preview)
+	}
+}
+
+// maskMessageContent detects and masks PII in one message's string content,
+// recording audit events as needed. Returns the message's (possibly masked)
+// content, whether processing hit a block (the caller must abort the
+// request; the blocked-error response has already been written), and
+// whether the content actually changed.
+func (m *PIIMaskerMiddleware) maskMessageContent(w http.ResponseWriter, meta *reqmeta.RequestLoggingMetadata, state *pii.ReversibleState, keyID, clientIP, contentStr string) (result string, blocked, changed bool) {
+	matches := m.masker.DetectPII(contentStr)
+	masked, err := m.masker.ProcessText(contentStr, state)
+	if err != nil {
+		if errors.Is(err, model.ErrPIIBlocked) {
+			m.handleBlockedPII(w, meta, keyID, clientIP, contentStr, matches)
+			return contentStr, true, false
+		}
+		masked = contentStr
+	}
+	if masked == contentStr {
+		return contentStr, false, false
+	}
+	m.recordMaskedPII(meta, keyID, clientIP, masked, matches)
+	return masked, false, true
+}
+
+// maskRequestMessages masks PII in every string-content message of req in
+// place. Returns true if the request was blocked (caller must return
+// immediately without proceeding) and true if any message was modified.
+func (m *PIIMaskerMiddleware) maskRequestMessages(w http.ResponseWriter, r *http.Request, meta *reqmeta.RequestLoggingMetadata, state *pii.ReversibleState, keyID string, req *model.ChatCompletionRequest) (blocked, modified bool) {
+	for i, msg := range req.Messages {
+		contentStr, ok := msg.Content.(string)
+		if !ok {
+			continue
+		}
+		masked, isBlocked, changed := m.maskMessageContent(w, meta, state, keyID, r.RemoteAddr, contentStr)
+		if isBlocked {
+			return true, modified
+		}
+		if changed {
+			req.Messages[i].Content = masked
+			modified = true
+		}
+	}
+	return false, modified
+}
+
+// storeRedisMappings persists every placeholder→original mapping from state
+// to Redis, so a later response can unmask them for this key.
+func (m *PIIMaskerMiddleware) storeRedisMappings(ctx context.Context, keyID string, state *pii.ReversibleState) {
+	if m.redisStore == nil || keyID == "" {
+		return
+	}
+	for placeholder, original := range state.GetMappings() {
+		m.redisStore.StoreMapping(ctx, keyID, placeholder, original)
+	}
+}
+
+// rebuildRequestBody re-marshals req as the new request body when modified
+// is true (falling back to the original bytes on marshal failure), or
+// restores the original bytes unchanged otherwise.
+func rebuildRequestBody(r *http.Request, req model.ChatCompletionRequest, bodyBytes []byte, modified bool) {
+	if modified {
+		if newBody, err := json.Marshal(req); err == nil {
+			r.Body = io.NopCloser(bytes.NewBuffer(newBody))
+			r.ContentLength = int64(len(newBody))
+			return
+		}
+	}
+	r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 }
 
 // Handler intercepts request and response payloads.
@@ -321,7 +446,7 @@ func (m *PIIMaskerMiddleware) Handler(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		r.Body.Close()
+		_ = r.Body.Close()
 
 		var req model.ChatCompletionRequest
 		if err := json.Unmarshal(bodyBytes, &req); err != nil {
@@ -335,76 +460,13 @@ func (m *PIIMaskerMiddleware) Handler(next http.Handler) http.Handler {
 
 		keyID := reqmeta.GetKeyID(r.Context())
 		meta := reqmeta.GetRequestMetadata(r.Context())
-		modified := false
-		for i, msg := range req.Messages {
-			if contentStr, ok := msg.Content.(string); ok {
-				matches := m.masker.DetectPII(contentStr)
-				masked, err := m.masker.ProcessText(contentStr, state)
-				if err != nil {
-					if errors.Is(err, model.ErrPIIBlocked) {
-						if meta != nil {
-							meta.SetPIIBlocked(true)
-						}
-						if m.store != nil {
-							clientIP := r.RemoteAddr
-							for _, match := range matches {
-								preview := contentStr
-								if len(preview) > 200 {
-									preview = preview[:200]
-								}
-								_, _ = m.store.DB.Exec("INSERT INTO pii_events (key_id, pii_type, action_taken, masked_prompt_preview, pii_value, client_ip) VALUES (?, ?, ?, ?, ?, ?)", keyID, match.Type, piiActionToAuditLabel(match.Action), preview, match.Value, clientIP)
-							}
-						}
-						writePIIBlockedError(w)
-						return
-					}
-					masked = contentStr
-				}
-				if masked != contentStr {
-					req.Messages[i].Content = masked
-					modified = true
-					if meta != nil {
-						meta.SetPIIMasked(true)
-						clientIP := r.RemoteAddr
-						for _, match := range matches {
-							preview := masked
-							if len(preview) > 200 {
-								preview = preview[:200]
-							}
-							meta.AddPIIEvent(match.Type, piiActionToAuditLabel(match.Action), preview, match.Value, clientIP)
-						}
-					}
-					if m.store != nil {
-						clientIP := r.RemoteAddr
-						for _, match := range matches {
-							preview := masked
-							if len(preview) > 200 {
-								preview = preview[:200]
-							}
-							_, _ = m.store.DB.Exec("INSERT INTO pii_events (key_id, pii_type, action_taken, masked_prompt_preview, pii_value, client_ip) VALUES (?, ?, ?, ?, ?, ?)", keyID, match.Type, piiActionToAuditLabel(match.Action), preview, match.Value, clientIP)
-						}
-					}
-				}
-			}
+		blocked, modified := m.maskRequestMessages(w, r, meta, state, keyID, &req)
+		if blocked {
+			return
 		}
 
-		if m.redisStore != nil && keyID != "" {
-			for placeholder, original := range state.GetMappings() {
-				m.redisStore.StoreMapping(r.Context(), keyID, placeholder, original)
-			}
-		}
-
-		if modified {
-			newBody, marshalErr := json.Marshal(req)
-			if marshalErr == nil {
-				r.Body = io.NopCloser(bytes.NewBuffer(newBody))
-				r.ContentLength = int64(len(newBody))
-			} else {
-				r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
-			}
-		} else {
-			r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
-		}
+		m.storeRedisMappings(r.Context(), keyID, state)
+		rebuildRequestBody(r, req, bodyBytes, modified)
 
 		ctx := context.WithValue(r.Context(), piiStateKey, state)
 		ctx = context.WithValue(ctx, piiRedisKey, m.redisStore)
@@ -412,6 +474,7 @@ func (m *PIIMaskerMiddleware) Handler(next http.Handler) http.Handler {
 
 		wrappedWriter := &piiResponseWriter{
 			ResponseWriter: w,
+			ctx:            ctx,
 			state:          state,
 			masker:         m.masker,
 			redisStore:     m.redisStore,
@@ -449,14 +512,7 @@ func (m *PIIMaskerMiddleware) MaskMessages(ctx context.Context, messages []model
 		}
 	}
 
-	if m.redisStore != nil {
-		keyID := reqmeta.GetKeyID(ctx)
-		if keyID != "" {
-			for placeholder, original := range state.GetMappings() {
-				m.redisStore.StoreMapping(ctx, keyID, placeholder, original)
-			}
-		}
-	}
+	m.storeRedisMappings(ctx, reqmeta.GetKeyID(ctx), state)
 
 	return nil
 }

@@ -1,6 +1,7 @@
 package demo
 
 import (
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
@@ -474,12 +475,12 @@ func seedSmartRouterStrategies(db *sql.DB) error {
 		return fmt.Errorf("marshal economy strategy: %w", err)
 	}
 
-	if err := rcStore.UpsertRuntimeConfig("routing_strategy", "economy", string(data), "system"); err != nil {
+	if err := rcStore.UpsertRuntimeConfig(context.Background(), "routing_strategy", "economy", string(data), "system"); err != nil {
 		return fmt.Errorf("upsert economy strategy: %w", err)
 	}
 
 	activeStrategyData, _ := json.Marshal("economy")
-	if err := rcStore.UpsertRuntimeConfig("active_routing_strategy", "active", string(activeStrategyData), "system"); err != nil {
+	if err := rcStore.UpsertRuntimeConfig(context.Background(), "active_routing_strategy", "active", string(activeStrategyData), "system"); err != nil {
 		return fmt.Errorf("set active strategy: %w", err)
 	}
 

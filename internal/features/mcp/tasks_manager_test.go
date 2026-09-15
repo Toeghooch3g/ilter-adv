@@ -15,9 +15,9 @@ func newTestTaskManager(t *testing.T) *TaskManager {
 	return tm
 }
 
-func waitForStatus(t *testing.T, tm *TaskManager, id string, want TaskStatus, timeout time.Duration) *Task {
+func waitForStatus(t *testing.T, tm *TaskManager, id string, want TaskStatus) *Task {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
+	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
 		task, err := tm.Get(context.Background(), id)
 		if err != nil {
@@ -28,7 +28,7 @@ func waitForStatus(t *testing.T, tm *TaskManager, id string, want TaskStatus, ti
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	t.Fatalf("task %q did not reach status %q within %v", id, want, timeout)
+	t.Fatalf("task %q did not reach status %q within %v", id, want, time.Second)
 	return nil
 }
 
@@ -45,7 +45,7 @@ func TestTaskManager_RunAsync_Success(t *testing.T) {
 		t.Fatal("expected non-empty task id")
 	}
 
-	task := waitForStatus(t, tm, id, TaskStatusCompleted, time.Second)
+	task := waitForStatus(t, tm, id, TaskStatusCompleted)
 	if string(task.Result) != `{"content":[{"type":"text","text":"done"}]}` {
 		t.Errorf("Result = %s, want the tool's returned payload", task.Result)
 	}
@@ -61,7 +61,7 @@ func TestTaskManager_RunAsync_Failure(t *testing.T) {
 		t.Fatalf("RunAsync: %v", err)
 	}
 
-	task := waitForStatus(t, tm, id, TaskStatusFailed, time.Second)
+	task := waitForStatus(t, tm, id, TaskStatusFailed)
 	if task.ErrorMessage != "boom" {
 		t.Errorf("ErrorMessage = %q, want %q", task.ErrorMessage, "boom")
 	}
@@ -87,7 +87,7 @@ func TestTaskManager_RequestInput_RoundTrip(t *testing.T) {
 		t.Fatalf("RunAsync: %v", err)
 	}
 
-	task := waitForStatus(t, tm, id, TaskStatusInputRequired, time.Second)
+	task := waitForStatus(t, tm, id, TaskStatusInputRequired)
 	if string(task.InputRequiredPayload) != `{"question":"which account?"}` {
 		t.Errorf("InputRequiredPayload = %s, want the question payload", task.InputRequiredPayload)
 	}
@@ -105,7 +105,7 @@ func TestTaskManager_RequestInput_RoundTrip(t *testing.T) {
 		t.Fatal("fn never resumed after Update")
 	}
 
-	waitForStatus(t, tm, id, TaskStatusCompleted, time.Second)
+	waitForStatus(t, tm, id, TaskStatusCompleted)
 }
 
 func TestTaskManager_Update_UnknownTaskErrors(t *testing.T) {

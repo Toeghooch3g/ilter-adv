@@ -194,17 +194,13 @@ type AuditLogEntry struct {
 
 // Query returns audit log entries matching filter, along with the total
 // count of matching rows (ignoring filter.Limit/filter.Offset).
-func (l *AuditLogger) Query(filter AuditFilter) ([]AuditLogEntry, int, error) {
+func (l *AuditLogger) Query(ctx context.Context, filter AuditFilter) ([]AuditLogEntry, int, error) {
 	conds, args := buildAuditConditions(filter)
 
 	where := ""
 	if len(conds) > 0 {
 		where = " WHERE " + strings.Join(conds, " AND ")
 	}
-
-	// This is invoked from HTTP handlers via a store method that predates
-	// context threading; there is no caller context available here.
-	ctx := context.Background()
 
 	var total int
 	countSQL := "SELECT COUNT(*) FROM mcp_audit_log" + where

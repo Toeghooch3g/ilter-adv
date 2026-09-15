@@ -75,7 +75,7 @@ func (a *App) initStore() error {
 }
 
 func loadProvidersFromDB(store *db.SQLiteStore) []config.ProviderConfig {
-	entries, err := store.GetBySection("provider")
+	entries, err := store.GetBySection(context.Background(), "provider")
 	if err != nil {
 		slog.Warn("no providers in runtime_config (run 'ilter init' first)", "error", err)
 		return nil
@@ -139,11 +139,12 @@ func (a *App) setupLogging() {
 func (a *App) initRedis() *circuitbreaker.RedisBreaker {
 	cfg := a.cfg
 	redisURL := ""
-	if cfg.RateLimit.Enabled && cfg.RateLimit.RedisURL != "" {
+	switch {
+	case cfg.RateLimit.Enabled && cfg.RateLimit.RedisURL != "":
 		redisURL = cfg.RateLimit.RedisURL
-	} else if cfg.Cache.Enabled && cfg.Cache.RedisURL != "" {
+	case cfg.Cache.Enabled && cfg.Cache.RedisURL != "":
 		redisURL = cfg.Cache.RedisURL
-	} else if cfg.Budget.Enabled && cfg.RateLimit.RedisURL != "" {
+	case cfg.Budget.Enabled && cfg.RateLimit.RedisURL != "":
 		redisURL = cfg.RateLimit.RedisURL
 	}
 
@@ -214,7 +215,7 @@ func initLoadBalancer(cfg *config.Config, reg *provider.Registry, store *db.SQLi
 		lb.SetInactiveModels(inactiveModels)
 	}
 	loopSettings := config.LoopSettingsWithDefaults(cfg.CostGuard.LoopSettings)
-	if overrides, errDb := store.GetBySection("loop_settings"); errDb == nil {
+	if overrides, errDb := store.GetBySection(context.Background(), "loop_settings"); errDb == nil {
 		loopSettings = config.ApplyLoopSettingsOverrides(loopSettings, overrides)
 	}
 	cfg.CostGuard.LoopSettings = loopSettings

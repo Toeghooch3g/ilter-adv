@@ -148,8 +148,9 @@ func startMockOpenAIServer(addr string) *http.Server {
 	})
 
 	srv := &http.Server{
-		Addr:    addr,
-		Handler: mux,
+		Addr:              addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
 	}
 
 	go func() {
@@ -179,7 +180,7 @@ func makeRequest(method, url string, headers map[string]string, body []byte) (in
 	if err != nil {
 		return 0, "", nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	respBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return resp.StatusCode, "", resp.Header, err
@@ -249,7 +250,7 @@ func TestE2EAndSchemathesis(t *testing.T) {
 		req, _ := http.NewRequestWithContext(context.Background(), "GET", "http://127.0.0.1:8081/models", nil)
 		resp, err = http.DefaultClient.Do(req)
 		if err == nil {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
 				break
 			}
@@ -307,7 +308,7 @@ func TestE2EAndSchemathesis(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to set PII mode: %v", err)
 	}
-	store.Close()
+	_ = store.Close()
 
 	// 5. Start ilter serve subprocess with env var config
 	t.Log("Starting ilter serve...")

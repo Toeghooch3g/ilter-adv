@@ -30,7 +30,7 @@ func TestMockProvider_CannedResponse(t *testing.T) {
 	client := mp.Client()
 	httpResp, err := client.Do(httpReq)
 	require.NoError(t, err)
-	defer httpResp.Body.Close()
+	defer func() { _ = httpResp.Body.Close() }()
 
 	chatResp, err := mp.TransformResponse(context.Background(), httpResp)
 	require.NoError(t, err)
@@ -56,7 +56,7 @@ func TestMockProvider_CannedStream(t *testing.T) {
 	client := mp.Client()
 	httpResp, err := client.Do(httpReq)
 	require.NoError(t, err)
-	defer httpResp.Body.Close()
+	defer func() { _ = httpResp.Body.Close() }()
 
 	bodyBytes, err := io.ReadAll(httpResp.Body)
 	require.NoError(t, err)

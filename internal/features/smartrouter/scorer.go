@@ -32,11 +32,12 @@ func (s *HeuristicScorer) Score(_ context.Context, messages []model.Message, too
 	score := 0.0
 
 	wordCount := len(strings.Fields(prompt))
-	if wordCount < 100 {
+	switch {
+	case wordCount < 100:
 		score += 10
-	} else if wordCount < 500 {
+	case wordCount < 500:
 		score += 25
-	} else {
+	default:
 		score += 40
 	}
 
@@ -64,39 +65,48 @@ func (s *HeuristicScorer) Score(_ context.Context, messages []model.Message, too
 	return score
 }
 
-func ScoreComplexity(messages []model.Message) float64 {
-	return NewHeuristicScorer().Score(context.Background(), messages, nil)
+func ScoreComplexity(ctx context.Context, messages []model.Message) float64 {
+	return NewHeuristicScorer().Score(ctx, messages, nil)
 }
 
 // NewScorerFromConfig creates a Scorer based on the config's scorer type field.
 // Falls back to heuristic when the requested type's dependencies aren't available or on error.
+// tryBuildScorer attempts to construct the configured non-heuristic scorer
+// type, returning nil if its config is missing or construction fails (the
+// caller falls back to the heuristic scorer in that case).
+func tryBuildScorer(sc config.ScorerConfig) Scorer {
+	switch sc.Type {
+	case "llm":
+		if sc.LLM == nil {
+			return nil
+		}
+		if s, err := NewLLMScorer(sc.LLM); err == nil {
+			return s
+		}
+	case "embedding":
+		if sc.Embedding == nil {
+			return nil
+		}
+		if s, err := NewEmbeddingScorer(sc.Embedding); err == nil {
+			return s
+		}
+	case "trainable":
+		if sc.Trainable == nil {
+			return nil
+		}
+		if s, err := NewTrainableScorer(sc.Trainable); err == nil {
+			return s
+		}
+	}
+	return nil
+}
+
 func NewScorerFromConfig(sc config.ScorerConfig) Scorer {
 	if sc.Type == "" || sc.Type == "heuristic" {
 		return NewHeuristicScorer()
 	}
-
-	switch sc.Type {
-	case "llm":
-		if sc.LLM != nil {
-			s, err := NewLLMScorer(sc.LLM)
-			if err == nil {
-				return s
-			}
-		}
-	case "embedding":
-		if sc.Embedding != nil {
-			s, err := NewEmbeddingScorer(sc.Embedding)
-			if err == nil {
-				return s
-			}
-		}
-	case "trainable":
-		if sc.Trainable != nil {
-			s, err := NewTrainableScorer(sc.Trainable)
-			if err == nil {
-				return s
-			}
-		}
+	if s := tryBuildScorer(sc); s != nil {
+		return s
 	}
 	return NewHeuristicScorer()
 }
@@ -111,29 +121,32 @@ func fallbackScore(prompt string, toolCount int) float64 {
 	return score
 }
 
-func extractUserContent(messages []model.Message) string {
-	var builder strings.Builder
-	for _, m := range messages {
-		if m.Content == nil {
-			continue
-		}
-		switch val := m.Content.(type) {
-		case string:
-			builder.WriteString(val)
-			builder.WriteString(" ")
-		case []any:
-			for _, item := range val {
-				if s, ok := item.(string); ok {
-					builder.WriteString(s)
+// appendMessageContent writes a message's text content into builder,
+// handling both plain-string and multi-part content-block array shapes.
+func appendMessageContent(builder *strings.Builder, content any) {
+	switch val := content.(type) {
+	case string:
+		builder.WriteString(val)
+		builder.WriteString(" ")
+	case []any:
+		for _, item := range val {
+			if s, ok := item.(string); ok {
+				builder.WriteString(s)
+				builder.WriteString(" ")
+			} else if itemMap, ok := item.(map[string]any); ok {
+				if textVal, ok := itemMap["text"].(string); ok {
+					builder.WriteString(textVal)
 					builder.WriteString(" ")
-				} else if itemMap, ok := item.(map[string]any); ok {
-					if textVal, ok := itemMap["text"].(string); ok {
-						builder.WriteString(textVal)
-						builder.WriteString(" ")
-					}
 				}
 			}
 		}
+	}
+}
+
+func extractUserContent(messages []model.Message) string {
+	var builder strings.Builder
+	for _, m := range messages {
+		appendMessageContent(&builder, m.Content)
 	}
 	return builder.String()
 }

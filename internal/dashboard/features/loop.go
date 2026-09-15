@@ -1,6 +1,7 @@
 package features
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -46,6 +47,58 @@ func validLoopMode(mode string) bool {
 	return mode == "off" || mode == "observe" || mode == "enforce"
 }
 
+// mergeCostWindow validates and merges costWindow into out, if set.
+func mergeCostWindow(out *config.LoopSettingsConfig, costWindow string) error {
+	if costWindow == "" {
+		return nil
+	}
+	d, err := time.ParseDuration(costWindow)
+	if err != nil {
+		return fmt.Errorf("invalid cost_window: %w", err)
+	}
+	if d <= 0 {
+		return fmt.Errorf("cost_window must be positive, got %s", costWindow)
+	}
+	out.CostWindow = d
+	return nil
+}
+
+// mergeOutputLoopMode validates and merges mode into out, if set.
+func mergeOutputLoopMode(out *config.LoopSettingsConfig, mode string) error {
+	if mode == "" {
+		return nil
+	}
+	if !validLoopMode(mode) {
+		return fmt.Errorf("invalid output_loop_mode: %q (must be off/observe/enforce)", mode)
+	}
+	out.OutputLoopMode = mode
+	return nil
+}
+
+// mergeOutputLoopThreshold validates and merges threshold into out, if set.
+func mergeOutputLoopThreshold(out *config.LoopSettingsConfig, threshold int) error {
+	if threshold <= 0 {
+		return nil
+	}
+	if threshold < 2 {
+		return fmt.Errorf("output_loop_threshold must be >= 2, got %d", threshold)
+	}
+	out.OutputLoopThreshold = threshold
+	return nil
+}
+
+// mergeOutputMinSentence validates and merges minSentence into out, if set.
+func mergeOutputMinSentence(out *config.LoopSettingsConfig, minSentence int) error {
+	if minSentence <= 0 {
+		return nil
+	}
+	if minSentence < 1 {
+		return fmt.Errorf("output_min_sentence_len must be >= 1, got %d", minSentence)
+	}
+	out.OutputMinSentence = minSentence
+	return nil
+}
+
 // fromAPI validates and merges the API request into the existing config.
 func fromAPI(req loopSettingsRequest, fallback config.LoopSettingsConfig) (config.LoopSettingsConfig, error) {
 	out := fallback
@@ -59,15 +112,8 @@ func fromAPI(req loopSettingsRequest, fallback config.LoopSettingsConfig) (confi
 	if req.FingerprintDuplicates > 0 {
 		out.FingerprintDuplicates = req.FingerprintDuplicates
 	}
-	if req.CostWindow != "" {
-		d, err := time.ParseDuration(req.CostWindow)
-		if err != nil {
-			return out, fmt.Errorf("invalid cost_window: %w", err)
-		}
-		if d <= 0 {
-			return out, fmt.Errorf("cost_window must be positive, got %s", req.CostWindow)
-		}
-		out.CostWindow = d
+	if err := mergeCostWindow(&out, req.CostWindow); err != nil {
+		return out, err
 	}
 	if req.CostThreshold >= 0 {
 		out.CostThreshold = req.CostThreshold
@@ -75,23 +121,14 @@ func fromAPI(req loopSettingsRequest, fallback config.LoopSettingsConfig) (confi
 	if req.SessionMaxRequests > 0 {
 		out.SessionMaxRequests = req.SessionMaxRequests
 	}
-	if req.OutputLoopMode != "" {
-		if !validLoopMode(req.OutputLoopMode) {
-			return out, fmt.Errorf("invalid output_loop_mode: %q (must be off/observe/enforce)", req.OutputLoopMode)
-		}
-		out.OutputLoopMode = req.OutputLoopMode
+	if err := mergeOutputLoopMode(&out, req.OutputLoopMode); err != nil {
+		return out, err
 	}
-	if req.OutputLoopThreshold > 0 {
-		if req.OutputLoopThreshold < 2 {
-			return out, fmt.Errorf("output_loop_threshold must be >= 2, got %d", req.OutputLoopThreshold)
-		}
-		out.OutputLoopThreshold = req.OutputLoopThreshold
+	if err := mergeOutputLoopThreshold(&out, req.OutputLoopThreshold); err != nil {
+		return out, err
 	}
-	if req.OutputMinSentence > 0 {
-		if req.OutputMinSentence < 1 {
-			return out, fmt.Errorf("output_min_sentence_len must be >= 1, got %d", req.OutputMinSentence)
-		}
-		out.OutputMinSentence = req.OutputMinSentence
+	if err := mergeOutputMinSentence(&out, req.OutputMinSentence); err != nil {
+		return out, err
 	}
 
 	return out, nil
@@ -106,6 +143,56 @@ func (h *Handler) SetLoopDetector(d *loopdetect.Detector) {
 	h.loopDetector = d
 }
 
+// persistLoopSettings writes updated's fields into runtime_config so they
+// survive a restart, logging (not failing) on a per-key write error.
+func (h *Handler) persistLoopSettings(ctx context.Context, updated config.LoopSettingsConfig) {
+	if h.store == nil {
+		return
+	}
+	for key, value := range config.LoopSettingsToRuntimeConfigValues(updated) {
+		if err := h.store.UpsertRuntimeConfig(ctx, "loop_settings", key, value, "dashboard"); err != nil {
+			slog.Error("Failed to persist loop setting", "key", key, "error", err)
+		}
+	}
+}
+
+func (h *Handler) handleLoopSettingsPut(w http.ResponseWriter, r *http.Request) {
+	defer func() { _ = r.Body.Close() }()
+	var req loopSettingsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		model.WriteJSONError(w, http.StatusBadRequest, "invalid_request_error", "Invalid request body")
+		return
+	}
+
+	loopSettingsMu.RLock()
+	updated, err := fromAPI(req, h.cfg.CostGuard.LoopSettings)
+	loopSettingsMu.RUnlock()
+	if err != nil {
+		model.WriteJSONError(w, http.StatusBadRequest, "validation_error", err.Error())
+		return
+	}
+
+	loopSettingsMu.Lock()
+	h.cfg.CostGuard.LoopSettings = updated
+	loopSettingsMu.Unlock()
+
+	// Apply live so the change takes effect immediately, not just after restart.
+	if h.loopDetector != nil {
+		h.loopDetector.UpdateSettings(updated)
+	}
+
+	h.persistLoopSettings(r.Context(), updated)
+
+	slog.Info(
+		"Loop settings updated via dashboard",
+		"rate_threshold", updated.RateThreshold,
+		"output_loop_mode", updated.OutputLoopMode,
+		"output_loop_threshold", updated.OutputLoopThreshold,
+	)
+
+	model.WriteJSON(w, http.StatusOK, toAPI(updated))
+}
+
 func (h *Handler) HandleLoopSettings(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
@@ -115,47 +202,7 @@ func (h *Handler) HandleLoopSettings(w http.ResponseWriter, r *http.Request) {
 		model.WriteJSON(w, http.StatusOK, resp)
 
 	case http.MethodPut:
-		defer r.Body.Close()
-		var req loopSettingsRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			model.WriteJSONError(w, http.StatusBadRequest, "invalid_request_error", "Invalid request body")
-			return
-		}
-
-		loopSettingsMu.RLock()
-		updated, err := fromAPI(req, h.cfg.CostGuard.LoopSettings)
-		loopSettingsMu.RUnlock()
-		if err != nil {
-			model.WriteJSONError(w, http.StatusBadRequest, "validation_error", err.Error())
-			return
-		}
-
-		loopSettingsMu.Lock()
-		h.cfg.CostGuard.LoopSettings = updated
-		loopSettingsMu.Unlock()
-
-		// Apply live so the change takes effect immediately, not just after restart.
-		if h.loopDetector != nil {
-			h.loopDetector.UpdateSettings(updated)
-		}
-
-		// Persist so it survives a restart.
-		if h.store != nil {
-			for key, value := range config.LoopSettingsToRuntimeConfigValues(updated) {
-				if errUpsert := h.store.UpsertRuntimeConfig("loop_settings", key, value, "dashboard"); errUpsert != nil {
-					slog.Error("Failed to persist loop setting", "key", key, "error", errUpsert)
-				}
-			}
-		}
-
-		slog.Info(
-			"Loop settings updated via dashboard",
-			"rate_threshold", updated.RateThreshold,
-			"output_loop_mode", updated.OutputLoopMode,
-			"output_loop_threshold", updated.OutputLoopThreshold,
-		)
-
-		model.WriteJSON(w, http.StatusOK, toAPI(updated))
+		h.handleLoopSettingsPut(w, r)
 
 	default:
 		model.WriteJSONError(w, http.StatusMethodNotAllowed, "method_not_allowed", "Only GET and PUT are accepted")

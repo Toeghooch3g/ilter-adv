@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -54,10 +55,10 @@ func (m *GuardrailsMiddleware) recordEvent(r *http.Request, modelName, guardrail
 
 	var provider string
 	if modelName != "" {
-		provider, _ = store.GetProviderForModel(modelName)
+		provider, _ = store.GetProviderForModel(r.Context(), modelName)
 	}
 
-	if err := store.InsertGuardrailEvent(keyID, guardrailType, actionTaken, modelName, provider, details); err != nil {
+	if err := store.InsertGuardrailEvent(r.Context(), keyID, guardrailType, actionTaken, modelName, provider, details); err != nil {
 		m.logger.Warn("guardrails: failed to record event", "error", err)
 	}
 }
@@ -146,8 +147,8 @@ func (m *GuardrailsMiddleware) Checker() *guardrails.Checker {
 
 // LoadDBRules queries all enabled guardrail rules from the database
 // and loads them into the checker, replacing any previously loaded rules.
-func (m *GuardrailsMiddleware) LoadDBRules(store *db.SQLiteStore) {
-	dbRows, err := store.GetEnabledGuardrailRules()
+func (m *GuardrailsMiddleware) LoadDBRules(ctx context.Context, store *db.SQLiteStore) {
+	dbRows, err := store.GetEnabledGuardrailRules(ctx)
 	if err != nil {
 		m.logger.Warn("guardrails: failed to query DB rules", "error", err)
 		return
@@ -176,15 +177,29 @@ func (m *GuardrailsMiddleware) LoadDBRules(store *db.SQLiteStore) {
 	}
 }
 
+// guardrailsApply reports whether r is a candidate for guardrails checks:
+// the feature is on and it's a chat completions POST.
+func (m *GuardrailsMiddleware) guardrailsApply(r *http.Request) bool {
+	return m.enabled.Load() && r.Method == "POST" && r.URL.Path == "/v1/chat/completions"
+}
+
+// runGuardrailChecks runs the fast in-memory check, then falls back to the
+// DB-backed per-user/group check only if the fast check didn't already
+// block or warn.
+func runGuardrailChecks(ctx context.Context, checker *guardrails.Checker, messages []guardrails.Message) guardrails.Result {
+	result := checker.Check(ctx, messages)
+	if !result.Blocked && !result.Warned {
+		userID := reqmeta.GetUserID(ctx)
+		groupIDs := reqmeta.GetGroupIDs(ctx)
+		result = checker.CheckDB(ctx, messages, userID, groupIDs)
+	}
+	return result
+}
+
 // Handler returns the HTTP middleware handler.
 func (m *GuardrailsMiddleware) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !m.enabled.Load() {
-			next.ServeHTTP(w, r)
-			return
-		}
-
-		if r.Method != "POST" || r.URL.Path != "/v1/chat/completions" {
+		if !m.guardrailsApply(r) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -208,13 +223,7 @@ func (m *GuardrailsMiddleware) Handler(next http.Handler) http.Handler {
 		messages := buildGuardrailMessages(req.Messages)
 
 		checkStart := time.Now()
-		checker := m.checker.Load()
-		result := checker.Check(r.Context(), messages)
-		if !result.Blocked && !result.Warned {
-			userID := reqmeta.GetUserID(r.Context())
-			groupIDs := reqmeta.GetGroupIDs(r.Context())
-			result = checker.CheckDB(r.Context(), messages, userID, groupIDs)
-		}
+		result := runGuardrailChecks(r.Context(), m.checker.Load(), messages)
 		checkDuration := time.Since(checkStart).Milliseconds()
 
 		if result.Blocked {

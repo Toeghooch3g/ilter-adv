@@ -58,7 +58,7 @@ func (e *EmbedSource) Load() ([]string, error) {
 		if err != nil {
 			return nil, fmt.Errorf("decompressing embedded data: %w", err)
 		}
-		defer gzr.Close()
+		defer func() { _ = gzr.Close() }()
 		return readNames(gzr)
 	}
 	return readNames(r)

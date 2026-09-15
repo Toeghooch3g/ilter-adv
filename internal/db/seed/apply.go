@@ -157,6 +157,25 @@ func ApplySeedData(db *sql.DB, seed *File) error {
 		return err
 	}
 
+	if err := applyRuntimePorts(db, seed); err != nil {
+		return err
+	}
+
+	if err := applyFallbackDefaults(db); err != nil {
+		return err
+	}
+
+	// ── Reference Vectors (embedding scorer centroids) ──
+	if err := seedReferenceVectors(db, 768); err != nil {
+		return fmt.Errorf("seed reference vectors: %w", err)
+	}
+
+	return nil
+}
+
+// applyRuntimePorts seeds the dashboard/metrics ports and PII mode from
+// seed, skipping any field left at its zero value (use-default sentinel).
+func applyRuntimePorts(db *sql.DB, seed *File) error {
 	if seed.DashboardPort > 0 {
 		if err := upsertRuntimeConfig(db, "dashboard", "port", strconv.Itoa(seed.DashboardPort)); err != nil {
 			return fmt.Errorf("seed dashboard port: %w", err)
@@ -167,14 +186,17 @@ func ApplySeedData(db *sql.DB, seed *File) error {
 			return fmt.Errorf("seed metrics port: %w", err)
 		}
 	}
-
 	if seed.PIIMode != "" {
 		if err := upsertRuntimeConfig(db, "pii", "mode", seed.PIIMode); err != nil {
 			return fmt.Errorf("seed PII mode: %w", err)
 		}
 	}
+	return nil
+}
 
-	// fallback config — hardcoded defaults, user overrides via dashboard
+// applyFallbackDefaults seeds the hardcoded fallback config defaults;
+// users override these via the dashboard.
+func applyFallbackDefaults(db *sql.DB) error {
 	if err := upsertRuntimeConfig(db, "fallback", "model_downgrade", "cheapest"); err != nil {
 		return fmt.Errorf("seed fallback model_downgrade: %w", err)
 	}
@@ -185,12 +207,6 @@ func ApplySeedData(db *sql.DB, seed *File) error {
 	if err := upsertRuntimeConfig(db, "fallback", "enabled", "true"); err != nil {
 		return fmt.Errorf("seed fallback enabled: %w", err)
 	}
-
-	// ── Reference Vectors (embedding scorer centroids) ──
-	if err := seedReferenceVectors(db, 768); err != nil {
-		return fmt.Errorf("seed reference vectors: %w", err)
-	}
-
 	return nil
 }
 
@@ -272,7 +288,7 @@ func applyMCPServers(db *sql.DB, servers []MCPServer) error {
 			Handler:     ss.Handler,
 		}
 
-		data, err := json.Marshal(srv)
+		data, err := json.Marshal(srv) //nolint:gosec // seeding demo/fixture config, not a real secret
 		if err != nil {
 			return fmt.Errorf("seed: marshal mcp server %q: %w", ss.Name, err)
 		}

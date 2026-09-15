@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -106,7 +107,7 @@ func TestGetPromptTemplate_ByName(t *testing.T) {
 	_, err := ts.store.CreatePromptTemplate(samplePrompt("by-name"))
 	require.NoError(t, err)
 
-	tmpl, err := ts.store.GetPromptTemplateByName("by-name")
+	tmpl, err := ts.store.GetPromptTemplateByName(context.Background(), "by-name")
 	require.NoError(t, err)
 	require.NotNil(t, tmpl)
 	assert.Equal(t, "by-name", tmpl.Name)
@@ -125,7 +126,7 @@ func TestGetPromptTemplateByName_NotFound(t *testing.T) {
 	ts := setupPromptsStore(t)
 	defer ts.close()
 
-	tmpl, err := ts.store.GetPromptTemplateByName("nonexistent")
+	tmpl, err := ts.store.GetPromptTemplateByName(context.Background(), "nonexistent")
 	require.NoError(t, err)
 	assert.Nil(t, tmpl)
 }

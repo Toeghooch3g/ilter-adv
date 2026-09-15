@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
+	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
 	"log/slog"
@@ -321,34 +322,9 @@ func (s *OAuthStore) exchangeCodeDB(code, codeVerifier string) (apiKey, redirect
 		slog.Error("failed to delete oauth_code", "error", err)
 	}
 
-	if used != 0 {
-		if err := tx.Commit(); err != nil {
-			slog.Error("failed to commit tx (used)", "error", err)
-		}
+	if reason := invalidExchangeCodeReason(used, expiresAt, cc, codeVerifier); reason != "" {
+		commitOAuthCodeTx(tx, reason)
 		return "", "", "", "", false
-	}
-	if time.Now().After(expiresAt) {
-		if err := tx.Commit(); err != nil {
-			slog.Error("failed to commit tx (expired)", "error", err)
-		}
-		return "", "", "", "", false
-	}
-
-	if cc != "" {
-		if codeVerifier == "" {
-			if err := tx.Commit(); err != nil {
-				slog.Error("failed to commit tx (no verifier)", "error", err)
-			}
-			return "", "", "", "", false
-		}
-		hash := sha256.Sum256([]byte(codeVerifier))
-		expected := base64.RawURLEncoding.EncodeToString(hash[:])
-		if subtle.ConstantTimeCompare([]byte(expected), []byte(cc)) != 1 {
-			if err := tx.Commit(); err != nil {
-				slog.Error("failed to commit tx (code_challenge mismatch)", "error", err)
-			}
-			return "", "", "", "", false
-		}
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -356,6 +332,37 @@ func (s *OAuthStore) exchangeCodeDB(code, codeVerifier string) (apiKey, redirect
 	}
 
 	return apiKeyDB, redirectURIDB, stateDB, protocolVersionDB, true
+}
+
+// invalidExchangeCodeReason checks the used/expiry/PKCE invariants for an
+// oauth_codes row, returning a short reason string (for logging) naming the
+// first check that fails, or "" if the code is valid to exchange.
+func invalidExchangeCodeReason(used int64, expiresAt time.Time, codeChallenge, codeVerifier string) string {
+	if used != 0 {
+		return "used"
+	}
+	if time.Now().After(expiresAt) {
+		return "expired"
+	}
+	if codeChallenge != "" {
+		if codeVerifier == "" {
+			return "no verifier"
+		}
+		hash := sha256.Sum256([]byte(codeVerifier))
+		expected := base64.RawURLEncoding.EncodeToString(hash[:])
+		if subtle.ConstantTimeCompare([]byte(expected), []byte(codeChallenge)) != 1 {
+			return "code_challenge mismatch"
+		}
+	}
+	return ""
+}
+
+// commitOAuthCodeTx commits tx after exchangeCodeDB validation fails
+// (reason names which check failed), logging if the commit itself fails.
+func commitOAuthCodeTx(tx *sql.Tx, reason string) {
+	if err := tx.Commit(); err != nil {
+		slog.Error("failed to commit tx ("+reason+")", "error", err)
+	}
 }
 
 // StartCleanup launches a background goroutine that periodically removes

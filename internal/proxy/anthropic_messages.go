@@ -116,73 +116,85 @@ func flattenAnthropicSystem(system any) string {
 	return ""
 }
 
+// anthropicContentBlocks accumulates the parsed pieces of an Anthropic
+// message's content-block array as anthropicWireMessageToInternal scans
+// it. kept preserves every non-tool_use, non-tool_result block (text,
+// image, and any future block type) in its original raw shape, so nothing
+// is silently dropped when a message mixes text with images — only
+// collapsed to a plain string when the message turns out to be text-only.
+type anthropicContentBlocks struct {
+	textParts   []string
+	toolCalls   []model.ToolCall
+	toolResults []model.Message
+	kept        []any
+	onlyText    bool
+}
+
+// addBlock classifies and accumulates one Anthropic content block.
+func (a *anthropicContentBlocks) addBlock(blk any) {
+	bm, ok := blk.(map[string]any)
+	if !ok {
+		a.kept = append(a.kept, blk)
+		a.onlyText = false
+		return
+	}
+	switch bm["type"] {
+	case "text":
+		if t, ok := bm["text"].(string); ok {
+			a.textParts = append(a.textParts, t)
+		}
+		a.kept = append(a.kept, blk)
+	case "tool_use":
+		id, _ := bm["id"].(string)
+		name, _ := bm["name"].(string)
+		inputBytes, _ := json.Marshal(bm["input"])
+		a.toolCalls = append(a.toolCalls, model.ToolCall{
+			ID:   id,
+			Type: "function",
+			Function: model.ToolCallFunctionData{
+				Name:      name,
+				Arguments: string(inputBytes),
+			},
+		})
+		a.onlyText = false
+	case "tool_result":
+		toolUseID, _ := bm["tool_use_id"].(string)
+		a.toolResults = append(a.toolResults, model.Message{
+			Role:       "tool",
+			ToolCallID: toolUseID,
+			Content:    flattenAnthropicToolResultContent(bm["content"]),
+		})
+		a.onlyText = false
+	default:
+		// image or any other/unrecognized block type: preserve raw rather
+		// than silently dropping it.
+		a.kept = append(a.kept, blk)
+		a.onlyText = false
+	}
+}
+
 func anthropicWireMessageToInternal(m anthropicWireMessage) []model.Message {
 	switch content := m.Content.(type) {
 	case string:
 		return []model.Message{{Role: m.Role, Content: content}}
 	case []any:
-		var textParts []string
-		var toolCalls []model.ToolCall
-		var toolResults []model.Message
-		// kept preserves every non-tool_use, non-tool_result block (text,
-		// image, and any future block type) in its original raw shape, so
-		// nothing is silently dropped when a message mixes text with images
-		// — only collapsed to a plain string below when it's text-only.
-		var kept []any
-		onlyText := true
+		blocks := anthropicContentBlocks{onlyText: true}
 		for _, blk := range content {
-			bm, ok := blk.(map[string]any)
-			if !ok {
-				kept = append(kept, blk)
-				onlyText = false
-				continue
-			}
-			switch bm["type"] {
-			case "text":
-				if t, ok := bm["text"].(string); ok {
-					textParts = append(textParts, t)
-				}
-				kept = append(kept, blk)
-			case "tool_use":
-				id, _ := bm["id"].(string)
-				name, _ := bm["name"].(string)
-				inputBytes, _ := json.Marshal(bm["input"])
-				toolCalls = append(toolCalls, model.ToolCall{
-					ID:   id,
-					Type: "function",
-					Function: model.ToolCallFunctionData{
-						Name:      name,
-						Arguments: string(inputBytes),
-					},
-				})
-				onlyText = false
-			case "tool_result":
-				toolUseID, _ := bm["tool_use_id"].(string)
-				toolResults = append(toolResults, model.Message{
-					Role:       "tool",
-					ToolCallID: toolUseID,
-					Content:    flattenAnthropicToolResultContent(bm["content"]),
-				})
-				onlyText = false
-			default:
-				// image or any other/unrecognized block type: preserve raw
-				// rather than silently dropping it.
-				kept = append(kept, blk)
-				onlyText = false
-			}
+			blocks.addBlock(blk)
 		}
+
 		var out []model.Message
-		if len(kept) > 0 || len(toolCalls) > 0 {
-			msg := model.Message{Role: m.Role, ToolCalls: toolCalls}
+		if len(blocks.kept) > 0 || len(blocks.toolCalls) > 0 {
+			msg := model.Message{Role: m.Role, ToolCalls: blocks.toolCalls}
 			switch {
-			case onlyText:
-				msg.Content = strings.Join(textParts, "")
-			case len(kept) > 0:
-				msg.Content = kept
+			case blocks.onlyText:
+				msg.Content = strings.Join(blocks.textParts, "")
+			case len(blocks.kept) > 0:
+				msg.Content = blocks.kept
 			}
 			out = append(out, msg)
 		}
-		out = append(out, toolResults...)
+		out = append(out, blocks.toolResults...)
 		return out
 	default:
 		return nil
@@ -464,6 +476,81 @@ func (t *anthropicStreamTranslator) openBlock(w io.Writer, blockType string, con
 	return idx
 }
 
+// feedReasoningDelta emits a thinking content-block delta for reasoning
+// content, opening a "thinking" block first if one isn't already open.
+func (t *anthropicStreamTranslator) feedReasoningDelta(w io.Writer, reasoning string) {
+	if reasoning == "" {
+		return
+	}
+	if t.blockType != "thinking" {
+		t.openBlock(w, "thinking", map[string]any{"type": "thinking", "thinking": ""})
+	}
+	t.writeEvent(w, "content_block_delta", map[string]any{
+		"type":  "content_block_delta",
+		"index": t.blockIndex,
+		"delta": map[string]any{"type": "thinking_delta", "thinking": reasoning},
+	})
+}
+
+// feedTextDelta emits a text content-block delta, opening a "text" block
+// first if one isn't already open.
+func (t *anthropicStreamTranslator) feedTextDelta(w io.Writer, content string) {
+	if content == "" {
+		return
+	}
+	if t.blockType != "text" {
+		t.openBlock(w, "text", map[string]any{"type": "text", "text": ""})
+	}
+	t.writeEvent(w, "content_block_delta", map[string]any{
+		"type":  "content_block_delta",
+		"index": t.blockIndex,
+		"delta": map[string]any{"type": "text_delta", "text": content},
+	})
+}
+
+// feedToolCallDeltas opens a tool_use block for each newly-started tool
+// call and emits an input_json_delta for each argument fragment.
+func (t *anthropicStreamTranslator) feedToolCallDeltas(w io.Writer, toolCalls []model.ChunkToolCall) {
+	for _, tc := range toolCalls {
+		if tc.ID != "" {
+			blockIdx := t.openBlock(w, "tool_use", map[string]any{
+				"type":  "tool_use",
+				"id":    tc.ID,
+				"name":  tc.Function.Name,
+				"input": map[string]any{},
+			})
+			t.toolBlockByIdx[tc.Index] = blockIdx
+		}
+		if tc.Function.Arguments != "" {
+			blockIdx, ok := t.toolBlockByIdx[tc.Index]
+			if !ok {
+				blockIdx = t.blockIndex
+			}
+			t.writeEvent(w, "content_block_delta", map[string]any{
+				"type":  "content_block_delta",
+				"index": blockIdx,
+				"delta": map[string]any{"type": "input_json_delta", "partial_json": tc.Function.Arguments},
+			})
+		}
+	}
+}
+
+// applyFinishReason maps an OpenAI-wire finish_reason to Anthropic's
+// stop_reason vocabulary.
+func (t *anthropicStreamTranslator) applyFinishReason(reason *string) {
+	if reason == nil {
+		return
+	}
+	switch *reason {
+	case "length":
+		t.stopReason = "max_tokens"
+	case "tool_calls":
+		t.stopReason = "tool_use"
+	default:
+		t.stopReason = "end_turn"
+	}
+}
+
 func (t *anthropicStreamTranslator) feed(w io.Writer, chunk *model.ChatCompletionChunk) {
 	t.ensureStarted(w, chunk)
 
@@ -478,62 +565,10 @@ func (t *anthropicStreamTranslator) feed(w io.Writer, chunk *model.ChatCompletio
 
 	for _, choice := range chunk.Choices {
 		delta := choice.Delta
-
-		if delta.ReasoningContent != "" {
-			if t.blockType != "thinking" {
-				t.openBlock(w, "thinking", map[string]any{"type": "thinking", "thinking": ""})
-			}
-			t.writeEvent(w, "content_block_delta", map[string]any{
-				"type":  "content_block_delta",
-				"index": t.blockIndex,
-				"delta": map[string]any{"type": "thinking_delta", "thinking": delta.ReasoningContent},
-			})
-		}
-
-		if delta.Content != "" {
-			if t.blockType != "text" {
-				t.openBlock(w, "text", map[string]any{"type": "text", "text": ""})
-			}
-			t.writeEvent(w, "content_block_delta", map[string]any{
-				"type":  "content_block_delta",
-				"index": t.blockIndex,
-				"delta": map[string]any{"type": "text_delta", "text": delta.Content},
-			})
-		}
-
-		for _, tc := range delta.ToolCalls {
-			if tc.ID != "" {
-				blockIdx := t.openBlock(w, "tool_use", map[string]any{
-					"type":  "tool_use",
-					"id":    tc.ID,
-					"name":  tc.Function.Name,
-					"input": map[string]any{},
-				})
-				t.toolBlockByIdx[tc.Index] = blockIdx
-			}
-			if tc.Function.Arguments != "" {
-				blockIdx, ok := t.toolBlockByIdx[tc.Index]
-				if !ok {
-					blockIdx = t.blockIndex
-				}
-				t.writeEvent(w, "content_block_delta", map[string]any{
-					"type":  "content_block_delta",
-					"index": blockIdx,
-					"delta": map[string]any{"type": "input_json_delta", "partial_json": tc.Function.Arguments},
-				})
-			}
-		}
-
-		if choice.FinishReason != nil {
-			switch *choice.FinishReason {
-			case "length":
-				t.stopReason = "max_tokens"
-			case "tool_calls":
-				t.stopReason = "tool_use"
-			default:
-				t.stopReason = "end_turn"
-			}
-		}
+		t.feedReasoningDelta(w, delta.ReasoningContent)
+		t.feedTextDelta(w, delta.Content)
+		t.feedToolCallDeltas(w, delta.ToolCalls)
+		t.applyFinishReason(choice.FinishReason)
 	}
 }
 
@@ -557,7 +592,7 @@ func (t *anthropicStreamTranslator) finish(w io.Writer) {
 // /v1/chat/completions, so Anthropic-native clients (Claude Code pointed at
 // a custom base URL, for example) can use ilter directly.
 func (h *Handler) AnthropicMessages(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 
 	bodyBytes, err := io.ReadAll(r.Body)
 	if err != nil {

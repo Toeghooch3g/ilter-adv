@@ -132,12 +132,22 @@ type Response struct {
 // like "(24h)" reflect a rolling window instead of the entire audit_log history.
 const statsWindow = "-1 day"
 
-func (h *Handler) HandleStats(w http.ResponseWriter, _ *http.Request) {
-	var totalRequests int
-	var totalCost float64
-	var successCount sql.NullInt64
-	var errorCount sql.NullInt64
-	var cacheHits sql.NullInt64
+// statsSummary holds the aggregate audit_log metrics HandleStats computes
+// in its first query.
+type statsSummary struct {
+	totalRequests int
+	totalCost     float64
+	successCount  int
+	errorCount    int
+	cacheHits     int
+	avgLatency    float64
+}
+
+// queryStatsSummary runs HandleStats' primary aggregate query over the
+// stats window.
+func (h *Handler) queryStatsSummary() (statsSummary, error) {
+	var s statsSummary
+	var successCount, errorCount, cacheHits sql.NullInt64
 	var avgLatency sql.NullFloat64
 
 	err := h.store.DB.QueryRow(`
@@ -150,19 +160,22 @@ func (h *Handler) HandleStats(w http.ResponseWriter, _ *http.Request) {
 			COALESCE(AVG(latency_ms), 0.0)
 		FROM audit_log
 		WHERE timestamp >= datetime('now', ?)
-	`, statsWindow).Scan(&totalRequests, &totalCost, &successCount, &errorCount, &cacheHits, &avgLatency)
-
+	`, statsWindow).Scan(&s.totalRequests, &s.totalCost, &successCount, &errorCount, &cacheHits, &avgLatency)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		slog.Error("Failed to query stats from DB", "error", err)
-		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", err.Error())
-		return
+		return s, err
 	}
 
-	sCount := nullInt64(successCount)
-	eCount := nullInt64(errorCount)
-	cHits := nullInt64(cacheHits)
-	aLatency := nullFloat64(avgLatency)
+	s.successCount = nullInt64(successCount)
+	s.errorCount = nullInt64(errorCount)
+	s.cacheHits = nullInt64(cacheHits)
+	s.avgLatency = nullFloat64(avgLatency)
+	return s, nil
+}
 
+// estimateSavings computes HandleStats' estimated-savings figure: a
+// heuristic 70% "smart routing" discount on premium-model spend, plus a
+// per-cache-hit average-cost credit.
+func (h *Handler) estimateSavings(cacheHits int) float64 {
 	var premiumCost sql.NullFloat64
 	if qErr := h.store.DB.QueryRow(`
 		SELECT SUM(total_cost) FROM audit_log
@@ -170,9 +183,7 @@ func (h *Handler) HandleStats(w http.ResponseWriter, _ *http.Request) {
 	`).Scan(&premiumCost); qErr != nil {
 		slog.Error("failed to query premium cost", "error", qErr)
 	}
-
-	pCost := nullFloat64(premiumCost)
-	routingSavings := pCost * 0.70
+	routingSavings := nullFloat64(premiumCost) * 0.70
 
 	var avgCost sql.NullFloat64
 	if qErr := h.store.DB.QueryRow(`
@@ -180,53 +191,69 @@ func (h *Handler) HandleStats(w http.ResponseWriter, _ *http.Request) {
 	`).Scan(&avgCost); qErr != nil {
 		slog.Error("failed to query avg cost", "error", qErr)
 	}
-
 	aCost := 0.0015
 	if avgCost.Valid && avgCost.Float64 > 0 {
 		aCost = avgCost.Float64
 	}
-	cacheSavings := float64(cHits) * aCost
+	cacheSavings := float64(cacheHits) * aCost
 
-	estimatedSavings := routingSavings + cacheSavings
+	return routingSavings + cacheSavings
+}
 
-	var totalTokens int
+// statsMiscCounts holds HandleStats' simple scalar counts.
+type statsMiscCounts struct {
+	totalTokens     int
+	activeKeys      int
+	totalKeys       int
+	enabledKeys     int
+	blockedRequests int
+}
+
+// queryStatsMiscCounts runs HandleStats' remaining independent scalar
+// queries, logging (not failing) on any individual error.
+func (h *Handler) queryStatsMiscCounts() statsMiscCounts {
+	var c statsMiscCounts
+
 	if qErr := h.store.DB.QueryRow(
 		`SELECT COALESCE(SUM(prompt_tokens + completion_tokens), 0) FROM audit_log`,
-	).Scan(&totalTokens); qErr != nil {
+	).Scan(&c.totalTokens); qErr != nil {
 		slog.Error("failed to query total tokens", "error", qErr)
 	}
 
-	var activeKeys int
 	if qErr := h.store.DB.QueryRow(
 		`SELECT COUNT(DISTINCT key_id) FROM audit_log`,
-	).Scan(&activeKeys); qErr != nil {
+	).Scan(&c.activeKeys); qErr != nil {
 		slog.Error("failed to query active keys", "error", qErr)
 	}
 
-	var totalKeys int
 	if qErr := h.store.DB.QueryRow(
 		`SELECT COUNT(*) FROM api_keys`,
-	).Scan(&totalKeys); qErr != nil {
+	).Scan(&c.totalKeys); qErr != nil {
 		slog.Error("failed to query total keys", "error", qErr)
 	}
 
-	var enabledKeys int
 	if qErr := h.store.DB.QueryRow(
 		`SELECT COUNT(*) FROM api_keys WHERE enabled = 1`,
-	).Scan(&enabledKeys); qErr != nil {
+	).Scan(&c.enabledKeys); qErr != nil {
 		slog.Error("failed to query enabled keys", "error", qErr)
 	}
 
-	var blockedRequests int
 	if qErr := h.store.DB.QueryRow(`
 		SELECT
 			(SELECT COUNT(*) FROM pii_events WHERE action_taken = 'blocked' AND timestamp >= datetime('now', ?)) +
 			(SELECT COUNT(*) FROM loop_events WHERE action_taken = 'blocked' AND detected_at >= datetime('now', ?)) +
 			(SELECT COUNT(*) FROM guardrail_events WHERE action_taken = 'blocked' AND timestamp >= datetime('now', ?))
-	`, statsWindow, statsWindow, statsWindow).Scan(&blockedRequests); qErr != nil {
+	`, statsWindow, statsWindow, statsWindow).Scan(&c.blockedRequests); qErr != nil {
 		slog.Error("failed to query blocked requests", "error", qErr)
 	}
 
+	return c
+}
+
+// queryDailyStats returns per-day request/token/cost totals across all of
+// audit_log.
+func (h *Handler) queryDailyStats() []DailyStatItem {
+	dailyStats := make([]DailyStatItem, 0)
 	dailyRows, err := h.store.DB.Query(
 		`SELECT DATE(timestamp) as day,
 		        COUNT(*) as requests,
@@ -237,20 +264,26 @@ func (h *Handler) HandleStats(w http.ResponseWriter, _ *http.Request) {
 		 GROUP BY DATE(timestamp)
 		 ORDER BY day ASC`,
 	)
-	dailyStats := make([]DailyStatItem, 0)
-	if err == nil {
-		defer dailyRows.Close()
-		for dailyRows.Next() {
-			var item DailyStatItem
-			if err = dailyRows.Scan(&item.Date, &item.Requests, &item.TokensIn, &item.TokensOut, &item.Cost); err == nil {
-				dailyStats = append(dailyStats, item)
-			}
-		}
-		if err := dailyRows.Err(); err != nil {
-			slog.Warn("error iterating daily stats rows", "error", err)
+	if err != nil {
+		return dailyStats
+	}
+	defer func() { _ = dailyRows.Close() }()
+	for dailyRows.Next() {
+		var item DailyStatItem
+		if err := dailyRows.Scan(&item.Date, &item.Requests, &item.TokensIn, &item.TokensOut, &item.Cost); err == nil {
+			dailyStats = append(dailyStats, item)
 		}
 	}
+	if err := dailyRows.Err(); err != nil {
+		slog.Warn("error iterating daily stats rows", "error", err)
+	}
+	return dailyStats
+}
 
+// queryProviderBreakdown returns per-provider request/token/cost totals,
+// with each item's Pct computed against the combined provider cost.
+func (h *Handler) queryProviderBreakdown() []ProviderBreakdownItem {
+	providerBreakdown := make([]ProviderBreakdownItem, 0)
 	provRows, err := h.store.DB.Query(
 		`SELECT provider,
 		        COUNT(*) as requests,
@@ -261,32 +294,39 @@ func (h *Handler) HandleStats(w http.ResponseWriter, _ *http.Request) {
 		 GROUP BY provider
 		 ORDER BY cost DESC`,
 	)
-	providerBreakdown := make([]ProviderBreakdownItem, 0)
+	if err != nil {
+		return providerBreakdown
+	}
+	defer func() { _ = provRows.Close() }()
+
 	provTotal := 0.0
-	if err == nil {
-		defer provRows.Close()
-		for provRows.Next() {
-			var item ProviderBreakdownItem
-			if err = provRows.Scan(&item.Provider, &item.Requests, &item.Tokens, &item.Cost); err == nil {
-				provTotal += item.Cost
-				providerBreakdown = append(providerBreakdown, item)
-			}
-		}
-		if err := provRows.Err(); err != nil {
-			slog.Warn("error iterating provider breakdown rows", "error", err)
+	for provRows.Next() {
+		var item ProviderBreakdownItem
+		if err := provRows.Scan(&item.Provider, &item.Requests, &item.Tokens, &item.Cost); err == nil {
+			provTotal += item.Cost
+			providerBreakdown = append(providerBreakdown, item)
 		}
 	}
+	if err := provRows.Err(); err != nil {
+		slog.Warn("error iterating provider breakdown rows", "error", err)
+	}
+
 	for i := range providerBreakdown {
 		if provTotal > 0 {
 			providerBreakdown[i].Pct = providerBreakdown[i].Cost / provTotal * 100
 		}
 	}
+	return providerBreakdown
+}
 
+// buildSystemHealthItems assembles HandleStats' system-health checklist
+// from the summary metrics and static config.
+func (h *Handler) buildSystemHealthItems(totalRequests int, totalCost float64, errorCount int) []SystemHealthItem {
 	healthItems := []SystemHealthItem{
 		{Name: "Database", Status: "healthy", Value: "Connected", Metric: "SQLite"},
 	}
 	if totalRequests > 0 {
-		errRate := float64(eCount) / float64(totalRequests) * 100
+		errRate := float64(errorCount) / float64(totalRequests) * 100
 		errStatus := "healthy"
 		errValue := fmt.Sprintf("%.1f%%", errRate)
 		if errRate > 10 {
@@ -295,7 +335,7 @@ func (h *Handler) HandleStats(w http.ResponseWriter, _ *http.Request) {
 			errStatus = "down"
 		}
 		healthItems = append(healthItems, SystemHealthItem{
-			Name: "Error Rate", Status: errStatus, Value: errValue, Metric: fmt.Sprintf("%d / %d requests", eCount, totalRequests),
+			Name: "Error Rate", Status: errStatus, Value: errValue, Metric: fmt.Sprintf("%d / %d requests", errorCount, totalRequests),
 		})
 	}
 	if totalRequests > 0 {
@@ -318,20 +358,36 @@ func (h *Handler) HandleStats(w http.ResponseWriter, _ *http.Request) {
 			Name: "Rate Limiter", Status: "healthy", Value: "Enabled", Metric: fmt.Sprintf("%d RPM default", h.cfg.RateLimit.DefaultRPM),
 		})
 	}
+	return healthItems
+}
+
+func (h *Handler) HandleStats(w http.ResponseWriter, _ *http.Request) {
+	summary, err := h.queryStatsSummary()
+	if err != nil {
+		slog.Error("Failed to query stats from DB", "error", err)
+		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+
+	estimatedSavings := h.estimateSavings(summary.cacheHits)
+	misc := h.queryStatsMiscCounts()
+	dailyStats := h.queryDailyStats()
+	providerBreakdown := h.queryProviderBreakdown()
+	healthItems := h.buildSystemHealthItems(summary.totalRequests, summary.totalCost, summary.errorCount)
 
 	resp := Response{
-		TotalRequests:      totalRequests,
-		TotalCost:          totalCost,
+		TotalRequests:      summary.totalRequests,
+		TotalCost:          summary.totalCost,
 		EstimatedSavings:   estimatedSavings,
-		SuccessCount:       sCount,
-		ErrorCount:         eCount,
-		CacheHits:          cHits,
-		AvgLatencyMs:       aLatency,
-		TotalTokens:        totalTokens,
-		ActiveKeysUsed:     activeKeys,
-		ActiveKeys:         enabledKeys,
-		TotalKeys:          totalKeys,
-		BlockedRequests24h: blockedRequests,
+		SuccessCount:       summary.successCount,
+		ErrorCount:         summary.errorCount,
+		CacheHits:          summary.cacheHits,
+		AvgLatencyMs:       summary.avgLatency,
+		TotalTokens:        misc.totalTokens,
+		ActiveKeysUsed:     misc.activeKeys,
+		ActiveKeys:         misc.enabledKeys,
+		TotalKeys:          misc.totalKeys,
+		BlockedRequests24h: misc.blockedRequests,
 		DailyStats:         dailyStats,
 		ProviderBreakdown:  providerBreakdown,
 		SystemHealth:       healthItems,

@@ -38,6 +38,7 @@ func (h *Handler) recordPostResponse(r *http.Request, chatResp *model.ChatComple
 			cacheHits = 1
 		}
 		if err := h.store.RecordDailyUsage(
+			r.Context(),
 			keyID,
 			today,
 			route.Model.Name,

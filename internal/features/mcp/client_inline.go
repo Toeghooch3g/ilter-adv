@@ -101,49 +101,11 @@ func (c *InlineClient) Call(ctx context.Context, req *JSONRPCRequest) (*JSONRPCR
 func (c *InlineClient) handleMethod(req *JSONRPCRequest) (*JSONRPCResponse, error) {
 	switch req.Method {
 	case "initialize":
-		c.mu.Lock()
-		v := protocol.Negotiate(c.negotiatedVersion)
-		c.mu.Unlock()
-		resultJSON, err := v.HandleInitialize(req.Params, protocol.ImplementationInfo{Name: "ilter", Version: version.Version})
-		if errors.Is(err, protocol.ErrNoInitializeHandshake) {
-			// Mirrors gateway.go/hub.go's graceful degradation: a caller
-			// that explicitly invokes the legacy `initialize` method is,
-			// by definition, not speaking the stateless 2026-07-28 model
-			// (which has no such method) — fall back to the newest
-			// version that still defines it rather than erroring.
-			for _, id := range protocol.Supported {
-				if id == v.ID() {
-					continue
-				}
-				fallback := protocol.Negotiate(id)
-				resultJSON, err = fallback.HandleInitialize(req.Params, protocol.ImplementationInfo{Name: "ilter", Version: version.Version})
-				if err == nil {
-					v = fallback
-					break
-				}
-			}
-		}
-		if err != nil {
-			return NewErrorResponse(req.ID, v.ErrorCode(protocol.ErrMethodNotFound), err.Error()), nil
-		}
-		return NewSuccessResponse(req.ID, resultJSON), nil
+		return c.handleInlineInitialize(req)
 
 	case "tools/list":
-		inlineTools := inline.ListTools(c.server.ID)
-		tools := make([]ToolDefinition, 0, len(inlineTools))
-		for _, t := range inlineTools {
-			schema, _ := json.Marshal(t.InputSchema)
-			tools = append(tools, ToolDefinition{
-				Name:        t.Name,
-				Description: t.Description,
-				InputSchema: schema,
-			})
-		}
-		if tools == nil {
-			tools = []ToolDefinition{}
-		}
 		return NewSuccessResponse(req.ID, map[string]any{
-			"tools": tools,
+			"tools": c.Tools(),
 		}), nil
 
 	case "ping":
@@ -153,6 +115,39 @@ func (c *InlineClient) handleMethod(req *JSONRPCRequest) (*JSONRPCResponse, erro
 		return NewErrorResponse(req.ID, ErrorCodeMethodNotFound,
 			fmt.Sprintf("Method not found: %s", req.Method)), nil
 	}
+}
+
+// handleInlineInitialize implements the "initialize" JSON-RPC method for an
+// inline transport: negotiate a protocol version and, if that version
+// doesn't define the legacy initialize handshake, gracefully degrade to the
+// newest one that does.
+func (c *InlineClient) handleInlineInitialize(req *JSONRPCRequest) (*JSONRPCResponse, error) {
+	c.mu.Lock()
+	v := protocol.Negotiate(c.negotiatedVersion)
+	c.mu.Unlock()
+	resultJSON, err := v.HandleInitialize(req.Params, protocol.ImplementationInfo{Name: "ilter", Version: version.Version})
+	if errors.Is(err, protocol.ErrNoInitializeHandshake) {
+		// Mirrors gateway.go/hub.go's graceful degradation: a caller
+		// that explicitly invokes the legacy `initialize` method is,
+		// by definition, not speaking the stateless 2026-07-28 model
+		// (which has no such method) — fall back to the newest
+		// version that still defines it rather than erroring.
+		for _, id := range protocol.Supported {
+			if id == v.ID() {
+				continue
+			}
+			fallback := protocol.Negotiate(id)
+			resultJSON, err = fallback.HandleInitialize(req.Params, protocol.ImplementationInfo{Name: "ilter", Version: version.Version})
+			if err == nil {
+				v = fallback
+				break
+			}
+		}
+	}
+	if err != nil {
+		return NewErrorResponse(req.ID, v.ErrorCode(protocol.ErrMethodNotFound), err.Error()), nil
+	}
+	return NewSuccessResponse(req.ID, resultJSON), nil
 }
 
 func (c *InlineClient) Tools() []ToolDefinition {

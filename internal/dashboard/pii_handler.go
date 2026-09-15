@@ -100,6 +100,64 @@ type DailyCount struct {
 
 // ── Loop handlers ──
 
+// scanLoopEventRow scans one row of HandleLoops' query into a LoopEventItem.
+func scanLoopEventRow(rows *sql.Rows) (LoopEventItem, error) {
+	var item LoopEventItem
+	var apiKeyID sql.NullString
+	var clientIP sql.NullString
+	var promptHash sql.NullString
+	var repeatCount sql.NullInt64
+	var windowSecs sql.NullInt64
+	var actionTaken sql.NullString
+	var resolvedAt sql.NullString
+	var keyID sql.NullString
+	var keyName sql.NullString
+	var ownerType sql.NullString
+	var ownerID sql.NullInt64
+
+	if err := rows.Scan(
+		&item.ID, &item.DetectedAt, &apiKeyID,
+		&keyID, &keyName, &ownerType, &ownerID,
+		&clientIP, &promptHash,
+		&repeatCount, &windowSecs, &actionTaken, &resolvedAt,
+	); err != nil {
+		return item, err
+	}
+
+	if apiKeyID.Valid {
+		item.KeyID = keyID.String
+	}
+	if keyID.String != "" {
+		item.Key = &KeyInfo{
+			ID:        keyID.String,
+			KeyName:   keyName.String,
+			OwnerType: ownerType.String,
+			OwnerID:   int(ownerID.Int64),
+		}
+	}
+	if clientIP.Valid {
+		item.ClientIP = clientIP.String
+	}
+	if promptHash.Valid {
+		item.PromptHash = promptHash.String
+	}
+	if repeatCount.Valid {
+		item.RepeatCount = int(repeatCount.Int64)
+	}
+	if windowSecs.Valid {
+		item.WindowSeconds = int(windowSecs.Int64)
+	}
+	if actionTaken.Valid {
+		item.ActionTaken = actionTaken.String
+	}
+	if resolvedAt.Valid {
+		resolved := db.FormatSQLiteTimestamp(resolvedAt.String)
+		item.ResolvedAt = &resolved
+	}
+	item.DetectedAt = db.FormatSQLiteTimestamp(item.DetectedAt)
+	return item, nil
+}
+
 func (h *PIIHandler) HandleLoops(w http.ResponseWriter, _ *http.Request) {
 	rows, err := h.store.DB.Query(`
 		SELECT le.id, le.detected_at, le.key_id,
@@ -117,64 +175,15 @@ func (h *PIIHandler) HandleLoops(w http.ResponseWriter, _ *http.Request) {
 		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	items := make([]LoopEventItem, 0)
 	for rows.Next() {
-		var item LoopEventItem
-		var apiKeyID sql.NullString
-		var clientIP sql.NullString
-		var promptHash sql.NullString
-		var repeatCount sql.NullInt64
-		var windowSecs sql.NullInt64
-		var actionTaken sql.NullString
-		var resolvedAt sql.NullString
-		var keyID sql.NullString
-		var keyName sql.NullString
-		var ownerType sql.NullString
-		var ownerID sql.NullInt64
-
-		errScan := rows.Scan(
-			&item.ID, &item.DetectedAt, &apiKeyID,
-			&keyID, &keyName, &ownerType, &ownerID,
-			&clientIP, &promptHash,
-			&repeatCount, &windowSecs, &actionTaken, &resolvedAt,
-		)
+		item, errScan := scanLoopEventRow(rows)
 		if errScan != nil {
 			slog.Error("Failed to scan loop event row", "error", errScan)
 			continue
 		}
-		if apiKeyID.Valid {
-			item.KeyID = keyID.String
-		}
-		if keyID.String != "" {
-			item.Key = &KeyInfo{
-				ID:        keyID.String,
-				KeyName:   keyName.String,
-				OwnerType: ownerType.String,
-				OwnerID:   int(ownerID.Int64),
-			}
-		}
-		if clientIP.Valid {
-			item.ClientIP = clientIP.String
-		}
-		if promptHash.Valid {
-			item.PromptHash = promptHash.String
-		}
-		if repeatCount.Valid {
-			item.RepeatCount = int(repeatCount.Int64)
-		}
-		if windowSecs.Valid {
-			item.WindowSeconds = int(windowSecs.Int64)
-		}
-		if actionTaken.Valid {
-			item.ActionTaken = actionTaken.String
-		}
-		if resolvedAt.Valid {
-			resolved := db.FormatSQLiteTimestamp(resolvedAt.String)
-			item.ResolvedAt = &resolved
-		}
-		item.DetectedAt = db.FormatSQLiteTimestamp(item.DetectedAt)
 		items = append(items, item)
 	}
 	if err := rows.Err(); err != nil {
@@ -186,13 +195,58 @@ func (h *PIIHandler) HandleLoops(w http.ResponseWriter, _ *http.Request) {
 	model.WriteJSON(w, http.StatusOK, items)
 }
 
-// HandleLoopExport exports loop events as JSON or CSV.
-func (h *PIIHandler) HandleLoopExport(w http.ResponseWriter, r *http.Request) {
-	format := r.URL.Query().Get("format")
-	if format == "" {
-		format = "json"
-	}
+type loopExportItem struct {
+	ID            int    `json:"id"`
+	DetectedAt    string `json:"detected_at"`
+	KeyID         string `json:"key_id"`
+	APIKeyName    string `json:"api_key_name"`
+	ClientIP      string `json:"client_ip"`
+	PromptHash    string `json:"prompt_hash"`
+	RepeatCount   int    `json:"repeat_count"`
+	WindowSeconds int    `json:"window_seconds"`
+	ActionTaken   string `json:"action_taken"`
+}
 
+// scanLoopExportRow scans one row of HandleLoopExport's query into a
+// loopExportItem.
+func scanLoopExportRow(rows *sql.Rows) (loopExportItem, error) {
+	var item loopExportItem
+	var keyID, apiKeyName, clientIP, promptHash, actionTaken sql.NullString
+	var repeatCount, windowSecs sql.NullInt64
+	if err := rows.Scan(
+		&item.ID, &item.DetectedAt, &keyID, &apiKeyName,
+		&clientIP, &promptHash, &repeatCount, &windowSecs, &actionTaken,
+	); err != nil {
+		return item, err
+	}
+	if keyID.Valid {
+		item.KeyID = keyID.String
+	}
+	if apiKeyName.Valid {
+		item.APIKeyName = apiKeyName.String
+	}
+	if clientIP.Valid {
+		item.ClientIP = clientIP.String
+	}
+	if promptHash.Valid {
+		item.PromptHash = promptHash.String
+	}
+	if repeatCount.Valid {
+		item.RepeatCount = int(repeatCount.Int64)
+	}
+	if windowSecs.Valid {
+		item.WindowSeconds = int(windowSecs.Int64)
+	}
+	if actionTaken.Valid {
+		item.ActionTaken = actionTaken.String
+	}
+	item.DetectedAt = db.FormatSQLiteTimestamp(item.DetectedAt)
+	return item, nil
+}
+
+// queryLoopExportItems runs HandleLoopExport's query and scans up to 10000
+// rows, logging (not failing) on a per-row scan error.
+func (h *PIIHandler) queryLoopExportItems() ([]loopExportItem, error) {
 	rows, err := h.store.DB.Query(`
 		SELECT le.id, le.detected_at, le.key_id, COALESCE(vk.name, 'Unknown'),
 		       COALESCE(le.client_ip, ''), COALESCE(le.prompt_hash, ''),
@@ -203,77 +257,57 @@ func (h *PIIHandler) HandleLoopExport(w http.ResponseWriter, r *http.Request) {
 		LIMIT 10000
 	`)
 	if err != nil {
-		slog.Error("Failed to query loop events for export", "error", err)
-		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", err.Error())
-		return
+		return nil, err
 	}
-	defer rows.Close()
-
-	type loopExportItem struct {
-		ID            int    `json:"id"`
-		DetectedAt    string `json:"detected_at"`
-		KeyID         string `json:"key_id"`
-		APIKeyName    string `json:"api_key_name"`
-		ClientIP      string `json:"client_ip"`
-		PromptHash    string `json:"prompt_hash"`
-		RepeatCount   int    `json:"repeat_count"`
-		WindowSeconds int    `json:"window_seconds"`
-		ActionTaken   string `json:"action_taken"`
-	}
+	defer func() { _ = rows.Close() }()
 
 	items := make([]loopExportItem, 0)
 	for rows.Next() {
-		var item loopExportItem
-		var keyID, apiKeyName, clientIP, promptHash, actionTaken sql.NullString
-		var repeatCount, windowSecs sql.NullInt64
-		if err := rows.Scan(
-			&item.ID, &item.DetectedAt, &keyID, &apiKeyName,
-			&clientIP, &promptHash, &repeatCount, &windowSecs, &actionTaken,
-		); err != nil {
-			slog.Error("Failed to scan loop export event row", "error", err)
+		item, errScan := scanLoopExportRow(rows)
+		if errScan != nil {
+			slog.Error("Failed to scan loop export event row", "error", errScan)
 			continue
 		}
-		if keyID.Valid {
-			item.KeyID = keyID.String
-		}
-		if apiKeyName.Valid {
-			item.APIKeyName = apiKeyName.String
-		}
-		if clientIP.Valid {
-			item.ClientIP = clientIP.String
-		}
-		if promptHash.Valid {
-			item.PromptHash = promptHash.String
-		}
-		if repeatCount.Valid {
-			item.RepeatCount = int(repeatCount.Int64)
-		}
-		if windowSecs.Valid {
-			item.WindowSeconds = int(windowSecs.Int64)
-		}
-		if actionTaken.Valid {
-			item.ActionTaken = actionTaken.String
-		}
-		item.DetectedAt = db.FormatSQLiteTimestamp(item.DetectedAt)
 		items = append(items, item)
 	}
 	if err := rows.Err(); err != nil {
 		slog.Error("Error iterating loop export rows", "error", err)
 	}
+	return items, nil
+}
+
+// writeLoopExportCSV writes items to w as a CSV attachment.
+func writeLoopExportCSV(w http.ResponseWriter, items []loopExportItem) {
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", "attachment; filename=loop_events_export.csv")
+	cw := csv.NewWriter(w)
+	_ = cw.Write([]string{"id", "detected_at", "key_id", "api_key_name", "client_ip", "prompt_hash", "repeat_count", "window_seconds", "action_taken"})
+	for _, item := range items {
+		_ = cw.Write([]string{
+			strconv.Itoa(item.ID), item.DetectedAt, item.KeyID, item.APIKeyName,
+			item.ClientIP, item.PromptHash, strconv.Itoa(item.RepeatCount),
+			strconv.Itoa(item.WindowSeconds), item.ActionTaken,
+		})
+	}
+	cw.Flush()
+}
+
+// HandleLoopExport exports loop events as JSON or CSV.
+func (h *PIIHandler) HandleLoopExport(w http.ResponseWriter, r *http.Request) {
+	format := r.URL.Query().Get("format")
+	if format == "" {
+		format = "json"
+	}
+
+	items, err := h.queryLoopExportItems()
+	if err != nil {
+		slog.Error("Failed to query loop events for export", "error", err)
+		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
 
 	if format == "csv" {
-		w.Header().Set("Content-Type", "text/csv; charset=utf-8")
-		w.Header().Set("Content-Disposition", "attachment; filename=loop_events_export.csv")
-		cw := csv.NewWriter(w)
-		_ = cw.Write([]string{"id", "detected_at", "key_id", "api_key_name", "client_ip", "prompt_hash", "repeat_count", "window_seconds", "action_taken"})
-		for _, item := range items {
-			_ = cw.Write([]string{
-				strconv.Itoa(item.ID), item.DetectedAt, item.KeyID, item.APIKeyName,
-				item.ClientIP, item.PromptHash, strconv.Itoa(item.RepeatCount),
-				strconv.Itoa(item.WindowSeconds), item.ActionTaken,
-			})
-		}
-		cw.Flush()
+		writeLoopExportCSV(w, items)
 		return
 	}
 

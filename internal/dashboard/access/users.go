@@ -17,8 +17,8 @@ import (
 	"github.com/ilter-ai/ilter/internal/platform/reqmeta"
 )
 
-func (h *Handler) ListUsers(w http.ResponseWriter, _ *http.Request) {
-	all, err := h.store.ListUsers()
+func (h *Handler) ListUsers(w http.ResponseWriter, r *http.Request) {
+	all, err := h.store.ListUsers(r.Context())
 	if err != nil {
 		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", "Failed to list users")
 		return
@@ -33,7 +33,7 @@ func (h *Handler) ListUsers(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (h *Handler) CreateUser(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 	var req auth.CreateUserRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		model.WriteJSONError(w, http.StatusBadRequest, "invalid_request_error", "Invalid request body")
@@ -53,7 +53,7 @@ func (h *Handler) CreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := h.store.CreateUser(req)
+	user, err := h.store.CreateUser(r.Context(), req)
 	if err != nil {
 		errStr := err.Error()
 		if strings.Contains(errStr, "UNIQUE") {
@@ -75,7 +75,7 @@ func (h *Handler) CreateUser(w http.ResponseWriter, r *http.Request) {
 		if user.PasswordHash != "" {
 			vals["password_hash"] = "***"
 		}
-		if err := h.auditor.LogCreate("user", strconv.Itoa(user.ID), vals, reqmeta.GetKeyID(r.Context())); err != nil {
+		if err := h.auditor.LogCreate(r.Context(), "user", strconv.Itoa(user.ID), vals, reqmeta.GetKeyID(r.Context())); err != nil {
 			slog.Error("failed to log audit create user", "error", err)
 		}
 	}
@@ -91,7 +91,7 @@ func (h *Handler) GetUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := h.store.GetUser(id)
+	user, err := h.store.GetUser(r.Context(), id)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			model.WriteJSONError(w, http.StatusNotFound, "not_found", "User not found")
@@ -112,20 +112,20 @@ func (h *Handler) UpdateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 	var req auth.UpdateUserRequest
 	if err = json.NewDecoder(r.Body).Decode(&req); err != nil {
 		model.WriteJSONError(w, http.StatusBadRequest, "invalid_request_error", "Invalid request body")
 		return
 	}
 
-	oldUser, err := h.store.GetUser(id)
+	oldUser, err := h.store.GetUser(r.Context(), id)
 	if err != nil {
 		model.WriteJSONError(w, http.StatusNotFound, "not_found", "User not found")
 		return
 	}
 
-	user, err := h.store.UpdateUser(id, req)
+	user, err := h.store.UpdateUser(r.Context(), id, req)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			model.WriteJSONError(w, http.StatusNotFound, "not_found", "User not found")
@@ -161,7 +161,7 @@ func (h *Handler) UpdateUser(w http.ResponseWriter, r *http.Request) {
 		if user.PasswordHash != "" {
 			newVals["password_hash"] = "***"
 		}
-		if err := h.auditor.LogUpdate("user", strconv.Itoa(id), oldVals, newVals, reqmeta.GetKeyID(r.Context())); err != nil {
+		if err := h.auditor.LogUpdate(r.Context(), "user", strconv.Itoa(id), oldVals, newVals, reqmeta.GetKeyID(r.Context())); err != nil {
 			slog.Error("failed to log audit update user", "error", err)
 		}
 	}
@@ -177,9 +177,9 @@ func (h *Handler) DeleteUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	oldUser, fetchErr := h.store.GetUser(id)
+	oldUser, fetchErr := h.store.GetUser(r.Context(), id)
 
-	if err := h.store.DeleteUser(id); err != nil {
+	if err := h.store.DeleteUser(r.Context(), id); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			model.WriteJSONError(w, http.StatusNotFound, "not_found", "User not found")
 			return
@@ -199,7 +199,7 @@ func (h *Handler) DeleteUser(w http.ResponseWriter, r *http.Request) {
 		if oldUser.PasswordHash != "" {
 			vals["password_hash"] = "***"
 		}
-		if err := h.auditor.LogDelete("user", strconv.Itoa(id), vals, reqmeta.GetKeyID(r.Context())); err != nil {
+		if err := h.auditor.LogDelete(r.Context(), "user", strconv.Itoa(id), vals, reqmeta.GetKeyID(r.Context())); err != nil {
 			slog.Error("failed to log audit delete user", "error", err)
 		}
 	}

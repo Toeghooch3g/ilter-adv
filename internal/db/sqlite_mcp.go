@@ -95,14 +95,13 @@ type MCPToolInput struct {
 // SaveMCPTools replaces all persisted tools for serverID with tools, in a
 // single transaction (delete-then-bulk-insert, matching a tools/list
 // discovery result exactly).
-func (s *SQLiteStore) SaveMCPTools(serverID string, tools []MCPToolInput) error {
+func (s *SQLiteStore) SaveMCPTools(ctx context.Context, serverID string, tools []MCPToolInput) error {
 	tx, err := s.DB.Begin()
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	ctx := context.Background()
 	qtx := s.queries.WithTx(tx)
 
 	if err := qtx.DeleteMCPToolsByServer(ctx, serverID); err != nil {

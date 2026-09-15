@@ -77,8 +77,8 @@ func truncate(s string, n int) string {
 }
 
 // ListThreads returns all conversations ordered by most recently updated.
-func (h *ChatHandler) ListThreads(w http.ResponseWriter, _ *http.Request) {
-	rows, err := h.store.ListConversations()
+func (h *ChatHandler) ListThreads(w http.ResponseWriter, r *http.Request) {
+	rows, err := h.store.ListConversations(r.Context())
 	if err != nil {
 		slog.Error("failed to list threads", "error", err)
 		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", err.Error())
@@ -117,7 +117,7 @@ func (h *ChatHandler) CreateThread(w http.ResponseWriter, r *http.Request) {
 
 	id := uuid.New().String()
 
-	if err := h.store.CreateConversation(id, body.Title); err != nil {
+	if err := h.store.CreateConversation(r.Context(), id, body.Title); err != nil {
 		slog.Error("failed to create thread", "error", err)
 		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
@@ -137,7 +137,7 @@ func (h *ChatHandler) CreateThread(w http.ResponseWriter, r *http.Request) {
 func (h *ChatHandler) GetThread(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 
-	conv, err := h.store.GetConversation(id)
+	conv, err := h.store.GetConversation(r.Context(), id)
 	if errors.Is(err, sql.ErrNoRows) {
 		model.WriteJSONError(w, http.StatusNotFound, "not_found", "conversation not found")
 		return
@@ -148,7 +148,7 @@ func (h *ChatHandler) GetThread(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	msgRows, err := h.store.ListMessagesByConversation(id)
+	msgRows, err := h.store.ListMessagesByConversation(r.Context(), id)
 	if err != nil {
 		slog.Error("failed to query messages", "error", err)
 		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", err.Error())
@@ -187,7 +187,7 @@ func (h *ChatHandler) UpdateThread(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	found, err := h.store.UpdateConversationTitle(id, body.Title)
+	found, err := h.store.UpdateConversationTitle(r.Context(), id, body.Title)
 	if err != nil {
 		slog.Error("failed to update thread", "error", err)
 		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", err.Error())
@@ -210,7 +210,7 @@ func (h *ChatHandler) UpdateThread(w http.ResponseWriter, r *http.Request) {
 func (h *ChatHandler) DeleteThread(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 
-	found, err := h.store.DeleteConversation(id)
+	found, err := h.store.DeleteConversation(r.Context(), id)
 	if err != nil {
 		slog.Error("failed to delete thread", "error", err)
 		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", err.Error())
@@ -249,7 +249,7 @@ func (h *ChatHandler) AddMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Verify conversation exists
-	conv, err := h.store.GetConversation(id)
+	conv, err := h.store.GetConversation(r.Context(), id)
 	if errors.Is(err, sql.ErrNoRows) {
 		model.WriteJSONError(w, http.StatusNotFound, "not_found", "conversation not found")
 		return
@@ -260,7 +260,7 @@ func (h *ChatHandler) AddMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	msgID, err := h.store.InsertMessage(db.NewMessageParams{
+	msgID, err := h.store.InsertMessage(r.Context(), db.NewMessageParams{
 		ConversationID:   id,
 		Role:             body.Role,
 		Content:          body.Content,
@@ -279,19 +279,19 @@ func (h *ChatHandler) AddMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Update conversation timestamp
-	if tErr := h.store.TouchConversation(id); tErr != nil {
+	if tErr := h.store.TouchConversation(r.Context(), id); tErr != nil {
 		slog.Error("failed to touch conversation", "id", id, "error", tErr)
 	}
 
 	// Auto-title: set title to first 40 chars of first user message
 	if body.Role == "user" && conv.Title == "New Chat" {
 		autoTitle := truncate(body.Content, 40)
-		if sErr := h.store.SetConversationTitle(id, autoTitle); sErr != nil {
+		if sErr := h.store.SetConversationTitle(r.Context(), id, autoTitle); sErr != nil {
 			slog.Error("failed to set conversation title", "id", id, "error", sErr)
 		}
 	}
 
-	createdAt, err := h.store.GetMessageCreatedAt(msgID)
+	createdAt, err := h.store.GetMessageCreatedAt(r.Context(), msgID)
 	if err != nil {
 		slog.Error("failed to get message created_at", "id", msgID, "error", err)
 	}
@@ -326,7 +326,7 @@ func (h *ChatHandler) ListMessages(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Verify conversation exists
-	exists, err := h.store.ConversationExists(id)
+	exists, err := h.store.ConversationExists(r.Context(), id)
 	if err != nil || !exists {
 		model.WriteJSONError(w, http.StatusNotFound, "not_found", "conversation not found")
 		return
@@ -341,7 +341,7 @@ func (h *ChatHandler) ListMessages(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// fetch +1 to detect has_more
-	rows, err := h.store.ListMessagesPaginated(id, beforeID, limit+1)
+	rows, err := h.store.ListMessagesPaginated(r.Context(), id, beforeID, limit+1)
 	if err != nil {
 		slog.Error("failed to list messages", "error", err)
 		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", err.Error())

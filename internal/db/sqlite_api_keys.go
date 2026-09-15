@@ -106,7 +106,7 @@ func apiKeyFromSQLC(
 
 // CreateAPIKey inserts a new API key and returns the generated raw token.
 // The token is returned only once — it is not stored in plaintext.
-func (s *SQLiteStore) CreateAPIKey(name string, groupID *int, userID *int, monthlyBudgetUSD float64, monthlyBudgetTokens int64, rateLimitRPM int, rateLimitTPM int64, allowedModels, allowedProviders []string, tags map[string]string) (*auth.APIKey, string, error) {
+func (s *SQLiteStore) CreateAPIKey(ctx context.Context, name string, groupID *int, userID *int, monthlyBudgetUSD float64, monthlyBudgetTokens int64, rateLimitRPM int, rateLimitTPM int64, allowedModels, allowedProviders []string, tags map[string]string) (*auth.APIKey, string, error) {
 	token, prefix, err := generateAPIKeyToken()
 	if err != nil {
 		return nil, "", err
@@ -126,7 +126,7 @@ func (s *SQLiteStore) CreateAPIKey(name string, groupID *int, userID *int, month
 	now := time.Now().UTC()
 	rpm := int64(rateLimitRPM)
 
-	err = s.queries.CreateAPIKey(context.Background(), sqlc.CreateAPIKeyParams{
+	err = s.queries.CreateAPIKey(ctx, sqlc.CreateAPIKeyParams{
 		ID:                  id,
 		Name:                name,
 		HashedKey:           hash,
@@ -179,8 +179,8 @@ func (s *SQLiteStore) CreateAPIKey(name string, groupID *int, userID *int, month
 // ---------------------------------------------------------------------------
 
 // GetAPIKey retrieves an API key by its ID.
-func (s *SQLiteStore) GetAPIKey(id string) (*auth.APIKey, error) {
-	dbKey, err := s.queries.GetAPIKey(context.Background(), id)
+func (s *SQLiteStore) GetAPIKey(ctx context.Context, id string) (*auth.APIKey, error) {
+	dbKey, err := s.queries.GetAPIKey(ctx, id)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, fmt.Errorf("API key %q not found", id)
@@ -231,9 +231,9 @@ func (s *SQLiteStore) GetAPIKeyByHash(rawToken string) (*auth.APIKey, error) {
 // GetActiveKeyByHash
 // ---------------------------------------------------------------------------
 
-func (s *SQLiteStore) GetActiveKeyByHash(rawToken string) (*auth.APIKey, error) {
+func (s *SQLiteStore) GetActiveKeyByHash(ctx context.Context, rawToken string) (*auth.APIKey, error) {
 	hash := hashAPIKey(rawToken)
-	dbKey, err := s.queries.GetAPIKeyByHash(context.Background(), hash)
+	dbKey, err := s.queries.GetAPIKeyByHash(ctx, hash)
 	if err == nil {
 		return apiKeyFromSQLC(
 			dbKey.ID, dbKey.Name, dbKey.GroupID, dbKey.UserID,
@@ -246,12 +246,12 @@ func (s *SQLiteStore) GetActiveKeyByHash(rawToken string) (*auth.APIKey, error) 
 
 	prefix := crypto.ExtractKeyPrefix(rawToken)
 	if prefix != "" {
-		vk, err := s.lookupAPIKeyArgon2id(rawToken, &prefix)
+		vk, err := s.lookupAPIKeyArgon2id(ctx, rawToken, &prefix)
 		if err == nil {
 			return vk, nil
 		}
 
-		vk, err = s.lookupAPIKeyArgon2idNoPrefix(rawToken)
+		vk, err = s.lookupAPIKeyArgon2idNoPrefix(ctx, rawToken)
 		if err == nil {
 			return vk, nil
 		}
@@ -269,15 +269,15 @@ func (s *SQLiteStore) GetActiveKeyByHash(rawToken string) (*auth.APIKey, error) 
 // (meant for calling the LLM proxy) also work as a dashboard login
 // credential, so dashboard access isn't solely gated on ILTER_ADMIN_API_KEY
 // being set.
-func (s *SQLiteStore) IsAdminAPIKey(rawToken string) bool {
+func (s *SQLiteStore) IsAdminAPIKey(ctx context.Context, rawToken string) bool {
 	if rawToken == "" {
 		return false
 	}
-	key, err := s.GetActiveKeyByHash(rawToken)
+	key, err := s.GetActiveKeyByHash(ctx, rawToken)
 	if err != nil || key == nil || !key.Enabled || key.GroupID == nil {
 		return false
 	}
-	group, err := s.GetGroupByName("admin")
+	group, err := s.GetGroupByName(ctx, "admin")
 	if err != nil || group == nil {
 		return false
 	}
@@ -285,8 +285,8 @@ func (s *SQLiteStore) IsAdminAPIKey(rawToken string) bool {
 }
 
 // lookupAPIKeyArgon2id queries a single key row by prefix and verifies with Argon2id.
-func (s *SQLiteStore) lookupAPIKeyArgon2id(rawToken string, keyPrefix *string) (*auth.APIKey, error) {
-	row, err := s.queries.GetAPIKeyWithHash(context.Background(), keyPrefix)
+func (s *SQLiteStore) lookupAPIKeyArgon2id(ctx context.Context, rawToken string, keyPrefix *string) (*auth.APIKey, error) {
+	row, err := s.queries.GetAPIKeyWithHash(ctx, keyPrefix)
 	if err != nil {
 		return nil, err
 	}
@@ -294,8 +294,8 @@ func (s *SQLiteStore) lookupAPIKeyArgon2id(rawToken string, keyPrefix *string) (
 }
 
 // lookupAPIKeyArgon2idNoPrefix queries keys without a key_prefix and verifies with Argon2id.
-func (s *SQLiteStore) lookupAPIKeyArgon2idNoPrefix(rawToken string) (*auth.APIKey, error) {
-	row, err := s.queries.GetAPIKeyWithHashNoPrefix(context.Background())
+func (s *SQLiteStore) lookupAPIKeyArgon2idNoPrefix(ctx context.Context, rawToken string) (*auth.APIKey, error) {
+	row, err := s.queries.GetAPIKeyWithHashNoPrefix(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -329,13 +329,13 @@ func (s *SQLiteStore) argon2idVerifyAndConvert(rawToken, storedHash, salt string
 // ---------------------------------------------------------------------------
 
 // ListAPIKeys returns all API keys, optionally filtered by group_id.
-func (s *SQLiteStore) ListAPIKeys(groupID ...int) ([]auth.APIKey, error) {
+func (s *SQLiteStore) ListAPIKeys(ctx context.Context, groupID ...int) ([]auth.APIKey, error) {
 	var rows []auth.APIKey
 	var err error
 
 	if len(groupID) > 0 {
 		gid := int64(groupID[0])
-		dbKeys, qErr := s.queries.ListAPIKeysByGroup(context.Background(), &gid)
+		dbKeys, qErr := s.queries.ListAPIKeysByGroup(ctx, &gid)
 		if qErr != nil {
 			return nil, fmt.Errorf("list API keys: %w", qErr)
 		}
@@ -352,7 +352,7 @@ func (s *SQLiteStore) ListAPIKeys(groupID ...int) ([]auth.APIKey, error) {
 		return rows, nil
 	}
 
-	dbKeys, err := s.queries.ListAPIKeys(context.Background())
+	dbKeys, err := s.queries.ListAPIKeys(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list API keys: %w", err)
 	}
@@ -378,8 +378,8 @@ func (s *SQLiteStore) ListAPIKeys(groupID ...int) ([]auth.APIKey, error) {
 // are treated as no-change, except GroupID/UserID when clearGroupID/
 // clearUserID is set, which explicitly NULLs that column (a nil pointer
 // alone is ambiguous between "not provided" and "clear").
-func (s *SQLiteStore) UpdateAPIKey(id string, updates auth.APIKey, clearGroupID, clearUserID bool) error {
-	existing, err := s.GetAPIKey(id)
+func (s *SQLiteStore) UpdateAPIKey(ctx context.Context, id string, updates auth.APIKey, clearGroupID, clearUserID bool) error {
+	existing, err := s.GetAPIKey(ctx, id)
 	if err != nil {
 		return err
 	}
@@ -435,7 +435,7 @@ func (s *SQLiteStore) UpdateAPIKey(id string, updates auth.APIKey, clearGroupID,
 
 	now := time.Now().UTC()
 
-	err = s.queries.UpdateAPIKey(context.Background(), sqlc.UpdateAPIKeyParams{
+	err = s.queries.UpdateAPIKey(ctx, sqlc.UpdateAPIKeyParams{
 		Name:                name,
 		GroupID:             intToInt64Ptr(groupID),
 		UserID:              intToInt64Ptr(userID),
@@ -523,8 +523,8 @@ func (s *SQLiteStore) SetKeyRateLimit(id string, rpmLimit, retryAfter int) error
 
 // DeleteAPIKey removes an API key and its usage records (via CASCADE).
 // Uses s.DB.Exec for RowsAffected checking; sqlc's :exec discards the result.
-func (s *SQLiteStore) DeleteAPIKey(id string) error {
-	res, err := s.DB.Exec("DELETE FROM api_keys WHERE id = ?", id)
+func (s *SQLiteStore) DeleteAPIKey(ctx context.Context, id string) error {
+	res, err := s.DB.ExecContext(ctx, "DELETE FROM api_keys WHERE id = ?", id)
 	if err != nil {
 		return fmt.Errorf("delete API key %q: %w", id, err)
 	}
@@ -564,8 +564,8 @@ func (s *SQLiteStore) RecordKeyUsage(keyID, date, model, provider string, tokens
 // ---------------------------------------------------------------------------
 
 // GetKeyUsage retrieves usage records for an API key within a date range.
-func (s *SQLiteStore) GetKeyUsage(keyID, fromDate, toDate string) ([]auth.KeyUsage, error) {
-	rows, err := s.queries.GetKeyUsage(context.Background(), sqlc.GetKeyUsageParams{
+func (s *SQLiteStore) GetKeyUsage(ctx context.Context, keyID, fromDate, toDate string) ([]auth.KeyUsage, error) {
+	rows, err := s.queries.GetKeyUsage(ctx, sqlc.GetKeyUsageParams{
 		KeyID:  keyID,
 		Date:   fromDate,
 		Date_2: toDate,
@@ -640,11 +640,11 @@ type APIKeySummary struct {
 }
 
 // GetAPIKeySummary returns aggregate metrics across all API keys.
-func (s *SQLiteStore) GetAPIKeySummary() (*APIKeySummary, error) {
+func (s *SQLiteStore) GetAPIKeySummary(ctx context.Context) (*APIKeySummary, error) {
 	var summary APIKeySummary
 
 	// Count keys and enabled keys.
-	countRow, err := s.queries.CountAPIKeys(context.Background())
+	countRow, err := s.queries.CountAPIKeys(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("API key count: %w", err)
 	}
@@ -652,7 +652,7 @@ func (s *SQLiteStore) GetAPIKeySummary() (*APIKeySummary, error) {
 	summary.EnabledKeys = int(toFloat64(countRow.Coalesce))
 
 	// Aggregate usage.
-	usageRow, err := s.queries.GetUsageSummary(context.Background())
+	usageRow, err := s.queries.GetUsageSummary(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("API key usage summary: %w", err)
 	}

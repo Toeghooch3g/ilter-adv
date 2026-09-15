@@ -30,7 +30,7 @@ func writeTempSpec(t *testing.T, yamlContent string) string {
 	t.Helper()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "spec.yaml")
-	err := os.WriteFile(path, []byte(yamlContent), 0o644)
+	err := os.WriteFile(path, []byte(yamlContent), 0o600)
 	require.NoError(t, err)
 	return path
 }
@@ -39,7 +39,7 @@ func writeTempSpec(t *testing.T, yamlContent string) string {
 func loadSpecFromYAML(t *testing.T, yamlContent string) *openapi3.T {
 	t.Helper()
 	path := writeTempSpec(t, yamlContent)
-	doc, err := LoadSpec(&config.OpenAPISpecConfig{
+	doc, err := LoadSpec(context.Background(), &config.OpenAPISpecConfig{
 		Name:    "test",
 		SpecURL: path,
 	})
@@ -149,9 +149,9 @@ func buildPetstoreIndex(t *testing.T) ([]Operation, map[string]*Operation) {
 }
 
 // simpleOp returns a GET Operation with no parameters.
-func simpleOp(id, path string) *Operation {
+func simpleOp(path string) *Operation {
 	return &Operation{
-		ID:     id,
+		ID:     "test_get",
 		API:    "test",
 		Method: "GET",
 		Path:   path,
@@ -347,7 +347,7 @@ func TestExecuteAuthLeak(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	op := simpleOp("test_get", "/data")
+	op := simpleOp("/data")
 	op.ServerURL = srv.URL
 	token := "sk-secret-token-12345"
 	cfg := &config.OpenAPISpecConfig{
@@ -390,7 +390,7 @@ func TestExecuteTruncation(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	op := simpleOp("test_get", "/large")
+	op := simpleOp("/large")
 	op.ServerURL = srv.URL
 	cfg := &config.OpenAPISpecConfig{
 		Name: "test",
@@ -418,18 +418,18 @@ func TestExecuteTimeout(t *testing.T) {
 	// cleanup hanging when the handler sleeps).
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
-	t.Cleanup(func() { listener.Close() })
+	t.Cleanup(func() { _ = listener.Close() })
 
 	go func() {
 		conn, err := listener.Accept()
 		if err == nil {
 			// Accept the connection but never write a response.
 			time.Sleep(10 * time.Second)
-			conn.Close()
+			_ = conn.Close()
 		}
 	}()
 
-	op := simpleOp("test_get", "/slow")
+	op := simpleOp("/slow")
 	baseURL := "http://" + listener.Addr().String()
 	op.ServerURL = baseURL
 	cfg := &config.OpenAPISpecConfig{
@@ -462,7 +462,7 @@ func TestExecute4xx5xx(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	op := simpleOp("test_get", "/missing")
+	op := simpleOp("/missing")
 	op.ServerURL = srv.URL
 	cfg := &config.OpenAPISpecConfig{
 		Name: "test",
@@ -884,7 +884,7 @@ func TestExecuteNonTextResponse(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	op := simpleOp("test_get", "/image")
+	op := simpleOp("/image")
 	op.ServerURL = srv.URL
 	cfg := &config.OpenAPISpecConfig{
 		Name: "test",
@@ -954,7 +954,7 @@ func TestExecuteBasicAuth(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	op := simpleOp("test_get", "/data")
+	op := simpleOp("/data")
 	op.ServerURL = srv.URL
 	cfg := &config.OpenAPISpecConfig{
 		Name: "test",
@@ -985,7 +985,7 @@ func TestSanitizeToolNameEdgeCases(t *testing.T) {
 	// Very long string with special chars
 	long := make([]byte, 200)
 	for i := range long {
-		long[i] = byte(rand.Intn(26) + 'a')
+		long[i] = byte(rand.Intn(26) + 'a') //nolint:gosec // test fixture data, not a security context
 	}
 	name := string(long)
 	got := SanitizeToolName(name)

@@ -252,6 +252,61 @@ func seedPIIEvents(db *sql.DB, rng *rand.Rand, keyIDs []string, _ time.Time) err
 	return nil
 }
 
+// guardrailEventDetail generates a realistic details string for one seeded
+// guardrail event, matching evt.detailFmt's placeholder shape for its
+// guardrail type and action.
+func guardrailEventDetail(evt seedGuardrailEvent, rng *rand.Rand, keyID string, piiValues, contentFlags []string) string {
+	switch evt.guardrailType {
+	case "pii_block":
+		piiType := piiValues[rng.Intn(len(piiValues))]
+		return fmt.Sprintf(evt.detailFmt, randomPIIValue(rng, piiType))
+	case "budget_block":
+		budget := 20.0 + float64(rng.Intn(480))
+		pct := 70.0 + float64(rng.Intn(30))
+		switch evt.actionTaken {
+		case "blocked":
+			return fmt.Sprintf(evt.detailFmt, budget, fmt.Sprintf("key-%s", keyID))
+		case "flagged":
+			return fmt.Sprintf(evt.detailFmt, fmt.Sprintf("key-%s", keyID), pct)
+		default:
+			return fmt.Sprintf(evt.detailFmt, fmt.Sprintf("key-%s", keyID), 5.0+float64(rng.Intn(45)))
+		}
+	case "rate_limit":
+		rpm := 50 + rng.Intn(950)
+		detail := fmt.Sprintf(evt.detailFmt, rpm, fmt.Sprintf("key-%s", keyID))
+		switch evt.actionTaken {
+		case "throttled":
+			detail = fmt.Sprintf(evt.detailFmt, fmt.Sprintf("key-%s", keyID), rng.Intn(rpm), rpm)
+		case "flagged":
+			pct := 60 + rng.Intn(39)
+			detail = fmt.Sprintf(evt.detailFmt, fmt.Sprintf("key-%s", keyID), pct)
+		}
+		return detail
+	case "loop_detection":
+		repeats := 5 + rng.Intn(45)
+		window := 30 + rng.Intn(270)
+		switch evt.actionTaken {
+		case "blocked":
+			return fmt.Sprintf(evt.detailFmt, repeats, window)
+		case "alerted":
+			return fmt.Sprintf(evt.detailFmt, fmt.Sprintf("key-%s", keyID), repeats)
+		default:
+			sessionID := fmt.Sprintf("sess_%x", rng.Int63())
+			return fmt.Sprintf(evt.detailFmt, sessionID)
+		}
+	case "content_policy":
+		return fmt.Sprintf(evt.detailFmt, contentFlags[rng.Intn(len(contentFlags))])
+	case "model_access":
+		unauthModel := models[rng.Intn(len(models))]
+		if evt.actionTaken == "blocked" {
+			return fmt.Sprintf(evt.detailFmt, unauthModel, "sk_test_"+fmt.Sprintf("key-%s", keyID))
+		}
+		return fmt.Sprintf(evt.detailFmt, unauthModel, fmt.Sprintf("key-%s", keyID))
+	default:
+		return ""
+	}
+}
+
 func seedGuardrailEvents(db *sql.DB, rng *rand.Rand, keyIDs []string, _ time.Time) error {
 	eventTypes := []seedGuardrailEvent{
 		{"pii_block", "blocked", "Request blocked — PII detected: %s in user message"},
@@ -333,6 +388,48 @@ func seedOpenAPIAuditRow(rng *rand.Rand) (tool, params string) {
 	}
 }
 
+// resolveMCPAuditToolCall picks a tool/method/params triple for one seeded
+// mcp_audit_log row on serverID.
+func resolveMCPAuditToolCall(rng *rand.Rand, serverID string, toolsByServer map[string][]string, methods []string) (tool, method, params string) {
+	if serverID == "openapi" {
+		tool, params = seedOpenAPIAuditRow(rng)
+		return tool, "tools/call", params
+	}
+	tools := toolsByServer[serverID]
+	tool = tools[rng.Intn(len(tools))]
+	method = methods[rng.Intn(len(methods))]
+	params = "{}"
+	if method != "tools/call" {
+		return tool, method, params
+	}
+	switch tool {
+	case "get_table_schema":
+		params = `{"table_name":"api_keys"}`
+	case "read_records":
+		params = `{"table":"api_keys","limit":5}`
+	case "query":
+		params = `{"query":"SELECT * FROM api_keys LIMIT 5"}`
+	case "fetch":
+		params = `{"url":"https://example.com"}`
+	}
+	return tool, method, params
+}
+
+// mcpAuditErrorMsg synthesizes an error message for a failed seeded
+// mcp_audit_log row, or "" for a successful one.
+func mcpAuditErrorMsg(status int, tool, serverID string) string {
+	switch status {
+	case 400:
+		return fmt.Sprintf("invalid params for %s: missing required field", tool)
+	case 404:
+		return fmt.Sprintf("tool %s not found on server %s", tool, serverID)
+	case 500:
+		return "internal server error: connection refused"
+	default:
+		return ""
+	}
+}
+
 func seedMCPAuditLog(db *sql.DB, rng *rand.Rand, keyIDs []string, _ time.Time) error {
 	toolsByServer := map[string][]string{
 		"sqlite":    {"db_info", "list_tables", "get_table_schema", "create_record", "read_records", "update_records", "delete_records", "query"},
@@ -356,44 +453,15 @@ func seedMCPAuditLog(db *sql.DB, rng *rand.Rand, keyIDs []string, _ time.Time) e
 	n := 50 + rng.Intn(51)
 	for i := range n {
 		serverID := serverIDs[rng.Intn(len(serverIDs))]
-
-		var tool, method, params string
-		if serverID == "openapi" {
-			method = "tools/call"
-			tool, params = seedOpenAPIAuditRow(rng)
-		} else {
-			tools := toolsByServer[serverID]
-			tool = tools[rng.Intn(len(tools))]
-			method = methods[rng.Intn(len(methods))]
-			params = "{}"
-			if method == "tools/call" {
-				switch tool {
-				case "get_table_schema":
-					params = `{"table_name":"api_keys"}`
-				case "read_records":
-					params = `{"table":"api_keys","limit":5}`
-				case "query":
-					params = `{"query":"SELECT * FROM api_keys LIMIT 5"}`
-				case "fetch":
-					params = `{"url":"https://example.com"}`
-				}
-			}
-		}
+		tool, method, params := resolveMCPAuditToolCall(rng, serverID, toolsByServer, methods)
 
 		keyID := keyIDs[rng.Intn(len(keyIDs))]
 		durationMs := 50.0 + float64(rng.Intn(3000))
 		status := mcpStatuses[rng.Intn(len(mcpStatuses))]
 		success := status >= 200 && status < 400
-		var errorMsg string
+		errorMsg := ""
 		if !success {
-			switch status {
-			case 400:
-				errorMsg = fmt.Sprintf("invalid params for %s: missing required field", tool)
-			case 404:
-				errorMsg = fmt.Sprintf("tool %s not found on server %s", tool, serverID)
-			case 500:
-				errorMsg = "internal server error: connection refused"
-			}
+			errorMsg = mcpAuditErrorMsg(status, tool, serverID)
 		}
 
 		createdAt := time.Now().Add(-seedTimestampOffset(rng))

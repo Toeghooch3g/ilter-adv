@@ -39,7 +39,7 @@ func setupBudgetE2E(t *testing.T, rdb *redis.Client, monthlyLimit, dailyLimit fl
 	if err != nil {
 		t.Fatalf("failed to create store: %v", err)
 	}
-	t.Cleanup(func() { store.Close() })
+	t.Cleanup(func() { _ = store.Close() })
 
 	budgetMw := middleware.NewBudgetMiddleware(config.BudgetConfig{
 		Enabled:             true,
@@ -282,7 +282,8 @@ func TestBudgetE2E_BudgetHeaders(t *testing.T) {
 }
 
 // contextInjector bypasses real auth by injecting API key context values directly.
-func contextInjector(keyID string, monthlyBudget, dailyLimit float64) func(http.Handler) http.Handler {
+func contextInjector(keyID string) func(http.Handler) http.Handler {
+	const monthlyBudget, dailyLimit = 100.0, 50.0
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ctx := context.WithValue(r.Context(), reqmeta.APIKeyIDContextKey, keyID)
@@ -306,12 +307,12 @@ func TestBudgetLoopPII_CombinedE2E(t *testing.T) {
 	require.NoError(t, err, "miniredis must start")
 	t.Cleanup(mr.Close)
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	t.Cleanup(func() { rdb.Close() })
+	t.Cleanup(func() { _ = rdb.Close() })
 
 	// ── Setup: in-memory SQLite store ──
 	store, err := db.NewSQLiteStore(config.StorageConfig{Type: "sqlite", SqlitePath: ":memory:"})
 	require.NoError(t, err, "in-memory SQLite store must start")
-	t.Cleanup(func() { store.Close() })
+	t.Cleanup(func() { _ = store.Close() })
 
 	// ── Setup: ConfigCache with all feature flags enabled ──
 	bootCfg := config.DefaultBootConfig()
@@ -355,7 +356,7 @@ func TestBudgetLoopPII_CombinedE2E(t *testing.T) {
 		h.SetConfig(cfg)
 
 		r := chi.NewRouter()
-		r.Use(contextInjector("10", 100.0, 50.0))
+		r.Use(contextInjector("10"))
 		r.Use(budgetMw.Handler)
 		r.Use(piiMw.Handler)
 		r.Post("/v1/chat/completions", h.ChatCompletions)
@@ -396,7 +397,7 @@ func TestBudgetLoopPII_CombinedE2E(t *testing.T) {
 		t.Cleanup(func() { rdb.Del(context.Background(), monthKey) })
 
 		r := chi.NewRouter()
-		r.Use(contextInjector("20", 100.0, 50.0))
+		r.Use(contextInjector("20"))
 		r.Use(budgetMw.Handler)
 		r.Use(piiMw.Handler)
 		r.Post("/v1/chat/completions", h.ChatCompletions)
@@ -444,7 +445,7 @@ func TestBudgetLoopPII_CombinedE2E(t *testing.T) {
 		h.SetConfig(loopCfg)
 
 		r := chi.NewRouter()
-		r.Use(contextInjector("30", 100.0, 50.0))
+		r.Use(contextInjector("30"))
 		r.Use(budgetMw.Handler)
 		r.Use(loopMw.Handler)
 		r.Use(piiMw.Handler)
@@ -499,7 +500,7 @@ func TestBudgetLoopPII_CombinedE2E(t *testing.T) {
 		t.Cleanup(func() { rdb.Del(context.Background(), monthKey) })
 
 		r := chi.NewRouter()
-		r.Use(contextInjector("40", 100.0, 50.0))
+		r.Use(contextInjector("40"))
 		r.Use(budgetMw.Handler)
 		r.Use(piiMw.Handler)
 		r.Post("/v1/chat/completions", h.ChatCompletions)

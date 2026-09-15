@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"os"
 	"path/filepath"
@@ -137,7 +138,7 @@ func TestRecordDailyUsage_InsertAndQuery(t *testing.T) {
 	ts := setupTestStore(t)
 	defer ts.close()
 
-	err := ts.store.RecordDailyUsage("v1", "2026-06-10", "gpt-4o", "openai", 100, 200, 0, 0.0045)
+	err := ts.store.RecordDailyUsage(context.Background(), "v1", "2026-06-10", "gpt-4o", "openai", 100, 200, 0, 0.0045)
 	require.NoError(t, err)
 
 	// Verify the row was inserted correctly
@@ -168,11 +169,11 @@ func TestRecordDailyUsage_UpsertAccumulates(t *testing.T) {
 	defer ts.close()
 
 	// First insert
-	err := ts.store.RecordDailyUsage("v1", "2026-06-10", "gpt-4o", "openai", 100, 200, 0, 0.0045)
+	err := ts.store.RecordDailyUsage(context.Background(), "v1", "2026-06-10", "gpt-4o", "openai", 100, 200, 0, 0.0045)
 	require.NoError(t, err)
 
 	// Second insert — same key, should UPSERT and accumulate
-	err = ts.store.RecordDailyUsage("v1", "2026-06-10", "gpt-4o", "openai", 50, 100, 2, 0.0020)
+	err = ts.store.RecordDailyUsage(context.Background(), "v1", "2026-06-10", "gpt-4o", "openai", 50, 100, 2, 0.0020)
 	require.NoError(t, err)
 
 	// Verify accumulated values
@@ -197,18 +198,18 @@ func TestRecordDailyUsage_MultipleKeyCombos(t *testing.T) {
 	defer ts.close()
 
 	// Different key_id
-	err := ts.store.RecordDailyUsage("v1", "2026-06-10", "gpt-4o", "openai", 100, 200, 0, 0.0045)
+	err := ts.store.RecordDailyUsage(context.Background(), "v1", "2026-06-10", "gpt-4o", "openai", 100, 200, 0, 0.0045)
 	require.NoError(t, err)
 
-	err = ts.store.RecordDailyUsage("v2", "2026-06-10", "gpt-4o", "openai", 50, 100, 0, 0.0020)
+	err = ts.store.RecordDailyUsage(context.Background(), "v2", "2026-06-10", "gpt-4o", "openai", 50, 100, 0, 0.0020)
 	require.NoError(t, err)
 
 	// Different date
-	err = ts.store.RecordDailyUsage("v1", "2026-06-11", "gpt-4o", "openai", 30, 60, 0, 0.0010)
+	err = ts.store.RecordDailyUsage(context.Background(), "v1", "2026-06-11", "gpt-4o", "openai", 30, 60, 0, 0.0010)
 	require.NoError(t, err)
 
 	// Different model
-	err = ts.store.RecordDailyUsage("v1", "2026-06-10", "claude-3-sonnet", "anthropic", 200, 400, 0, 0.0090)
+	err = ts.store.RecordDailyUsage(context.Background(), "v1", "2026-06-10", "claude-3-sonnet", "anthropic", 200, 400, 0, 0.0090)
 	require.NoError(t, err)
 
 	// All 4 rows should exist independently
@@ -222,7 +223,7 @@ func TestRecordDailyUsage_ZeroValues(t *testing.T) {
 	ts := setupTestStore(t)
 	defer ts.close()
 
-	err := ts.store.RecordDailyUsage("v1", "2026-06-10", "gpt-4o", "openai", 0, 0, 0, 0.0)
+	err := ts.store.RecordDailyUsage(context.Background(), "v1", "2026-06-10", "gpt-4o", "openai", 0, 0, 0, 0.0)
 	require.NoError(t, err)
 
 	var requestCount int
@@ -257,7 +258,7 @@ func TestSaveDiscoveredModels(t *testing.T) {
 		{ID: "model-b", Provider: "test-provider", DisplayName: "Model B", Tier: "economy", CostPerInputToken: 0.0001, CostPerOutputToken: 0.0002},
 	}
 
-	err := ts.store.SaveDiscoveredModels("test-provider", models)
+	err := ts.store.SaveDiscoveredModels(context.Background(), "test-provider", models)
 	require.NoError(t, err)
 
 	all, err := ts.store.GetAllProviderModels()
@@ -275,7 +276,7 @@ func TestSaveDiscoveredModels(t *testing.T) {
 	models2 := []catalog.ModelInfo{
 		{ID: "model-c", Provider: "test-provider", Tier: "standard"},
 	}
-	err = ts.store.SaveDiscoveredModels("test-provider", models2)
+	err = ts.store.SaveDiscoveredModels(context.Background(), "test-provider", models2)
 	require.NoError(t, err)
 
 	all2, err := ts.store.GetAllProviderModels()
@@ -292,7 +293,7 @@ func TestGetActiveProviderModels(t *testing.T) {
 		{ID: "active-model", Provider: "prov1", Tier: "free"},
 		{ID: "inactive-model", Provider: "prov1", Tier: "economy"},
 	}
-	err := ts.store.SaveDiscoveredModels("prov1", models)
+	err := ts.store.SaveDiscoveredModels(context.Background(), "prov1", models)
 	require.NoError(t, err)
 
 	err = ts.store.SaveModelStatus("inactive-model", false)
@@ -321,7 +322,7 @@ func TestProviderModelCount(t *testing.T) {
 		{ID: "m1", Provider: "prov2", Tier: "free"},
 		{ID: "m2", Provider: "prov2", Tier: "standard"},
 	}
-	_ = ts.store.SaveDiscoveredModels("prov2", models)
+	_ = ts.store.SaveDiscoveredModels(context.Background(), "prov2", models)
 
 	count2, err := ts.store.ProviderModelCount("prov2")
 	require.NoError(t, err)
@@ -336,7 +337,7 @@ func TestGetModelStatusesWithProviderModels(t *testing.T) {
 		{ID: "model-x", Provider: "p", Tier: "free"},
 		{ID: "model-y", Provider: "p", Tier: "economy"},
 	}
-	err := ts.store.SaveDiscoveredModels("p", models)
+	err := ts.store.SaveDiscoveredModels(context.Background(), "p", models)
 	require.NoError(t, err)
 
 	_ = ts.store.SaveModelStatus("model-y", false)

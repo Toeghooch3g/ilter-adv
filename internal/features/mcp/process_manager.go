@@ -64,11 +64,10 @@ func (pm *ProcessManager) Start(ctx context.Context) error {
 		return err
 	}
 
-	pm.startOnce.Do(func() {
+	pm.startOnce.Do(func() { //nolint:contextcheck // long-lived background loop, not request-scoped — see comment below
 		// Background context is intentional: the health loop must outlive
 		// the Start() call (and whatever request triggered it), running
 		// until Close() cancels it via pm.cancelHealth.
-		//nolint:contextcheck // long-lived background loop, not request-scoped
 		hctx, cancel := context.WithCancel(context.Background())
 		pm.cancelHealth = cancel
 		go pm.healthLoop(hctx)

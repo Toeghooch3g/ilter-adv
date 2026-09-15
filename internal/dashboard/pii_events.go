@@ -1,7 +1,6 @@
 package dashboard
 
 import (
-	"context"
 	"database/sql"
 	"encoding/csv"
 	"encoding/json"
@@ -18,15 +17,30 @@ import (
 // PII Event handlers
 // ---------------------------------------------------------------------------
 
-// HandlePIIEvents returns paginated PII events with filtering.
-func (h *PIIHandler) HandlePIIEvents(w http.ResponseWriter, r *http.Request) {
-	piiTypeFilter := r.URL.Query().Get("pii_type")
-	actionFilter := r.URL.Query().Get("action")
-	keyIDFilter := r.URL.Query().Get("key_id")
-	dateFrom := r.URL.Query().Get("date_from")
-	dateTo := r.URL.Query().Get("date_to")
-	page := 1
-	limit := 50
+// piiEventsFilter holds the query-string filters accepted by HandlePIIEvents.
+type piiEventsFilter struct {
+	piiType  string
+	action   string
+	keyID    string
+	dateFrom string
+	dateTo   string
+}
+
+func parsePIIEventsFilter(r *http.Request) piiEventsFilter {
+	q := r.URL.Query()
+	return piiEventsFilter{
+		piiType:  q.Get("pii_type"),
+		action:   q.Get("action"),
+		keyID:    q.Get("key_id"),
+		dateFrom: q.Get("date_from"),
+		dateTo:   q.Get("date_to"),
+	}
+}
+
+// parsePageLimit reads page/limit query params, defaulting to (1, 50) and
+// capping limit at 500.
+func parsePageLimit(r *http.Request) (page, limit int) {
+	page, limit = 1, 50
 	if p := r.URL.Query().Get("page"); p != "" {
 		if parsed, err := strconv.Atoi(p); err == nil && parsed > 0 {
 			page = parsed
@@ -37,10 +51,14 @@ func (h *PIIHandler) HandlePIIEvents(w http.ResponseWriter, r *http.Request) {
 			limit = parsed
 		}
 	}
-	offset := (page - 1) * limit
+	return page, limit
+}
 
-	countQuery := `SELECT COUNT(*) FROM pii_events p WHERE p.key_id IS NOT NULL AND p.key_id != ''`
-	dataQuery := `
+// buildPIIEventsQueries builds the count and data SQL (plus their args) for
+// the PII events list, applying f's filters identically to both queries.
+func buildPIIEventsQueries(f piiEventsFilter) (countQuery, dataQuery string, countArgs, dataArgs []any) {
+	countQuery = `SELECT COUNT(*) FROM pii_events p WHERE p.key_id IS NOT NULL AND p.key_id != ''`
+	dataQuery = `
 		SELECT p.id, p.timestamp, p.key_id,
 		       COALESCE(vk.id, ''), COALESCE(vk.name, 'Unknown'),
 		       CASE WHEN vk.user_id IS NOT NULL THEN 'user' WHEN vk.group_id IS NOT NULL THEN 'group' ELSE '' END,
@@ -53,39 +71,122 @@ func (h *PIIHandler) HandlePIIEvents(w http.ResponseWriter, r *http.Request) {
 		LEFT JOIN api_keys vk ON p.key_id = vk.id
 		WHERE p.key_id IS NOT NULL AND p.key_id != ''
 	`
-	args := make([]any, 0)
-	countArgs := make([]any, 0)
+	dataArgs = make([]any, 0)
+	countArgs = make([]any, 0)
 
-	if piiTypeFilter != "" {
-		dataQuery += " AND p.pii_type = ?"
-		countQuery += " AND p.pii_type = ?"
-		args = append(args, piiTypeFilter)
-		countArgs = append(countArgs, piiTypeFilter)
+	addFilter := func(clause string, val string) {
+		dataQuery += clause
+		countQuery += clause
+		dataArgs = append(dataArgs, val)
+		countArgs = append(countArgs, val)
 	}
-	if actionFilter != "" {
-		dataQuery += " AND p.action_taken = ?"
-		countQuery += " AND p.action_taken = ?"
-		args = append(args, actionFilter)
-		countArgs = append(countArgs, actionFilter)
+
+	if f.piiType != "" {
+		addFilter(" AND p.pii_type = ?", f.piiType)
 	}
-	if keyIDFilter != "" {
-		dataQuery += " AND p.key_id = ?"
-		countQuery += " AND p.key_id = ?"
-		args = append(args, keyIDFilter)
-		countArgs = append(countArgs, keyIDFilter)
+	if f.action != "" {
+		addFilter(" AND p.action_taken = ?", f.action)
 	}
-	if dateFrom != "" {
-		dataQuery += " AND p.timestamp >= ?"
-		countQuery += " AND p.timestamp >= ?"
-		args = append(args, dateFrom)
-		countArgs = append(countArgs, dateFrom)
+	if f.keyID != "" {
+		addFilter(" AND p.key_id = ?", f.keyID)
 	}
-	if dateTo != "" {
-		dataQuery += " AND p.timestamp <= ?"
-		countQuery += " AND p.timestamp <= ?"
-		args = append(args, dateTo+" 23:59:59")
-		countArgs = append(countArgs, dateTo+" 23:59:59")
+	if f.dateFrom != "" {
+		addFilter(" AND p.timestamp >= ?", f.dateFrom)
 	}
+	if f.dateTo != "" {
+		addFilter(" AND p.timestamp <= ?", f.dateTo+" 23:59:59")
+	}
+
+	return countQuery, dataQuery, countArgs, dataArgs
+}
+
+// scanPIIEventRow scans one row of the HandlePIIEvents data query into an
+// EventItem.
+func scanPIIEventRow(rows *sql.Rows) (EventItem, error) {
+	var item EventItem
+	var apiKeyID sql.NullString
+	var keyID sql.NullString
+	var keyName sql.NullString
+	var ownerType sql.NullString
+	var ownerID sql.NullInt64
+	var piiType sql.NullString
+	var actionTaken sql.NullString
+	var clientIP sql.NullString
+	var requestID sql.NullInt64
+	var maskedPromptPreview sql.NullString
+	var piiValue sql.NullString
+	var modelVal sql.NullString
+	var providerVal sql.NullString
+	var latencyMs sql.NullInt64
+	var totalCost sql.NullFloat64
+	var cacheHit sql.NullBool
+
+	if err := rows.Scan(
+		&item.ID, &item.Timestamp, &apiKeyID,
+		&keyID, &keyName, &ownerType, &ownerID,
+		&piiType, &actionTaken, &clientIP,
+		&requestID, &maskedPromptPreview, &piiValue, &modelVal, &providerVal,
+		&latencyMs, &totalCost, &cacheHit,
+	); err != nil {
+		return item, err
+	}
+
+	if apiKeyID.Valid {
+		item.KeyID = keyID.String
+	}
+	if keyID.String != "" {
+		item.Key = &KeyInfo{
+			ID:        keyID.String,
+			KeyName:   keyName.String,
+			OwnerType: ownerType.String,
+			OwnerID:   int(ownerID.Int64),
+		}
+	}
+	if piiType.Valid {
+		item.PIIType = piiType.String
+	}
+	if actionTaken.Valid {
+		item.ActionTaken = actionTaken.String
+	}
+	if clientIP.Valid {
+		item.ClientIP = clientIP.String
+	}
+	if requestID.Valid {
+		item.RequestID = &requestID.Int64
+	}
+	if maskedPromptPreview.Valid {
+		item.MaskedPromptPreview = &maskedPromptPreview.String
+	}
+	if piiValue.Valid {
+		item.PIIValue = &piiValue.String
+	}
+	if modelVal.Valid {
+		item.Model = &modelVal.String
+	}
+	if providerVal.Valid {
+		item.Provider = &providerVal.String
+	}
+	if latencyMs.Valid {
+		lat := int(latencyMs.Int64)
+		item.LatencyMs = &lat
+	}
+	if totalCost.Valid {
+		item.TotalCost = &totalCost.Float64
+	}
+	if cacheHit.Valid {
+		item.CacheHit = &cacheHit.Bool
+	}
+	item.Timestamp = db.FormatSQLiteTimestamp(item.Timestamp)
+	return item, nil
+}
+
+// HandlePIIEvents returns paginated PII events with filtering.
+func (h *PIIHandler) HandlePIIEvents(w http.ResponseWriter, r *http.Request) {
+	filter := parsePIIEventsFilter(r)
+	page, limit := parsePageLimit(r)
+	offset := (page - 1) * limit
+
+	countQuery, dataQuery, countArgs, dataArgs := buildPIIEventsQueries(filter)
 
 	var total int
 	err := h.store.DB.QueryRow(countQuery, countArgs...).Scan(&total)
@@ -96,93 +197,23 @@ func (h *PIIHandler) HandlePIIEvents(w http.ResponseWriter, r *http.Request) {
 	}
 
 	dataQuery += " ORDER BY p.timestamp DESC LIMIT ? OFFSET ?"
-	args = append(args, limit, offset)
+	dataArgs = append(dataArgs, limit, offset)
 
-	rows, err := h.store.DB.Query(dataQuery, args...)
+	rows, err := h.store.DB.Query(dataQuery, dataArgs...)
 	if err != nil {
 		slog.Error("Failed to query pii events", "error", err)
 		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	items := make([]EventItem, 0)
 	for rows.Next() {
-		var item EventItem
-		var apiKeyID sql.NullString
-		var keyID sql.NullString
-		var keyName sql.NullString
-		var ownerType sql.NullString
-		var ownerID sql.NullInt64
-		var piiType sql.NullString
-		var actionTaken sql.NullString
-		var clientIP sql.NullString
-		var requestID sql.NullInt64
-		var maskedPromptPreview sql.NullString
-		var piiValue sql.NullString
-		var modelVal sql.NullString
-		var providerVal sql.NullString
-		var latencyMs sql.NullInt64
-		var totalCost sql.NullFloat64
-		var cacheHit sql.NullBool
-
-		errScan := rows.Scan(
-			&item.ID, &item.Timestamp, &apiKeyID,
-			&keyID, &keyName, &ownerType, &ownerID,
-			&piiType, &actionTaken, &clientIP,
-			&requestID, &maskedPromptPreview, &piiValue, &modelVal, &providerVal,
-			&latencyMs, &totalCost, &cacheHit,
-		)
+		item, errScan := scanPIIEventRow(rows)
 		if errScan != nil {
 			slog.Error("Failed to scan PII event row", "error", errScan)
 			continue
 		}
-		if apiKeyID.Valid {
-			item.KeyID = keyID.String
-		}
-		if keyID.String != "" {
-			item.Key = &KeyInfo{
-				ID:        keyID.String,
-				KeyName:   keyName.String,
-				OwnerType: ownerType.String,
-				OwnerID:   int(ownerID.Int64),
-			}
-		}
-		if piiType.Valid {
-			item.PIIType = piiType.String
-		}
-		if actionTaken.Valid {
-			item.ActionTaken = actionTaken.String
-		}
-		if clientIP.Valid {
-			item.ClientIP = clientIP.String
-		}
-		if requestID.Valid {
-			item.RequestID = &requestID.Int64
-		}
-		if maskedPromptPreview.Valid {
-			item.MaskedPromptPreview = &maskedPromptPreview.String
-		}
-		if piiValue.Valid {
-			item.PIIValue = &piiValue.String
-		}
-		if modelVal.Valid {
-			item.Model = &modelVal.String
-		}
-		if providerVal.Valid {
-			item.Provider = &providerVal.String
-		}
-		if latencyMs.Valid {
-			lat := int(latencyMs.Int64)
-			item.LatencyMs = &lat
-		}
-		if totalCost.Valid {
-			item.TotalCost = &totalCost.Float64
-		}
-		if cacheHit.Valid {
-			item.CacheHit = &cacheHit.Bool
-		}
-		item.Timestamp = db.FormatSQLiteTimestamp(item.Timestamp)
 		items = append(items, item)
 	}
 	if err := rows.Err(); err != nil {
@@ -202,13 +233,66 @@ func (h *PIIHandler) HandlePIIEvents(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// HandlePIIExport exports PII events as JSON or CSV.
-func (h *PIIHandler) HandlePIIExport(w http.ResponseWriter, r *http.Request) {
-	format := r.URL.Query().Get("format")
-	if format == "" {
-		format = "json"
+// scanPIIExportRow scans one row of the HandlePIIExport query into an
+// ExportItem.
+func scanPIIExportRow(rows *sql.Rows) (ExportItem, error) {
+	var item ExportItem
+	var apiKeyID sql.NullString
+	var apiKeyName sql.NullString
+	var piiType sql.NullString
+	var actionTaken sql.NullString
+	var clientIP sql.NullString
+	var requestID sql.NullInt64
+	var maskedPromptPreview sql.NullString
+	var piiValue sql.NullString
+	var modelVal sql.NullString
+	var providerVal sql.NullString
+
+	if err := rows.Scan(
+		&item.ID, &item.Timestamp, &apiKeyID, &apiKeyName,
+		&piiType, &actionTaken, &clientIP,
+		&requestID, &maskedPromptPreview, &piiValue, &modelVal, &providerVal,
+	); err != nil {
+		return item, err
 	}
 
+	if apiKeyID.Valid {
+		item.KeyID = apiKeyID.String
+	}
+	if apiKeyName.Valid {
+		item.APIKeyName = apiKeyName.String
+	}
+	if piiType.Valid {
+		item.PIIType = piiType.String
+	}
+	if actionTaken.Valid {
+		item.ActionTaken = actionTaken.String
+	}
+	if clientIP.Valid {
+		item.ClientIP = clientIP.String
+	}
+	if requestID.Valid {
+		item.RequestID = &requestID.Int64
+	}
+	if maskedPromptPreview.Valid {
+		item.MaskedPromptPreview = &maskedPromptPreview.String
+	}
+	if piiValue.Valid {
+		item.PIIValue = &piiValue.String
+	}
+	if modelVal.Valid {
+		item.Model = &modelVal.String
+	}
+	if providerVal.Valid {
+		item.Provider = &providerVal.String
+	}
+	item.Timestamp = db.FormatSQLiteTimestamp(item.Timestamp)
+	return item, nil
+}
+
+// queryPIIExportItems runs the HandlePIIExport query and scans up to 5000
+// rows into ExportItems, logging (not failing) on a per-row scan error.
+func (h *PIIHandler) queryPIIExportItems() ([]ExportItem, error) {
 	rows, err := h.store.DB.Query(`
 		SELECT p.id, p.timestamp, p.key_id, COALESCE(vk.name, 'Unknown') as api_key_name,
 		       p.pii_type, p.action_taken, COALESCE(p.client_ip, '') as client_ip,
@@ -222,96 +306,153 @@ func (h *PIIHandler) HandlePIIExport(w http.ResponseWriter, r *http.Request) {
 		LIMIT 5000
 	`)
 	if err != nil {
-		slog.Error("Failed to query pii events for export", "error", err)
-		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", err.Error())
-		return
+		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	items := make([]ExportItem, 0)
 	for rows.Next() {
-		var item ExportItem
-		var apiKeyID sql.NullString
-		var apiKeyName sql.NullString
-		var piiType sql.NullString
-		var actionTaken sql.NullString
-		var clientIP sql.NullString
-		var requestID sql.NullInt64
-		var maskedPromptPreview sql.NullString
-		var piiValue sql.NullString
-		var modelVal sql.NullString
-		var providerVal sql.NullString
-
-		errScan := rows.Scan(
-			&item.ID, &item.Timestamp, &apiKeyID, &apiKeyName,
-			&piiType, &actionTaken, &clientIP,
-			&requestID, &maskedPromptPreview, &piiValue, &modelVal, &providerVal,
-		)
+		item, errScan := scanPIIExportRow(rows)
 		if errScan != nil {
 			slog.Error("Failed to scan PII export event row", "error", errScan)
 			continue
 		}
-		if apiKeyID.Valid {
-			item.KeyID = apiKeyID.String
-		}
-		if apiKeyName.Valid {
-			item.APIKeyName = apiKeyName.String
-		}
-		if piiType.Valid {
-			item.PIIType = piiType.String
-		}
-		if actionTaken.Valid {
-			item.ActionTaken = actionTaken.String
-		}
-		if clientIP.Valid {
-			item.ClientIP = clientIP.String
-		}
-		if requestID.Valid {
-			item.RequestID = &requestID.Int64
-		}
-		if maskedPromptPreview.Valid {
-			item.MaskedPromptPreview = &maskedPromptPreview.String
-		}
-		if piiValue.Valid {
-			item.PIIValue = &piiValue.String
-		}
-		if modelVal.Valid {
-			item.Model = &modelVal.String
-		}
-		if providerVal.Valid {
-			item.Provider = &providerVal.String
-		}
-		item.Timestamp = db.FormatSQLiteTimestamp(item.Timestamp)
 		items = append(items, item)
 	}
 	if err := rows.Err(); err != nil {
 		slog.Error("Error iterating PII export rows", "error", err)
 	}
+	return items, nil
+}
+
+// writePIIExportCSV writes items to w as a CSV attachment.
+func writePIIExportCSV(w http.ResponseWriter, items []ExportItem) {
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", "attachment; filename=pii_events_export.csv")
+	cw := csv.NewWriter(w)
+	_ = cw.Write([]string{"id", "timestamp", "key_id", "api_key_name", "pii_type", "action_taken", "client_ip", "model", "provider"})
+	for _, item := range items {
+		modelName, provider := "", ""
+		if item.Model != nil {
+			modelName = *item.Model
+		}
+		if item.Provider != nil {
+			provider = *item.Provider
+		}
+		_ = cw.Write([]string{
+			strconv.Itoa(item.ID), item.Timestamp, item.KeyID, item.APIKeyName,
+			item.PIIType, item.ActionTaken, item.ClientIP, modelName, provider,
+		})
+	}
+	cw.Flush()
+}
+
+// HandlePIIExport exports PII events as JSON or CSV.
+func (h *PIIHandler) HandlePIIExport(w http.ResponseWriter, r *http.Request) {
+	format := r.URL.Query().Get("format")
+	if format == "" {
+		format = "json"
+	}
+
+	items, err := h.queryPIIExportItems()
+	if err != nil {
+		slog.Error("Failed to query pii events for export", "error", err)
+		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
 
 	if format == "csv" {
-		w.Header().Set("Content-Type", "text/csv; charset=utf-8")
-		w.Header().Set("Content-Disposition", "attachment; filename=pii_events_export.csv")
-		cw := csv.NewWriter(w)
-		_ = cw.Write([]string{"id", "timestamp", "key_id", "api_key_name", "pii_type", "action_taken", "client_ip", "model", "provider"})
-		for _, item := range items {
-			modelName, provider := "", ""
-			if item.Model != nil {
-				modelName = *item.Model
-			}
-			if item.Provider != nil {
-				provider = *item.Provider
-			}
-			_ = cw.Write([]string{
-				strconv.Itoa(item.ID), item.Timestamp, item.KeyID, item.APIKeyName,
-				item.PIIType, item.ActionTaken, item.ClientIP, modelName, provider,
-			})
-		}
-		cw.Flush()
+		writePIIExportCSV(w, items)
 		return
 	}
 
 	w.Header().Set("Content-Disposition", "attachment; filename=pii_events_export.json")
 	model.WriteJSON(w, http.StatusOK, items)
+}
+
+// loadPIITypeBreakdown populates stats.TypeBreakdown, logging (not failing)
+// on error since it's one of several independent stats sections.
+func (h *PIIHandler) loadPIITypeBreakdown(stats *Stats) {
+	typeRows, err := h.store.DB.Query(`
+		SELECT pii_type, COUNT(*) as cnt
+		FROM pii_events
+		WHERE key_id IS NOT NULL AND key_id != ''
+		GROUP BY pii_type
+		ORDER BY cnt DESC
+		LIMIT 10
+	`)
+	if err != nil {
+		return
+	}
+	defer func() { _ = typeRows.Close() }()
+	for typeRows.Next() {
+		var tc TypeCount
+		if err := typeRows.Scan(&tc.PIIType, &tc.Count); err != nil {
+			slog.Error("Failed to scan PII type breakdown row", "error", err)
+			continue
+		}
+		stats.TypeBreakdown = append(stats.TypeBreakdown, tc)
+	}
+	if err := typeRows.Err(); err != nil {
+		slog.Warn("error iterating PII type breakdown rows", "error", err)
+	}
+}
+
+// loadPIITopKeys populates stats.TopKeys, logging (not failing) on error.
+func (h *PIIHandler) loadPIITopKeys(stats *Stats) {
+	keyRows, err := h.store.DB.Query(`
+		SELECT p.key_id, COALESCE(vk.name, 'Unknown') as api_key_name, COUNT(*) as cnt
+		FROM pii_events p
+		LEFT JOIN api_keys vk ON p.key_id = vk.id
+		WHERE p.key_id IS NOT NULL AND p.key_id != ''
+		GROUP BY p.key_id
+		ORDER BY cnt DESC
+		LIMIT 5
+	`)
+	if err != nil {
+		return
+	}
+	defer func() { _ = keyRows.Close() }()
+	for keyRows.Next() {
+		var ke KeyEvent
+		if err := keyRows.Scan(&ke.KeyID, &ke.APIKeyName, &ke.Count); err != nil {
+			slog.Error("Failed to scan PII top keys row", "error", err)
+			continue
+		}
+		stats.TopKeys = append(stats.TopKeys, ke)
+	}
+	if err := keyRows.Err(); err != nil {
+		slog.Warn("error iterating PII top-keys rows", "error", err)
+	}
+}
+
+// loadPIIRecentTrend populates stats.RecentTrend, logging (not failing) on
+// error.
+func (h *PIIHandler) loadPIIRecentTrend(stats *Stats) {
+	trendRows, err := h.store.DB.Query(`
+		SELECT DATE(timestamp) as date,
+		       SUM(CASE WHEN action_taken = 'blocked' THEN 1 ELSE 0 END) as blocked,
+		       SUM(CASE WHEN action_taken = 'masked' THEN 1 ELSE 0 END) as masked
+		FROM pii_events
+		WHERE timestamp >= datetime('now', '-7 days') AND key_id IS NOT NULL AND key_id != ''
+		GROUP BY DATE(timestamp)
+		ORDER BY date ASC
+	`)
+	if err != nil {
+		return
+	}
+	defer func() { _ = trendRows.Close() }()
+	for trendRows.Next() {
+		var tc DailyCount
+		if err := trendRows.Scan(&tc.Date, &tc.Blocked, &tc.Masked); err != nil {
+			slog.Error("Failed to scan PII daily trend row", "error", err)
+			continue
+		}
+		stats.RecentTrend = append(stats.RecentTrend, tc)
+	}
+	if err := trendRows.Err(); err != nil {
+		slog.Warn("error iterating PII daily trend rows", "error", err)
+	}
 }
 
 // HandleStats returns PII event statistics.
@@ -336,76 +477,9 @@ func (h *PIIHandler) HandleStats(w http.ResponseWriter, _ *http.Request) {
 		stats.BlockedRate = float64(stats.BlockedCount) / float64(stats.TotalEvents) * 100
 	}
 
-	typeRows, err := h.store.DB.Query(`
-		SELECT pii_type, COUNT(*) as cnt
-		FROM pii_events
-		WHERE key_id IS NOT NULL AND key_id != ''
-		GROUP BY pii_type
-		ORDER BY cnt DESC
-		LIMIT 10
-	`)
-	if err == nil {
-		defer typeRows.Close()
-		for typeRows.Next() {
-			var tc TypeCount
-			if err = typeRows.Scan(&tc.PIIType, &tc.Count); err != nil {
-				slog.Error("Failed to scan PII type breakdown row", "error", err)
-				continue
-			}
-			stats.TypeBreakdown = append(stats.TypeBreakdown, tc)
-		}
-		if err := typeRows.Err(); err != nil {
-			slog.Warn("error iterating PII type breakdown rows", "error", err)
-		}
-	}
-
-	keyRows, err := h.store.DB.Query(`
-		SELECT p.key_id, COALESCE(vk.name, 'Unknown') as api_key_name, COUNT(*) as cnt
-		FROM pii_events p
-		LEFT JOIN api_keys vk ON p.key_id = vk.id
-		WHERE p.key_id IS NOT NULL AND p.key_id != ''
-		GROUP BY p.key_id
-		ORDER BY cnt DESC
-		LIMIT 5
-	`)
-	if err == nil {
-		defer keyRows.Close()
-		for keyRows.Next() {
-			var ke KeyEvent
-			if err = keyRows.Scan(&ke.KeyID, &ke.APIKeyName, &ke.Count); err != nil {
-				slog.Error("Failed to scan PII top keys row", "error", err)
-				continue
-			}
-			stats.TopKeys = append(stats.TopKeys, ke)
-		}
-		if err := keyRows.Err(); err != nil {
-			slog.Warn("error iterating PII top-keys rows", "error", err)
-		}
-	}
-
-	trendRows, err := h.store.DB.Query(`
-		SELECT DATE(timestamp) as date,
-		       SUM(CASE WHEN action_taken = 'blocked' THEN 1 ELSE 0 END) as blocked,
-		       SUM(CASE WHEN action_taken = 'masked' THEN 1 ELSE 0 END) as masked
-		FROM pii_events
-		WHERE timestamp >= datetime('now', '-7 days') AND key_id IS NOT NULL AND key_id != ''
-		GROUP BY DATE(timestamp)
-		ORDER BY date ASC
-	`)
-	if err == nil {
-		defer trendRows.Close()
-		for trendRows.Next() {
-			var tc DailyCount
-			if err := trendRows.Scan(&tc.Date, &tc.Blocked, &tc.Masked); err != nil {
-				slog.Error("Failed to scan PII daily trend row", "error", err)
-				continue
-			}
-			stats.RecentTrend = append(stats.RecentTrend, tc)
-		}
-		if err := trendRows.Err(); err != nil {
-			slog.Warn("error iterating PII daily trend rows", "error", err)
-		}
-	}
+	h.loadPIITypeBreakdown(&stats)
+	h.loadPIITopKeys(&stats)
+	h.loadPIIRecentTrend(&stats)
 
 	model.WriteJSON(w, http.StatusOK, stats)
 }
@@ -422,7 +496,7 @@ func (h *PIIHandler) HandlePIIConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 	var req piiConfigRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		model.WriteJSONError(w, http.StatusBadRequest, "invalid_request_error", "Invalid request body")
@@ -447,7 +521,7 @@ func (h *PIIHandler) HandlePIIConfig(w http.ResponseWriter, r *http.Request) {
 
 	if h.configCache != nil {
 		stores := &config.RuntimeStores{RuntimeConfig: h.store}
-		if err := h.configCache.Refresh(context.Background(), stores); err != nil {
+		if err := h.configCache.Refresh(r.Context(), stores); err != nil {
 			slog.Warn("config cache refresh after PII toggle failed", "error", err)
 		}
 	}

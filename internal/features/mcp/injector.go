@@ -51,41 +51,42 @@ func (inj *Injector) GetAuthorizedOpenAITools(keyID string, groupIDs []int) []mo
 		authSet[name] = true
 	}
 
-	// Only namespace a tool name with its server ID when the bare name
-	// collides across 2+ distinct servers — matches Registry.ResolveTool's
-	// own conflict detection (registry.go) and Gateway.handleToolsList's
-	// native MCP tools/list behavior (gateway.go). Collisions are computed
-	// over every registered tool (not just this key's authorized subset) so
-	// the name shown to the LLM stays resolvable regardless of which key is
-	// asking. Weak models frequently fail to reproduce compound
-	// "server__tool" names correctly (emitting a malformed or empty function
-	// name) — prefixing only when genuinely ambiguous keeps most tool names
-	// short and reliable to call.
-	nameServers := make(map[string]map[string]struct{}, len(allTools))
+	out := buildAuthorizedOpenAITools(allTools, authSet)
+
+	if len(out) > 0 && MCPToolsInjected != nil {
+		MCPToolsInjected.Add(context.Background(), int64(len(out)))
+	}
+
+	return out
+}
+
+// buildAuthorizedOpenAITools converts each tool in allTools whose bare name
+// is in authSet to model.Tool.
+//
+// Only namespace a tool name with its server ID when the bare name
+// collides across 2+ distinct servers — matches Registry.ResolveTool's
+// own conflict detection (registry.go) and Gateway.handleToolsList's
+// native MCP tools/list behavior (gateway.go). Collisions are computed
+// over every registered tool (not just this key's authorized subset) so
+// the name shown to the LLM stays resolvable regardless of which key is
+// asking. Weak models frequently fail to reproduce compound
+// "server__tool" names correctly (emitting a malformed or empty function
+// name) — prefixing only when genuinely ambiguous keeps most tool names
+// short and reliable to call.
+func buildAuthorizedOpenAITools(allTools []ToolInfo, authSet map[string]bool) []model.Tool {
+	nameServers := toolNameServerSets(allTools)
+
+	out := make([]model.Tool, 0, len(allTools))
 	for _, ti := range allTools {
-		if nameServers[ti.Tool.Name] == nil {
-			nameServers[ti.Tool.Name] = make(map[string]struct{})
+		if !authSet[ti.Tool.Name] {
+			continue
 		}
-		nameServers[ti.Tool.Name][ti.ServerID] = struct{}{}
-	}
-
-	out := make([]model.Tool, 0, len(authorized))
-	for _, ti := range allTools {
-		if authSet[ti.Tool.Name] {
-			t := convertTool(ti.Tool)
-			if len(nameServers[ti.Tool.Name]) > 1 {
-				t.Function.Name = SanitizeToolName(ti.ServerID, t.Function.Name)
-			}
-			out = append(out, t)
+		t := convertTool(ti.Tool)
+		if len(nameServers[ti.Tool.Name]) > 1 {
+			t.Function.Name = SanitizeToolName(ti.ServerID, t.Function.Name)
 		}
+		out = append(out, t)
 	}
-
-	if len(out) > 0 {
-		if MCPToolsInjected != nil {
-			MCPToolsInjected.Add(context.Background(), int64(len(out)))
-		}
-	}
-
 	return out
 }
 
@@ -99,7 +100,7 @@ func (inj *Injector) resolveKeyPrefix(keyID string) string {
 	if keyID == "" || inj.store == nil || IsSyntheticKeyID(keyID) {
 		return ""
 	}
-	prefix, err := ExtractKeyInfo(keyID, inj.store)
+	prefix, err := ExtractKeyInfo(context.Background(), keyID, inj.store)
 	if err != nil {
 		mcpLog.Debug("failed to resolve key prefix", "key_id", keyID, "error", err)
 		return ""

@@ -144,7 +144,7 @@ func (a *App) startListen(r *chi.Mux) error {
 		if err != nil {
 			return fmt.Errorf("metrics listen %s: %w", cfg.Metrics.ListenAddr, err)
 		}
-		metricsSrv := &http.Server{Handler: mmux}
+		metricsSrv := &http.Server{Handler: mmux, ReadHeaderTimeout: 10 * time.Second}
 		go func() {
 			if err := metricsSrv.Serve(ln); err != nil && err != http.ErrServerClosed {
 				slog.Error("metrics server stopped", "err", err)

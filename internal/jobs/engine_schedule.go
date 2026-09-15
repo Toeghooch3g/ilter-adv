@@ -46,7 +46,7 @@ func (r *JobRunner) Reconcile(ctx context.Context, maxAttempts int) {
 				_ = r.store.UpdateRun(ctx, &run)
 				return
 			}
-			r.runExecution(context.Background(), *job, &run, time.Now())
+			r.runExecution(ctx, *job, &run, time.Now())
 		}(run)
 	}
 }
@@ -113,7 +113,7 @@ func (r *JobRunner) TriggerRun(ctx context.Context, jobID, triggerID string) (st
 		return "", fmt.Errorf("create run: %w", err)
 	}
 
-	execCtx, cancel := context.WithTimeout(context.Background(), timeout)
+	execCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	r.runExecution(execCtx, *job, run, start)
 	return runID, nil

@@ -2,6 +2,7 @@ package cache
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"log/slog"
 	"math"
@@ -43,101 +44,82 @@ type semanticCacheSummaryResponse struct {
 	HourlyData          []cacheHourlyPoint `json:"hourly_data"`
 }
 
-func (h *Handler) HandleSemanticCacheSummary(w http.ResponseWriter, r *http.Request) {
-	db := h.store.DB
-	resp := &semanticCacheSummaryResponse{
-		TopQueries: []topCachedQuery{},
-		HourlyData: []cacheHourlyPoint{},
-	}
-
-	var cacheHits, cacheMisses int
-	var avgHitLatency, avgMissLatency float64
-
-	err := db.QueryRow(`
+// loadCacheHitMissStats queries audit_log for the last 24h's cache
+// hit/miss counts and their average latencies.
+func loadCacheHitMissStats(db *sql.DB) (cacheHits, cacheMisses int, avgHitLatency, avgMissLatency float64) {
+	if err := db.QueryRow(`
 		SELECT COUNT(*) FROM audit_log
 		WHERE cache_hit = 1 AND timestamp >= datetime('now', '-1 day')
-	`).Scan(&cacheHits)
-	if err != nil {
+	`).Scan(&cacheHits); err != nil {
 		slog.Error("Failed to query cache hits", "error", err)
 	}
 
-	err = db.QueryRow(`
+	if err := db.QueryRow(`
 		SELECT COUNT(*) FROM audit_log
 		WHERE cache_hit = 0 AND timestamp >= datetime('now', '-1 day')
-	`).Scan(&cacheMisses)
-	if err != nil {
+	`).Scan(&cacheMisses); err != nil {
 		slog.Error("Failed to query cache misses", "error", err)
 	}
 
-	if err = db.QueryRow(`
+	if err := db.QueryRow(`
 		SELECT COALESCE(AVG(latency_ms), 0) FROM audit_log
 		WHERE cache_hit = 1 AND timestamp >= datetime('now', '-1 day') AND latency_ms > 0
 	`).Scan(&avgHitLatency); err != nil {
 		slog.Warn("Failed to query average cache hit latency", "error", err)
 	}
 
-	if err = db.QueryRow(`
+	if err := db.QueryRow(`
 		SELECT COALESCE(AVG(latency_ms), 0) FROM audit_log
 		WHERE cache_hit = 0 AND timestamp >= datetime('now', '-1 day') AND latency_ms > 0
 	`).Scan(&avgMissLatency); err != nil {
 		slog.Warn("Failed to query average cache miss latency", "error", err)
 	}
 
-	var hitRate float64
-	total := cacheHits + cacheMisses
-	if total > 0 {
-		hitRate = math.Round(float64(cacheHits)/float64(total)*1000) / 10
-	}
+	return cacheHits, cacheMisses, avgHitLatency, avgMissLatency
+}
 
-	avgLatencySaved := avgMissLatency - avgHitLatency
-	if avgLatencySaved < 0 {
-		avgLatencySaved = 0
+// resolveCacheSizeEntries counts the semantic-cache keys currently in
+// Redis, or 0 if Redis isn't configured or the lookup fails.
+func (h *Handler) resolveCacheSizeEntries(ctx context.Context) int {
+	if h.cacheClient == nil {
+		return 0
 	}
+	keys, err := h.cacheClient.Keys(ctx, "ilter:cache:*").Result()
+	if err != nil {
+		slog.Warn("Failed to get cache keys from Redis", "error", err)
+		return 0
+	}
+	return len(keys)
+}
 
-	var cacheSizeEntries int
-	var keys []string
-	if h.cacheClient != nil {
-		keys, err = h.cacheClient.Keys(r.Context(), "ilter:cache:*").Result()
-		if err == nil {
-			cacheSizeEntries = len(keys)
-		} else {
-			slog.Warn("Failed to get cache keys from Redis", "error", err)
+// resolveCacheMode determines the semantic cache's effective mode label
+// ("disabled", "enabled", or the live engine's own mode) and, when the
+// feature is on but unusable, an explanatory redisError. redisConnected
+// gates whether the feature can actually run — without Redis the semantic
+// cache cannot function even if the flag is on.
+func (h *Handler) resolveCacheMode(redisConnected bool) (cacheMode, redisError string) {
+	if h.configCache == nil || !middleware.IsEnabled(h.configCache, "semantic_cache") {
+		return "disabled", ""
+	}
+	if !redisConnected {
+		if h.cfg != nil && h.cfg.Cache.RedisURL == "" {
+			return "disabled", "Redis not available. Set ILTER_REDIS_URL and restart."
+		}
+		return "disabled", "Redis connection failed. Semantic cache cannot be enabled."
+	}
+	// Read the real cache engine mode (semantic/exact) from the live
+	// middleware to show the user what kind of caching is active.
+	if h.semanticCacheMw != nil {
+		if engMode := h.semanticCacheMw.Mode(); engMode != "disabled" {
+			return engMode, ""
 		}
 	}
+	return "enabled", ""
+}
 
-	cacheSizeMB := math.Round(float64(cacheSizeEntries)*15.0/1024.0*100) / 100
-
-	redisConnected := h.cacheClient != nil
-
-	// Compute mode: "enabled" only when the feature flag is on AND Redis is
-	// available. Without Redis the semantic cache cannot function.
-	redisError := ""
-	cacheMode := "disabled"
-	if h.configCache != nil {
-		if middleware.IsEnabled(h.configCache, "semantic_cache") {
-			if redisConnected {
-				// Read the real cache engine mode (semantic/exact) from the
-				// live middleware to show the user what kind of caching is active.
-				if h.semanticCacheMw != nil {
-					engMode := h.semanticCacheMw.Mode()
-					if engMode != "disabled" {
-						cacheMode = engMode
-					} else {
-						cacheMode = "enabled"
-					}
-				} else {
-					cacheMode = "enabled"
-				}
-			} else {
-				if h.cfg != nil && h.cfg.Cache.RedisURL == "" {
-					redisError = "Redis not available. Set ILTER_REDIS_URL and restart."
-				} else {
-					redisError = "Redis connection failed. Semantic cache cannot be enabled."
-				}
-			}
-		}
-	}
-
+// loadTopCachedQueries returns the 10 most cache-hit prompts in the last
+// 24h, or an empty slice on query error.
+func loadTopCachedQueries(db *sql.DB) []topCachedQuery {
 	topRows, err := db.Query(`
 		SELECT
 			COALESCE(a.prompt_preview, '') as query_preview,
@@ -153,22 +135,28 @@ func (h *Handler) HandleSemanticCacheSummary(w http.ResponseWriter, r *http.Requ
 		ORDER BY hit_count DESC
 		LIMIT 10
 		`)
-	if err == nil {
-		defer topRows.Close()
-		topQueries := make([]topCachedQuery, 0, 10)
-		for topRows.Next() {
-			var q topCachedQuery
-			if err = topRows.Scan(&q.QueryPreview, &q.Model, &q.HitCount, &q.LastAccessed, &q.AvgLatency); err == nil {
-				q.AvgLatency = math.Round(q.AvgLatency*100) / 100
-				topQueries = append(topQueries, q)
-			}
-		}
-		if err := topRows.Err(); err != nil {
-			slog.Warn("error iterating top cached queries", "error", err)
-		}
-		resp.TopQueries = topQueries
+	if err != nil {
+		return []topCachedQuery{}
 	}
+	defer func() { _ = topRows.Close() }()
 
+	topQueries := make([]topCachedQuery, 0, 10)
+	for topRows.Next() {
+		var q topCachedQuery
+		if err := topRows.Scan(&q.QueryPreview, &q.Model, &q.HitCount, &q.LastAccessed, &q.AvgLatency); err == nil {
+			q.AvgLatency = math.Round(q.AvgLatency*100) / 100
+			topQueries = append(topQueries, q)
+		}
+	}
+	if err := topRows.Err(); err != nil {
+		slog.Warn("error iterating top cached queries", "error", err)
+	}
+	return topQueries
+}
+
+// loadCacheHourlyData returns hourly cache hit/miss counts for the last
+// 24h, or an empty slice on query error.
+func loadCacheHourlyData(db *sql.DB) []cacheHourlyPoint {
 	hourRows, err := db.Query(`
 		SELECT
 			strftime('%Y-%m-%dT%H:00', timestamp) as bucket,
@@ -179,20 +167,70 @@ func (h *Handler) HandleSemanticCacheSummary(w http.ResponseWriter, r *http.Requ
 		GROUP BY bucket
 		ORDER BY bucket ASC
 		`)
-	if err == nil {
-		defer hourRows.Close()
-		hourly := make([]cacheHourlyPoint, 0, 24)
-		for hourRows.Next() {
-			var p cacheHourlyPoint
-			if err := hourRows.Scan(&p.Time, &p.Hits, &p.Misses); err == nil {
-				hourly = append(hourly, p)
-			}
-		}
-		if err := hourRows.Err(); err != nil {
-			slog.Warn("error iterating hourly cache data", "error", err)
-		}
-		resp.HourlyData = hourly
+	if err != nil {
+		return []cacheHourlyPoint{}
 	}
+	defer func() { _ = hourRows.Close() }()
+
+	hourly := make([]cacheHourlyPoint, 0, 24)
+	for hourRows.Next() {
+		var p cacheHourlyPoint
+		if err := hourRows.Scan(&p.Time, &p.Hits, &p.Misses); err == nil {
+			hourly = append(hourly, p)
+		}
+	}
+	if err := hourRows.Err(); err != nil {
+		slog.Warn("error iterating hourly cache data", "error", err)
+	}
+	return hourly
+}
+
+// resolveSimilarityThreshold returns the semantic cache's effective
+// similarity threshold, mirroring the zero-value fallback
+// semanticcache.Cache actually applies at match time
+// (features/semanticcache/cache.go) — config plumbing doesn't carry the
+// real default through, so this shows the value that's truly in effect.
+func (h *Handler) resolveSimilarityThreshold() float64 {
+	threshold := h.cfg.Cache.SimilarityThreshold
+	if h.configCache != nil {
+		if snap := h.configCache.Get(); snap != nil {
+			threshold = snap.CacheSimilarityThreshold
+		}
+	}
+	if threshold <= 0 {
+		threshold = 0.70
+	}
+	return threshold
+}
+
+func (h *Handler) HandleSemanticCacheSummary(w http.ResponseWriter, r *http.Request) {
+	db := h.store.DB
+	resp := &semanticCacheSummaryResponse{
+		TopQueries: []topCachedQuery{},
+		HourlyData: []cacheHourlyPoint{},
+	}
+
+	cacheHits, cacheMisses, avgHitLatency, avgMissLatency := loadCacheHitMissStats(db)
+
+	var hitRate float64
+	total := cacheHits + cacheMisses
+	if total > 0 {
+		hitRate = math.Round(float64(cacheHits)/float64(total)*1000) / 10
+	}
+
+	avgLatencySaved := avgMissLatency - avgHitLatency
+	if avgLatencySaved < 0 {
+		avgLatencySaved = 0
+	}
+
+	cacheSizeEntries := h.resolveCacheSizeEntries(r.Context())
+	cacheSizeMB := math.Round(float64(cacheSizeEntries)*15.0/1024.0*100) / 100
+
+	redisConnected := h.cacheClient != nil
+	cacheMode, redisError := h.resolveCacheMode(redisConnected)
+
+	resp.TopQueries = loadTopCachedQueries(db)
+	resp.HourlyData = loadCacheHourlyData(db)
 
 	resp.CacheHits24h = cacheHits
 	resp.CacheMisses24h = cacheMisses
@@ -204,18 +242,7 @@ func (h *Handler) HandleSemanticCacheSummary(w http.ResponseWriter, r *http.Requ
 	resp.RedisError = redisError
 	resp.Mode = cacheMode
 
-	resp.SimilarityThreshold = h.cfg.Cache.SimilarityThreshold
-	if h.configCache != nil {
-		if snap := h.configCache.Get(); snap != nil {
-			resp.SimilarityThreshold = snap.CacheSimilarityThreshold
-		}
-	}
-	// Mirror the zero-value fallback semanticcache.Cache actually applies at
-	// match time (features/semanticcache/cache.go) — config plumbing doesn't
-	// carry the real default through, so show the value that's truly in effect.
-	if resp.SimilarityThreshold <= 0 {
-		resp.SimilarityThreshold = 0.70
-	}
+	resp.SimilarityThreshold = h.resolveSimilarityThreshold()
 	resp.TTLSeconds = int(h.cfg.Cache.TTL.Seconds())
 
 	model.WriteJSON(w, http.StatusOK, resp)
@@ -268,7 +295,7 @@ func (h *Handler) HandleCacheModeToggle(w http.ResponseWriter, r *http.Request) 
 
 	if h.configCache != nil {
 		stores := &config.RuntimeStores{RuntimeConfig: h.store}
-		if err := h.configCache.Refresh(context.Background(), stores); err != nil {
+		if err := h.configCache.Refresh(r.Context(), stores); err != nil {
 			slog.Warn("config cache refresh after cache toggle failed", "error", err)
 		}
 	}

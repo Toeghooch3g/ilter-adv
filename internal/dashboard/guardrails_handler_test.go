@@ -1,6 +1,7 @@
 package dashboard
 
 import (
+	"context"
 	"encoding/csv"
 	"net/http/httptest"
 	"strings"
@@ -16,7 +17,7 @@ import (
 func TestHandleGuardrailExport_CSVEscaping(t *testing.T) {
 	store := dbtest.New(t)
 
-	if err := store.InsertGuardrailEvent("key-1", "pii", "blocked", "gpt-4o", "openai",
+	if err := store.InsertGuardrailEvent(context.Background(), "key-1", "pii", "blocked", "gpt-4o", "openai",
 		`matched "SSN", also comma, and a
 newline`); err != nil {
 		t.Fatalf("InsertGuardrailEvent: %v", err)

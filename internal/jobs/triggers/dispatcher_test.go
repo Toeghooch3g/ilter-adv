@@ -42,7 +42,7 @@ func setupDispatcherTestDB(t *testing.T) (*Store, func()) {
 		)
 	`)
 	if err != nil {
-		db.Close()
+		_ = db.Close()
 		t.Fatalf("create job_activations table: %v", err)
 	}
 
@@ -55,13 +55,13 @@ func setupDispatcherTestDB(t *testing.T) (*Store, func()) {
 		)
 	`)
 	if err != nil {
-		db.Close()
+		_ = db.Close()
 		t.Fatalf("create jobs table: %v", err)
 	}
 
 	store := NewStore(db)
 	return store, func() {
-		db.Close()
+		_ = db.Close()
 	}
 }
 

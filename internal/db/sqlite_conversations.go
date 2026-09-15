@@ -25,8 +25,8 @@ type ConversationSummary struct {
 }
 
 // ListConversations returns all conversations ordered by most recently updated.
-func (s *SQLiteStore) ListConversations() ([]ConversationSummary, error) {
-	rows, err := s.queries.ListConversations(context.Background())
+func (s *SQLiteStore) ListConversations(ctx context.Context) ([]ConversationSummary, error) {
+	rows, err := s.queries.ListConversations(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -47,13 +47,13 @@ func (s *SQLiteStore) ListConversations() ([]ConversationSummary, error) {
 }
 
 // CreateConversation inserts a new conversation with the given id and title.
-func (s *SQLiteStore) CreateConversation(id, title string) error {
-	return s.queries.CreateConversation(context.Background(), sqlc.CreateConversationParams{ID: id, Title: title})
+func (s *SQLiteStore) CreateConversation(ctx context.Context, id, title string) error {
+	return s.queries.CreateConversation(ctx, sqlc.CreateConversationParams{ID: id, Title: title})
 }
 
 // GetConversation returns a single conversation by id.
-func (s *SQLiteStore) GetConversation(id string) (*ConversationRow, error) {
-	r, err := s.queries.GetConversation(context.Background(), id)
+func (s *SQLiteStore) GetConversation(ctx context.Context, id string) (*ConversationRow, error) {
+	r, err := s.queries.GetConversation(ctx, id)
 	if err != nil {
 		return nil, err
 	}
@@ -66,8 +66,8 @@ func (s *SQLiteStore) GetConversation(id string) (*ConversationRow, error) {
 }
 
 // ConversationExists reports whether a conversation with the given id exists.
-func (s *SQLiteStore) ConversationExists(id string) (bool, error) {
-	n, err := s.queries.ConversationExists(context.Background(), id)
+func (s *SQLiteStore) ConversationExists(ctx context.Context, id string) (bool, error) {
+	n, err := s.queries.ConversationExists(ctx, id)
 	if err != nil {
 		return false, err
 	}
@@ -76,8 +76,8 @@ func (s *SQLiteStore) ConversationExists(id string) (bool, error) {
 
 // UpdateConversationTitle sets a conversation's title and bumps updated_at.
 // Returns false if no conversation matched id.
-func (s *SQLiteStore) UpdateConversationTitle(id, title string) (bool, error) {
-	n, err := s.queries.UpdateConversationTitle(context.Background(), sqlc.UpdateConversationTitleParams{Title: title, ID: id})
+func (s *SQLiteStore) UpdateConversationTitle(ctx context.Context, id, title string) (bool, error) {
+	n, err := s.queries.UpdateConversationTitle(ctx, sqlc.UpdateConversationTitleParams{Title: title, ID: id})
 	if err != nil {
 		return false, err
 	}
@@ -86,19 +86,19 @@ func (s *SQLiteStore) UpdateConversationTitle(id, title string) (bool, error) {
 
 // SetConversationTitle sets a conversation's title without bumping updated_at
 // (used by the auto-title-from-first-message heuristic).
-func (s *SQLiteStore) SetConversationTitle(id, title string) error {
-	return s.queries.SetConversationTitle(context.Background(), sqlc.SetConversationTitleParams{Title: title, ID: id})
+func (s *SQLiteStore) SetConversationTitle(ctx context.Context, id, title string) error {
+	return s.queries.SetConversationTitle(ctx, sqlc.SetConversationTitleParams{Title: title, ID: id})
 }
 
 // TouchConversation bumps a conversation's updated_at to now.
-func (s *SQLiteStore) TouchConversation(id string) error {
-	return s.queries.TouchConversation(context.Background(), id)
+func (s *SQLiteStore) TouchConversation(ctx context.Context, id string) error {
+	return s.queries.TouchConversation(ctx, id)
 }
 
 // DeleteConversation removes a conversation and its messages (CASCADE).
 // Returns false if no conversation matched id.
-func (s *SQLiteStore) DeleteConversation(id string) (bool, error) {
-	n, err := s.queries.DeleteConversation(context.Background(), id)
+func (s *SQLiteStore) DeleteConversation(ctx context.Context, id string) (bool, error) {
+	n, err := s.queries.DeleteConversation(ctx, id)
 	if err != nil {
 		return false, err
 	}
@@ -139,8 +139,8 @@ func messageRowFromSQLC(m sqlc.Message) MessageRow {
 }
 
 // ListMessagesByConversation returns every message for a conversation, oldest first.
-func (s *SQLiteStore) ListMessagesByConversation(conversationID string) ([]MessageRow, error) {
-	rows, err := s.queries.ListMessagesByConversation(context.Background(), conversationID)
+func (s *SQLiteStore) ListMessagesByConversation(ctx context.Context, conversationID string) ([]MessageRow, error) {
+	rows, err := s.queries.ListMessagesByConversation(ctx, conversationID)
 	if err != nil {
 		return nil, err
 	}
@@ -166,8 +166,8 @@ type NewMessageParams struct {
 }
 
 // InsertMessage inserts a new message and returns its assigned id.
-func (s *SQLiteStore) InsertMessage(p NewMessageParams) (int, error) {
-	id, err := s.queries.InsertMessage(context.Background(), sqlc.InsertMessageParams{
+func (s *SQLiteStore) InsertMessage(ctx context.Context, p NewMessageParams) (int, error) {
+	id, err := s.queries.InsertMessage(ctx, sqlc.InsertMessageParams{
 		ConversationID:   p.ConversationID,
 		Role:             p.Role,
 		Content:          p.Content,
@@ -187,8 +187,8 @@ func (s *SQLiteStore) InsertMessage(p NewMessageParams) (int, error) {
 
 // GetMessageCreatedAt returns the created_at timestamp for a message, in the
 // same raw layout as other timestamp fields in this package.
-func (s *SQLiteStore) GetMessageCreatedAt(id int) (string, error) {
-	t, err := s.queries.GetMessageCreatedAt(context.Background(), int64(id))
+func (s *SQLiteStore) GetMessageCreatedAt(ctx context.Context, id int) (string, error) {
+	t, err := s.queries.GetMessageCreatedAt(ctx, int64(id))
 	if err != nil {
 		return "", err
 	}
@@ -197,8 +197,8 @@ func (s *SQLiteStore) GetMessageCreatedAt(id int) (string, error) {
 
 // ListMessagesPaginated returns up to limit messages for a conversation,
 // newest first, optionally starting before beforeID (nil for the first page).
-func (s *SQLiteStore) ListMessagesPaginated(conversationID string, beforeID *int, limit int) ([]MessageRow, error) {
-	rows, err := s.queries.ListMessagesPaginated(context.Background(), sqlc.ListMessagesPaginatedParams{
+func (s *SQLiteStore) ListMessagesPaginated(ctx context.Context, conversationID string, beforeID *int, limit int) ([]MessageRow, error) {
+	rows, err := s.queries.ListMessagesPaginated(ctx, sqlc.ListMessagesPaginatedParams{
 		ConversationID: conversationID,
 		BeforeID:       intToInt64Ptr(beforeID),
 		Limit:          int64(limit),

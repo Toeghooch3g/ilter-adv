@@ -19,8 +19,8 @@ type GuardrailRuleSummary struct {
 }
 
 // ListGuardrailRules returns all guardrail rules ordered by name, for admin display.
-func (s *SQLiteStore) ListGuardrailRules() ([]GuardrailRuleSummary, error) {
-	rows, err := s.queries.ListGuardrailRules(context.Background())
+func (s *SQLiteStore) ListGuardrailRules(ctx context.Context) ([]GuardrailRuleSummary, error) {
+	rows, err := s.queries.ListGuardrailRules(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -52,8 +52,8 @@ type GuardrailDBRule struct {
 }
 
 // GetEnabledGuardrailRules returns all enabled guardrail rules for loading into the checker.
-func (s *SQLiteStore) GetEnabledGuardrailRules() ([]GuardrailDBRule, error) {
-	rows, err := s.queries.GetEnabledGuardrailRules(context.Background())
+func (s *SQLiteStore) GetEnabledGuardrailRules(ctx context.Context) ([]GuardrailDBRule, error) {
+	rows, err := s.queries.GetEnabledGuardrailRules(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -73,8 +73,8 @@ func (s *SQLiteStore) GetEnabledGuardrailRules() ([]GuardrailDBRule, error) {
 }
 
 // ToggleGuardrailRule sets enabled for a rule. Returns false if no rule matched id.
-func (s *SQLiteStore) ToggleGuardrailRule(id string, enabled bool) (bool, error) {
-	n, err := s.queries.ToggleGuardrailRule(context.Background(), sqlc.ToggleGuardrailRuleParams{
+func (s *SQLiteStore) ToggleGuardrailRule(ctx context.Context, id string, enabled bool) (bool, error) {
+	n, err := s.queries.ToggleGuardrailRule(ctx, sqlc.ToggleGuardrailRuleParams{
 		Enabled: boolToInt64(enabled),
 		ID:      id,
 	})
@@ -98,8 +98,8 @@ type CreateGuardrailRuleParams struct {
 }
 
 // CreateGuardrailRule inserts a new guardrail rule. Returns an error if id already exists.
-func (s *SQLiteStore) CreateGuardrailRule(p CreateGuardrailRuleParams) error {
-	return s.queries.CreateGuardrailRule(context.Background(), sqlc.CreateGuardrailRuleParams{
+func (s *SQLiteStore) CreateGuardrailRule(ctx context.Context, p CreateGuardrailRuleParams) error {
+	return s.queries.CreateGuardrailRule(ctx, sqlc.CreateGuardrailRuleParams{
 		ID:          p.ID,
 		Name:        p.Name,
 		Description: new(p.Description),
@@ -130,13 +130,13 @@ type UpdateGuardrailRuleParams struct {
 }
 
 // UpdateGuardrailRule applies a partial update. Returns false if no rule matched id.
-func (s *SQLiteStore) UpdateGuardrailRule(p UpdateGuardrailRuleParams) (bool, error) {
+func (s *SQLiteStore) UpdateGuardrailRule(ctx context.Context, p UpdateGuardrailRuleParams) (bool, error) {
 	var enabled *int64
 	if p.Enabled != nil {
 		v := boolToInt64(*p.Enabled)
 		enabled = &v
 	}
-	n, err := s.queries.UpdateGuardrailRule(context.Background(), sqlc.UpdateGuardrailRuleParams{
+	n, err := s.queries.UpdateGuardrailRule(ctx, sqlc.UpdateGuardrailRuleParams{
 		Name:        p.Name,
 		Type:        p.Type,
 		Description: p.Description,
@@ -155,8 +155,8 @@ func (s *SQLiteStore) UpdateGuardrailRule(p UpdateGuardrailRuleParams) (bool, er
 }
 
 // DeleteGuardrailRule removes a guardrail rule. Returns false if no rule matched id.
-func (s *SQLiteStore) DeleteGuardrailRule(id string) (bool, error) {
-	n, err := s.queries.DeleteGuardrailRule(context.Background(), id)
+func (s *SQLiteStore) DeleteGuardrailRule(ctx context.Context, id string) (bool, error) {
+	n, err := s.queries.DeleteGuardrailRule(ctx, id)
 	if err != nil {
 		return false, err
 	}
@@ -164,8 +164,8 @@ func (s *SQLiteStore) DeleteGuardrailRule(id string) (bool, error) {
 }
 
 // InsertGuardrailEvent records a guardrail decision (block/warn) for the violation log.
-func (s *SQLiteStore) InsertGuardrailEvent(keyID, guardrailType, actionTaken, modelName, provider, details string) error {
-	return s.queries.InsertGuardrailEvent(context.Background(), sqlc.InsertGuardrailEventParams{
+func (s *SQLiteStore) InsertGuardrailEvent(ctx context.Context, keyID, guardrailType, actionTaken, modelName, provider, details string) error {
+	return s.queries.InsertGuardrailEvent(ctx, sqlc.InsertGuardrailEventParams{
 		KeyID:         new(keyID),
 		GuardrailType: guardrailType,
 		ActionTaken:   actionTaken,
@@ -176,6 +176,6 @@ func (s *SQLiteStore) InsertGuardrailEvent(keyID, guardrailType, actionTaken, mo
 }
 
 // GetProviderForModel returns the provider that owns modelName, per provider_models.
-func (s *SQLiteStore) GetProviderForModel(modelName string) (string, error) {
-	return s.queries.GetProviderForModel(context.Background(), modelName)
+func (s *SQLiteStore) GetProviderForModel(ctx context.Context, modelName string) (string, error) {
+	return s.queries.GetProviderForModel(ctx, modelName)
 }

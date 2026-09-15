@@ -107,7 +107,7 @@ func (h *Handler) resolveRequestedModel(w http.ResponseWriter, r *http.Request, 
 	} else if req.Model != "" {
 		// 2. Use explicit model from request body
 		selectedModel = req.Model
-		complexityScore = smartrouter.ScoreComplexity(req.Messages)
+		complexityScore = smartrouter.ScoreComplexity(r.Context(), req.Messages)
 		if meta != nil {
 			meta.SetComplexityScore(complexityScore)
 		}
@@ -128,7 +128,7 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	meta := reqmeta.GetRequestMetadata(r.Context())
 
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 	var req model.ChatCompletionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.recordErrorAudit(r, nil, "", http.StatusBadRequest, err, start, nil)
@@ -178,93 +178,15 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	var resp *http.Response
 	var p provider.Provider
 	var finalCandidate cooldown.Candidate
+	var dispatched bool
 
 	if h.fallbackExecutor != nil {
-		res, execErr := h.fallbackExecutor.Execute(ctx, candidates, func(c context.Context, cand cooldown.Candidate, pvd provider.Provider) (int, http.Header, error) {
-			callCtx := c
-			if cand.APIKey != "" {
-				callCtx = provider.WithSelectedAPIKey(c, cand.APIKey)
-			}
-			// ModelDowngrade: cand.Model may differ from req.Model when falling
-			// back to an alternative model. Use cand.Model so the upstream
-			// receives the actual model the candidate serves.
-			req.Model = cand.Model
-			providerReq, errTransform := pvd.TransformRequest(callCtx, &req)
-			if errTransform != nil {
-				return http.StatusBadRequest, nil, errTransform
-			}
-			httpResp, errDo := pvd.Client().Do(providerReq)
-			if errDo != nil {
-				return 0, nil, errDo
-			}
-			if httpResp.StatusCode >= 400 {
-				headers := httpResp.Header
-				bodyBytes, _ := io.ReadAll(httpResp.Body)
-				httpResp.Body.Close()
-				cleanMsg := sanitizeProviderErrorMessage(string(bodyBytes))
-				return httpResp.StatusCode, headers, fmt.Errorf("provider %s status %d: %s", pvd.Name(), httpResp.StatusCode, cleanMsg)
-			}
-			resp = httpResp
-			p = pvd
-			finalCandidate = cand
-			return httpResp.StatusCode, httpResp.Header, nil
-		})
-		if execErr != nil {
-			statusCode := http.StatusServiceUnavailable
-			if res != nil && res.StatusCode > 0 {
-				statusCode = res.StatusCode
-			}
-			errType := model.ErrTypeAllProvidersFail
-			if statusCode == http.StatusTooManyRequests {
-				errType = model.ErrTypeInsufficientQuota
-			}
-			cleanMsg := sanitizeProviderErrorMessage(execErr.Error())
-			slog.Error("all providers failed", "model", req.Model, "error", execErr)
-			h.recordErrorAudit(r, nil, req.Model, statusCode, execErr, start, req.Messages)
-			model.WriteJSONError(w, statusCode, errType, cleanMsg)
-			return
-		}
+		resp, p, finalCandidate, dispatched = h.dispatchWithFallback(ctx, w, r, &req, candidates, start)
 	} else {
-		if len(candidates) == 0 {
-			h.recordErrorAudit(r, nil, req.Model, http.StatusNotFound, fmt.Errorf("no candidates available"), start, req.Messages)
-			model.WriteJSONError(w, http.StatusNotFound, model.ErrTypeModelNotFound, "no candidates available")
-			return
-		}
-		firstCand := candidates[0]
-		pvd, errGet := h.lb.GetProvider(firstCand.Provider)
-		if errGet != nil {
-			h.recordErrorAudit(r, nil, req.Model, http.StatusNotFound, errGet, start, req.Messages)
-			model.WriteJSONError(w, http.StatusNotFound, model.ErrTypeModelNotFound, errGet.Error())
-			return
-		}
-		providerReq, errTransform := pvd.TransformRequest(ctx, &req)
-		if errTransform != nil {
-			h.recordErrorAudit(r, nil, req.Model, http.StatusBadRequest, errTransform, start, req.Messages)
-			model.WriteJSONError(w, http.StatusBadRequest, model.ErrTypeInvalidRequest, errTransform.Error())
-			return
-		}
-		httpResp, errDo := pvd.Client().Do(providerReq)
-		if errDo != nil {
-			h.recordErrorAudit(r, nil, req.Model, http.StatusBadGateway, errDo, start, req.Messages)
-			model.WriteJSONError(w, http.StatusBadGateway, model.ErrTypeAllProvidersFail, errDo.Error())
-			return
-		}
-		if httpResp.StatusCode >= 400 {
-			bodyBytes, _ := io.ReadAll(httpResp.Body)
-			httpResp.Body.Close()
-			cleanMsg := sanitizeProviderErrorMessage(string(bodyBytes))
-			statusCode := httpResp.StatusCode
-			errType := model.ErrTypeProviderError
-			if statusCode == http.StatusTooManyRequests {
-				errType = model.ErrTypeInsufficientQuota
-			}
-			h.recordErrorAudit(r, nil, req.Model, statusCode, fmt.Errorf("%s", cleanMsg), start, req.Messages)
-			model.WriteJSONError(w, statusCode, errType, cleanMsg)
-			return
-		}
-		resp = httpResp
-		p = pvd
-		finalCandidate = firstCand
+		resp, p, finalCandidate, dispatched = h.dispatchSingleCandidate(ctx, w, r, &req, candidates, start)
+	}
+	if !dispatched {
+		return
 	}
 
 	finalRoute := smartrouter.Route{
@@ -279,16 +201,122 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	defer resp.Body.Close()
+	h.writeNonStreamingResponse(ctx, w, r, resp, &finalRoute, &req, start)
+}
 
-	chatResp, err := p.TransformResponse(ctx, resp)
+// dispatchWithFallback runs req through h.fallbackExecutor across
+// candidates, writing an error response (and recording an error audit
+// entry) if every candidate fails. Returns ok=false when it already wrote
+// the failure response and the caller should return immediately.
+func (h *Handler) dispatchWithFallback(ctx context.Context, w http.ResponseWriter, r *http.Request, req *model.ChatCompletionRequest, candidates []cooldown.Candidate, start time.Time) (resp *http.Response, p provider.Provider, finalCandidate cooldown.Candidate, ok bool) {
+	res, execErr := h.fallbackExecutor.Execute(ctx, candidates, func(c context.Context, cand cooldown.Candidate, pvd provider.Provider) (int, http.Header, error) {
+		callCtx := c
+		if cand.APIKey != "" {
+			callCtx = provider.WithSelectedAPIKey(c, cand.APIKey)
+		}
+		// ModelDowngrade: cand.Model may differ from req.Model when falling
+		// back to an alternative model. Use cand.Model so the upstream
+		// receives the actual model the candidate serves.
+		req.Model = cand.Model
+		providerReq, errTransform := pvd.TransformRequest(callCtx, req)
+		if errTransform != nil {
+			return http.StatusBadRequest, nil, errTransform
+		}
+		httpResp, errDo := pvd.Client().Do(providerReq)
+		if errDo != nil {
+			return 0, nil, errDo
+		}
+		if httpResp.StatusCode >= 400 {
+			headers := httpResp.Header
+			bodyBytes, _ := io.ReadAll(httpResp.Body)
+			_ = httpResp.Body.Close()
+			cleanMsg := sanitizeProviderErrorMessage(string(bodyBytes))
+			return httpResp.StatusCode, headers, fmt.Errorf("provider %s status %d: %s", pvd.Name(), httpResp.StatusCode, cleanMsg)
+		}
+		resp = httpResp
+		p = pvd
+		finalCandidate = cand
+		return httpResp.StatusCode, httpResp.Header, nil
+	})
+	if execErr == nil {
+		return resp, p, finalCandidate, true
+	}
+
+	statusCode := http.StatusServiceUnavailable
+	if res != nil && res.StatusCode > 0 {
+		statusCode = res.StatusCode
+	}
+	errType := model.ErrTypeAllProvidersFail
+	if statusCode == http.StatusTooManyRequests {
+		errType = model.ErrTypeInsufficientQuota
+	}
+	cleanMsg := sanitizeProviderErrorMessage(execErr.Error())
+	slog.Error("all providers failed", "model", req.Model, "error", execErr)
+	h.recordErrorAudit(r, nil, req.Model, statusCode, execErr, start, req.Messages)
+	model.WriteJSONError(w, statusCode, errType, cleanMsg)
+	return nil, nil, cooldown.Candidate{}, false
+}
+
+// dispatchSingleCandidate sends req to the first available candidate (used
+// when no fallback executor is configured), writing an error response (and
+// recording an error audit entry) on any failure. Returns ok=false when it
+// already wrote the failure response and the caller should return
+// immediately.
+func (h *Handler) dispatchSingleCandidate(ctx context.Context, w http.ResponseWriter, r *http.Request, req *model.ChatCompletionRequest, candidates []cooldown.Candidate, start time.Time) (resp *http.Response, p provider.Provider, finalCandidate cooldown.Candidate, ok bool) {
+	if len(candidates) == 0 {
+		h.recordErrorAudit(r, nil, req.Model, http.StatusNotFound, fmt.Errorf("no candidates available"), start, req.Messages)
+		model.WriteJSONError(w, http.StatusNotFound, model.ErrTypeModelNotFound, "no candidates available")
+		return nil, nil, cooldown.Candidate{}, false
+	}
+	firstCand := candidates[0]
+	pvd, errGet := h.lb.GetProvider(firstCand.Provider)
+	if errGet != nil {
+		h.recordErrorAudit(r, nil, req.Model, http.StatusNotFound, errGet, start, req.Messages)
+		model.WriteJSONError(w, http.StatusNotFound, model.ErrTypeModelNotFound, errGet.Error())
+		return nil, nil, cooldown.Candidate{}, false
+	}
+	providerReq, errTransform := pvd.TransformRequest(ctx, req)
+	if errTransform != nil {
+		h.recordErrorAudit(r, nil, req.Model, http.StatusBadRequest, errTransform, start, req.Messages)
+		model.WriteJSONError(w, http.StatusBadRequest, model.ErrTypeInvalidRequest, errTransform.Error())
+		return nil, nil, cooldown.Candidate{}, false
+	}
+	httpResp, errDo := pvd.Client().Do(providerReq)
+	if errDo != nil {
+		h.recordErrorAudit(r, nil, req.Model, http.StatusBadGateway, errDo, start, req.Messages)
+		model.WriteJSONError(w, http.StatusBadGateway, model.ErrTypeAllProvidersFail, errDo.Error())
+		return nil, nil, cooldown.Candidate{}, false
+	}
+	if httpResp.StatusCode >= 400 {
+		bodyBytes, _ := io.ReadAll(httpResp.Body)
+		_ = httpResp.Body.Close()
+		cleanMsg := sanitizeProviderErrorMessage(string(bodyBytes))
+		statusCode := httpResp.StatusCode
+		errType := model.ErrTypeProviderError
+		if statusCode == http.StatusTooManyRequests {
+			errType = model.ErrTypeInsufficientQuota
+		}
+		h.recordErrorAudit(r, nil, req.Model, statusCode, fmt.Errorf("%s", cleanMsg), start, req.Messages)
+		model.WriteJSONError(w, statusCode, errType, cleanMsg)
+		return nil, nil, cooldown.Candidate{}, false
+	}
+	return httpResp, pvd, firstCand, true
+}
+
+// writeNonStreamingResponse transforms the provider's raw HTTP response
+// into a chat-completion response, writes it (plus cost/usage headers) to
+// w, and records the audit trail. Used when req.Stream is false.
+func (h *Handler) writeNonStreamingResponse(ctx context.Context, w http.ResponseWriter, r *http.Request, resp *http.Response, finalRoute *smartrouter.Route, req *model.ChatCompletionRequest, start time.Time) {
+	defer func() { _ = resp.Body.Close() }()
+
+	chatResp, err := finalRoute.Provider.TransformResponse(ctx, resp)
 	if err != nil {
 		statusCode := providerErrorStatus(err)
 		errType := model.ErrTypeProviderError
 		if statusCode == http.StatusTooManyRequests {
 			errType = model.ErrTypeInsufficientQuota
 		}
-		h.recordErrorAudit(r, &finalRoute, req.Model, statusCode, err, start, req.Messages)
+		h.recordErrorAudit(r, finalRoute, req.Model, statusCode, err, start, req.Messages)
 		model.WriteJSONError(w, statusCode, errType, fmt.Sprintf("failed to parse provider response: %v", err))
 		return
 	}
@@ -314,8 +342,65 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		slog.Debug("encode response error", "error", err)
 	}
 
-	h.recordAudit(r, &finalRoute, req.Model, chatResp, http.StatusOK, start, false, req.Messages)
-	h.recordPostResponse(r, chatResp, &finalRoute, start)
+	h.recordAudit(r, finalRoute, req.Model, chatResp, http.StatusOK, start, false, req.Messages)
+	h.recordPostResponse(r, chatResp, finalRoute, start)
+}
+
+// buildAuditPromptPreview truncates the last message's text content to
+// 200 chars for the audit log, if prompt logging is enabled.
+func (h *Handler) buildAuditPromptPreview(messages []model.Message) string {
+	if h.cfg == nil || !h.cfg.Audit.LogPrompts || len(messages) == 0 {
+		return ""
+	}
+	lastMsg := messages[len(messages)-1]
+	contentStr, ok := lastMsg.Content.(string)
+	if !ok {
+		return ""
+	}
+	if len(contentStr) > 200 {
+		return contentStr[:200]
+	}
+	return contentStr
+}
+
+// buildAuditRequestBody JSON-encodes messages for the audit log, if body
+// logging is enabled.
+func (h *Handler) buildAuditRequestBody(messages []model.Message) string {
+	if h.cfg == nil || !h.cfg.Audit.LogBodies || len(messages) == 0 {
+		return ""
+	}
+	b, err := json.Marshal(map[string]any{"messages": messages})
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+// buildAuditResponseBody JSON-encodes chatResp for the audit log, if body
+// logging is enabled.
+func (h *Handler) buildAuditResponseBody(chatResp *model.ChatCompletionResponse) string {
+	if h.cfg == nil || !h.cfg.Audit.LogBodies || chatResp == nil {
+		return ""
+	}
+	b, err := json.Marshal(chatResp)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+// requestComplexityScore reads the request-scoped complexity score
+// computed earlier in the pipeline, if any.
+func requestComplexityScore(ctx context.Context) float64 {
+	meta := reqmeta.GetRequestMetadata(ctx)
+	if meta == nil {
+		return 0
+	}
+	var score float64
+	meta.WithLock(func() {
+		score = meta.ComplexityScore
+	})
+	return score
 }
 
 func (h *Handler) recordAudit(
@@ -342,46 +427,9 @@ func (h *Handler) recordAudit(
 	cost := CalculateCost(route.Model, promptTokens, completionTokens)
 	latencyMs := int(time.Since(start) / time.Millisecond)
 
-	keyID := reqmeta.GetKeyID(r.Context())
-
-	var promptPreview string
-	if h.cfg != nil && h.cfg.Audit.LogPrompts && len(messages) > 0 {
-		lastMsg := messages[len(messages)-1]
-		if contentStr, ok := lastMsg.Content.(string); ok {
-			promptPreview = contentStr
-			if len(promptPreview) > 200 {
-				promptPreview = promptPreview[:200]
-			}
-		}
-	}
-
-	var requestBody string
-	if h.cfg != nil && h.cfg.Audit.LogBodies && len(messages) > 0 {
-		reqJSON := map[string]any{
-			"messages": messages,
-		}
-		if b, err := json.Marshal(reqJSON); err == nil {
-			requestBody = string(b)
-		}
-	}
-
-	var responseBody string
-	if h.cfg != nil && h.cfg.Audit.LogBodies && chatResp != nil {
-		if b, err := json.Marshal(chatResp); err == nil {
-			responseBody = string(b)
-		}
-	}
-
-	var complexityScore float64
-	if meta := reqmeta.GetRequestMetadata(r.Context()); meta != nil {
-		meta.WithLock(func() {
-			complexityScore = meta.ComplexityScore
-		})
-	}
-
 	h.auditLogger.LogAsync(middleware.AuditLogEntry{
 		IPAddress:        extractClientIP(r),
-		KeyID:            keyID,
+		KeyID:            reqmeta.GetKeyID(r.Context()),
 		Model:            requestedModel,
 		Provider:         route.Provider.Name(),
 		PromptTokens:     promptTokens,
@@ -390,10 +438,10 @@ func (h *Handler) recordAudit(
 		LatencyMs:        latencyMs,
 		StatusCode:       statusCode,
 		CacheHit:         cacheHit,
-		PromptPreview:    promptPreview,
-		RequestBody:      requestBody,
-		ResponseBody:     responseBody,
-		ComplexityScore:  complexityScore,
+		PromptPreview:    h.buildAuditPromptPreview(messages),
+		RequestBody:      h.buildAuditRequestBody(messages),
+		ResponseBody:     h.buildAuditResponseBody(chatResp),
+		ComplexityScore:  requestComplexityScore(r.Context()),
 	})
 }
 
@@ -412,32 +460,9 @@ func (h *Handler) recordErrorAudit(
 		return
 	}
 
-	keyID := reqmeta.GetKeyID(r.Context())
-
 	var providerName string
 	if route != nil && route.Provider != nil {
 		providerName = route.Provider.Name()
-	}
-
-	var promptPreview string
-	if h.cfg != nil && h.cfg.Audit.LogPrompts && len(messages) > 0 {
-		lastMsg := messages[len(messages)-1]
-		if contentStr, ok := lastMsg.Content.(string); ok {
-			promptPreview = contentStr
-			if len(promptPreview) > 200 {
-				promptPreview = promptPreview[:200]
-			}
-		}
-	}
-
-	var requestBody string
-	if h.cfg != nil && h.cfg.Audit.LogBodies && len(messages) > 0 {
-		reqJSON := map[string]any{
-			"messages": messages,
-		}
-		if b, marshalErr := json.Marshal(reqJSON); marshalErr == nil {
-			requestBody = string(b)
-		}
 	}
 
 	var responseBody string
@@ -445,18 +470,11 @@ func (h *Handler) recordErrorAudit(
 		responseBody = err.Error()
 	}
 
-	var complexityScore float64
-	if meta := reqmeta.GetRequestMetadata(r.Context()); meta != nil {
-		meta.WithLock(func() {
-			complexityScore = meta.ComplexityScore
-		})
-	}
-
 	latencyMs := int(time.Since(start) / time.Millisecond)
 
 	h.auditLogger.LogAsync(middleware.AuditLogEntry{
 		IPAddress:        extractClientIP(r),
-		KeyID:            keyID,
+		KeyID:            reqmeta.GetKeyID(r.Context()),
 		Model:            requestedModel,
 		Provider:         providerName,
 		PromptTokens:     0,
@@ -465,10 +483,10 @@ func (h *Handler) recordErrorAudit(
 		LatencyMs:        latencyMs,
 		StatusCode:       statusCode,
 		CacheHit:         false,
-		PromptPreview:    promptPreview,
-		RequestBody:      requestBody,
+		PromptPreview:    h.buildAuditPromptPreview(messages),
+		RequestBody:      h.buildAuditRequestBody(messages),
 		ResponseBody:     responseBody,
-		ComplexityScore:  complexityScore,
+		ComplexityScore:  requestComplexityScore(r.Context()),
 	})
 }
 

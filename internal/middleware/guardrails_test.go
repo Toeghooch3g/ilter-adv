@@ -26,7 +26,7 @@ func setupGuardrailsTestStore(t *testing.T) *dbpkg.SQLiteStore {
 	if err != nil {
 		t.Fatalf("failed to create store: %v", err)
 	}
-	t.Cleanup(func() { store.Close() })
+	t.Cleanup(func() { _ = store.Close() })
 	return store
 }
 
@@ -90,7 +90,7 @@ func TestGuardrailsTarget_CreateRuleWithTarget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create guardrails middleware: %v", err)
 	}
-	mw.LoadDBRules(store)
+	mw.LoadDBRules(context.Background(), store)
 
 	body := `{"model":"gpt-4o","messages":[{"role":"user","content":"secret-user-data found"}]}`
 	req := makeGuardrailsRequest(t, body, &user3, nil)
@@ -115,7 +115,7 @@ func TestGuardrailsTarget_MiddlewareUserScope(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create guardrails middleware: %v", err)
 	}
-	mw.LoadDBRules(store)
+	mw.LoadDBRules(context.Background(), store)
 
 	// Test: request with user_id=1 should be blocked.
 	body := `{"model":"gpt-4o","messages":[{"role":"user","content":"contains block-if-seen"}]}`
@@ -160,7 +160,7 @@ func TestGuardrailsTarget_MiddlewareGroupScope(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create guardrails middleware: %v", err)
 	}
-	mw.LoadDBRules(store)
+	mw.LoadDBRules(context.Background(), store)
 
 	body := `{"model":"gpt-4o","messages":[{"role":"user","content":"contains group-only text"}]}`
 
@@ -208,7 +208,7 @@ func TestGuardrailsTarget_GlobalFallback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create guardrails middleware: %v", err)
 	}
-	mw.LoadDBRules(store)
+	mw.LoadDBRules(context.Background(), store)
 
 	// Test 1: Global rule blocks ALL requests regardless of user/group context.
 	body := `{"model":"gpt-4o","messages":[{"role":"user","content":"contains global-block text"}]}`
@@ -282,7 +282,7 @@ func TestGuardrailsCache_RulesFromCache(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to marshal guardrail rule: %v", err)
 	}
-	if err = sto.UpsertRuntimeConfig("guardrail_rule", rule.Name, string(ruleData), "test"); err != nil {
+	if err = sto.UpsertRuntimeConfig(context.Background(), "guardrail_rule", rule.Name, string(ruleData), "test"); err != nil {
 		t.Fatalf("failed to insert guardrail rule: %v", err)
 	}
 
@@ -335,7 +335,7 @@ func TestGuardrailsTarget_RequestBodyRead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create guardrails middleware: %v", err)
 	}
-	mw.LoadDBRules(store)
+	mw.LoadDBRules(context.Background(), store)
 
 	body := `{"model":"gpt-4o","messages":[{"role":"user","content":"hello"}]}`
 	req := makeGuardrailsRequest(t, body, nil, nil)

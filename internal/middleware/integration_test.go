@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -32,7 +33,7 @@ func setupChainTestStore(t *testing.T) *db.SQLiteStore {
 func seedAPIKey(t *testing.T, store *db.SQLiteStore, name string) string {
 	t.Helper()
 
-	_, rawToken, err := store.CreateAPIKey(name, nil, nil, 100.0, 0, 50, 0, nil, nil, nil)
+	_, rawToken, err := store.CreateAPIKey(context.Background(), name, nil, nil, 100.0, 0, 50, 0, nil, nil, nil)
 	require.NoError(t, err)
 
 	return rawToken
@@ -137,7 +138,8 @@ func TestMiddlewareChain_Auth(t *testing.T) {
 		err := json.Unmarshal(rr.Body.Bytes(), &resp)
 		require.NoError(t, err)
 		assert.Equal(t, "ok", resp["status"])
-		keyID := resp["key_id"].(string)
+		keyID, ok := resp["key_id"].(string)
+		require.True(t, ok)
 		assert.NotEmpty(t, keyID)
 	})
 
@@ -202,7 +204,7 @@ func TestMiddlewareChain_AdminKey(t *testing.T) {
 func TestMiddlewareChain_ContextPropagation(t *testing.T) {
 	store := setupChainTestStore(t)
 
-	adminToken := "admin-ctx-test"
+	adminToken := "admin-ctx-test" //nolint:gosec // test fixture token, not a real credential
 	authCfg := config.AuthConfig{AdminKey: adminToken}
 	auth := NewAuthMiddleware(authCfg, store)
 
@@ -251,7 +253,8 @@ func TestMiddlewareChain_ContextPropagation(t *testing.T) {
 		var resp map[string]any
 		err := json.Unmarshal(rr.Body.Bytes(), &resp)
 		require.NoError(t, err)
-		keyID := resp["key_id"].(string)
+		keyID, ok := resp["key_id"].(string)
+		require.True(t, ok)
 		assert.NotEmpty(t, keyID)
 		assert.Equal(t, true, resp["budget_ok"])
 		assert.Equal(t, 100.0, resp["budget"])
@@ -278,7 +281,7 @@ func TestMiddlewareChain_PIIMasking(t *testing.T) {
 	r.Post("/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
 		// Read the body as received by the final handler
 		bodyBytes, _ := io.ReadAll(r.Body)
-		r.Body.Close()
+		_ = r.Body.Close()
 
 		var req model.ChatCompletionRequest
 		_ = json.Unmarshal(bodyBytes, &req)
@@ -336,7 +339,7 @@ func TestMiddlewareChain_PIIMasking(t *testing.T) {
 		r2.Use(pii.Handler)
 		r2.Get("/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
 			bodyBytes, _ := io.ReadAll(r.Body)
-			r.Body.Close()
+			_ = r.Body.Close()
 
 			keyID := reqmeta.GetKeyID(r.Context())
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -367,7 +370,8 @@ func TestMiddlewareChain_PIIMasking(t *testing.T) {
 		require.NoError(t, err)
 
 		// Body should still contain the email (PII not masked on GET)
-		body := resp["body"].(string)
+		body, ok := resp["body"].(string)
+		require.True(t, ok)
 		assert.Contains(t, body, "user@example.com")
 	})
 
@@ -418,11 +422,12 @@ func TestMiddlewareChain_PIIMasking(t *testing.T) {
 		rRev.Use(piiRev.Handler)
 		rRev.Post("/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
 			bodyBytes, _ := io.ReadAll(r.Body)
-			r.Body.Close()
+			_ = r.Body.Close()
 
 			var req model.ChatCompletionRequest
 			_ = json.Unmarshal(bodyBytes, &req)
-			content := req.Messages[0].Content.(string)
+			content, ok := req.Messages[0].Content.(string)
+			require.True(t, ok)
 
 			// Find placeholder and echo it back in the response
 			var placeholder string
@@ -505,7 +510,7 @@ func TestMiddlewareChain_ReversibleCrossRequest(t *testing.T) {
 
 	store := setupChainTestStore(t)
 
-	adminToken := "admin-cross-request"
+	adminToken := "admin-cross-request" //nolint:gosec // test fixture token, not a real credential
 	authCfg := config.AuthConfig{AdminKey: adminToken}
 	auth := NewAuthMiddleware(authCfg, store)
 
@@ -524,11 +529,12 @@ func TestMiddlewareChain_ReversibleCrossRequest(t *testing.T) {
 	// Request 1: Mask PII and capture placeholder
 	r.Post("/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
 		bodyBytes, _ := io.ReadAll(r.Body)
-		r.Body.Close()
+		_ = r.Body.Close()
 
 		var req model.ChatCompletionRequest
 		_ = json.Unmarshal(bodyBytes, &req)
-		content := req.Messages[0].Content.(string)
+		content, ok := req.Messages[0].Content.(string)
+		require.True(t, ok)
 
 		for word := range strings.FieldsSeq(content) {
 			if strings.HasPrefix(word, "PII:") {

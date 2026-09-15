@@ -78,7 +78,8 @@ func (m *ClientManager) GetOrCreate(_ context.Context, server *ServerInfo) (Tran
 	// Sync discovered tools to the registry (and persist to DB).
 	if m.registry != nil {
 		if tools := client.Tools(); len(tools) > 0 {
-			if err := m.registry.SyncTools(server.ID, tools); err != nil {
+			//nolint:contextcheck // intentional: client lifetime must outlive the request that triggered creation
+			if err := m.registry.SyncTools(context.Background(), server.ID, tools); err != nil {
 				mcpLog.Warn("failed to sync tools after start",
 					"server_id", server.ID, "error", err)
 			}

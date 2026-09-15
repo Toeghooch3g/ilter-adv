@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 
@@ -26,7 +27,7 @@ func TestInitConfigResolvers_Hierarchy(t *testing.T) {
 	require.NoError(t, err)
 
 	// Create test API key linked to team-1 and org-1
-	vk, _, err := ts.store.CreateAPIKey("test-key-resolver", nil, nil, 100, 0, 60, 0, nil, nil, nil)
+	vk, _, err := ts.store.CreateAPIKey(context.Background(), "test-key-resolver", nil, nil, 100, 0, 60, 0, nil, nil, nil)
 	require.NoError(t, err)
 	_, err = db.Exec("UPDATE api_keys SET team_id = 'team-1', org_id = 'org-1' WHERE id = ?", vk.ID)
 	require.NoError(t, err)
@@ -112,7 +113,7 @@ func TestInitConfigResolvers_Hierarchy(t *testing.T) {
 	t.Run("key with no team and org falls back to global", func(t *testing.T) {
 		clearSettings()
 		// Create a key with NULL team and org
-		vk2, _, err := ts.store.CreateAPIKey("test-key-no-owner", nil, nil, 100, 0, 60, 0, nil, nil, nil)
+		vk2, _, err := ts.store.CreateAPIKey(context.Background(), "test-key-no-owner", nil, nil, 100, 0, 60, 0, nil, nil, nil)
 		require.NoError(t, err)
 
 		insertSetting("team", "team-1", "test.field", "team-val")

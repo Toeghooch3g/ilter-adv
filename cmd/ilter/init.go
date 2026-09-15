@@ -58,7 +58,7 @@ func openDB() (*sql.DB, string, func(), error) {
 		wd, _ := os.Getwd()
 		sqlitePath = filepath.Join(wd, sqlitePath)
 	}
-	if err := os.MkdirAll(filepath.Dir(sqlitePath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(sqlitePath), 0o750); err != nil {
 		return nil, "", nil, fmt.Errorf("create DB directory: %w", err)
 	}
 	// _time_format=datetime&_timezone=UTC: see internal/db/sqlite.go for why this
@@ -77,10 +77,10 @@ func openDB() (*sql.DB, string, func(), error) {
 	db.SetMaxIdleConns(1)
 	db.SetConnMaxLifetime(5 * time.Minute)
 	if err = db.Ping(); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, "", nil, fmt.Errorf("ping database: %w", err)
 	}
-	return db, sqlitePath, func() { db.Close() }, nil
+	return db, sqlitePath, func() { _ = db.Close() }, nil
 }
 
 func runInitProd() error {
@@ -202,7 +202,7 @@ func runDemoInit() error {
 	if err != nil {
 		return fmt.Errorf("open database: %w", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Apply default seed first (providers, routing, features, guardrails)
 	if err := seed.ApplySeedData(store.DB, seed.DefaultSeedFile()); err != nil {

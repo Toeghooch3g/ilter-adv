@@ -64,7 +64,11 @@ func (s *OAuthCallbackServer) Start() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("oauth callback listen: %w", err)
 	}
-	s.port = listener.(*net.TCPListener).Addr().(*net.TCPAddr).Port
+	tcpAddr, ok := listener.Addr().(*net.TCPAddr)
+	if !ok {
+		return "", fmt.Errorf("oauth callback listen: unexpected listener address type %T", listener.Addr())
+	}
+	s.port = tcpAddr.Port
 
 	mux := http.NewServeMux()
 	mux.HandleFunc(s.path, s.handleCallback)
@@ -109,14 +113,14 @@ func (s *OAuthCallbackServer) handleCallback(w http.ResponseWriter, r *http.Requ
 	if code == "" {
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusBadRequest)
-		fmt.Fprintf(w, "<html><body><h1>OAuth Error</h1><p>Missing authorization code.</p></body></html>")
+		_, _ = fmt.Fprintf(w, "<html><body><h1>OAuth Error</h1><p>Missing authorization code.</p></body></html>")
 		s.resultCh <- CallbackResult{Error: errors.New("missing authorization code")}
 		return
 	}
 
 	w.Header().Set("Content-Type", "text/html")
 	w.WriteHeader(http.StatusOK)
-	fmt.Fprintf(w, `<html><body><h1>Authorization Successful</h1>
+	_, _ = fmt.Fprintf(w, `<html><body><h1>Authorization Successful</h1>
 <p>You have been authenticated. You can close this window and return to ilter.</p>
 <script>window.close()</script>
 </body></html>`)

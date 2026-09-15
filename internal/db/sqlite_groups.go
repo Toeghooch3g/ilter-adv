@@ -12,8 +12,7 @@ import (
 )
 
 // CreateGroup inserts a new group and returns the created group with timestamps.
-func (s *SQLiteStore) CreateGroup(req auth.CreateGroupRequest) (auth.Group, error) {
-	ctx := context.Background()
+func (s *SQLiteStore) CreateGroup(ctx context.Context, req auth.CreateGroupRequest) (auth.Group, error) {
 	desc := req.Description
 	budget := req.Budget
 
@@ -40,8 +39,7 @@ func (s *SQLiteStore) CreateGroup(req auth.CreateGroupRequest) (auth.Group, erro
 
 // GetGroup retrieves a group by its primary key.
 // Returns nil, sql.ErrNoRows if the group does not exist.
-func (s *SQLiteStore) GetGroup(id int) (*auth.Group, error) {
-	ctx := context.Background()
+func (s *SQLiteStore) GetGroup(ctx context.Context, id int) (*auth.Group, error) {
 	g, err := s.queries.GetGroup(ctx, int64(id))
 	if err != nil {
 		return nil, err
@@ -55,8 +53,7 @@ func (s *SQLiteStore) GetGroup(id int) (*auth.Group, error) {
 
 // GetGroupByName retrieves a group by its name.
 // Returns nil, sql.ErrNoRows if not found.
-func (s *SQLiteStore) GetGroupByName(name string) (*auth.Group, error) {
-	ctx := context.Background()
+func (s *SQLiteStore) GetGroupByName(ctx context.Context, name string) (*auth.Group, error) {
 	g, err := s.queries.GetGroupByName(ctx, name)
 	if err != nil {
 		return nil, err
@@ -69,8 +66,7 @@ func (s *SQLiteStore) GetGroupByName(name string) (*auth.Group, error) {
 }
 
 // ListGroups returns all groups ordered by id ascending.
-func (s *SQLiteStore) ListGroups() ([]auth.Group, error) {
-	ctx := context.Background()
+func (s *SQLiteStore) ListGroups(ctx context.Context) ([]auth.Group, error) {
 	groups, err := s.queries.ListGroups(ctx)
 	if err != nil {
 		return nil, err
@@ -89,7 +85,7 @@ func (s *SQLiteStore) ListGroups() ([]auth.Group, error) {
 // UpdateGroup applies partial updates to a group. Only non-nil fields in the
 // request are updated. Returns the updated group or sql.ErrNoRows if not found.
 // (kept as hand-written dynamic fmt.Sprintf SET builder)
-func (s *SQLiteStore) UpdateGroup(id int, req auth.UpdateGroupRequest) (*auth.Group, error) {
+func (s *SQLiteStore) UpdateGroup(ctx context.Context, id int, req auth.UpdateGroupRequest) (*auth.Group, error) {
 	var sets []string
 	var args []any
 
@@ -111,7 +107,7 @@ func (s *SQLiteStore) UpdateGroup(id int, req auth.UpdateGroupRequest) (*auth.Gr
 	}
 
 	if len(sets) == 0 {
-		return s.GetGroup(id)
+		return s.GetGroup(ctx, id)
 	}
 
 	sets = append(sets, "updated_at = CURRENT_TIMESTAMP")
@@ -132,7 +128,7 @@ func (s *SQLiteStore) UpdateGroup(id int, req auth.UpdateGroupRequest) (*auth.Gr
 		return nil, sql.ErrNoRows
 	}
 
-	return s.GetGroup(id)
+	return s.GetGroup(ctx, id)
 }
 
 // GetGroupBudget retrieves just the budget and daily_limit for a group.
@@ -157,8 +153,7 @@ func (s *SQLiteStore) GetGroupBudget(id int) (budget float64, dailyLimit float64
 
 // DeleteGroup deletes a group by its primary key.
 // Returns sql.ErrNoRows if the group does not exist.
-func (s *SQLiteStore) DeleteGroup(id int) error {
-	ctx := context.Background()
+func (s *SQLiteStore) DeleteGroup(ctx context.Context, id int) error {
 	n, err := s.queries.DeleteGroup(ctx, int64(id))
 	if err != nil {
 		return err
@@ -170,11 +165,10 @@ func (s *SQLiteStore) DeleteGroup(id int) error {
 }
 
 // AddUserToGroup adds a user to a group with an optional role.
-func (s *SQLiteStore) AddUserToGroup(userID, groupID int, role string) error {
+func (s *SQLiteStore) AddUserToGroup(ctx context.Context, userID, groupID int, role string) error {
 	if role == "" {
 		role = "member"
 	}
-	ctx := context.Background()
 	return s.queries.AddUserToGroup(ctx, sqlc.AddUserToGroupParams{
 		UserID:  int64(userID),
 		GroupID: int64(groupID),
@@ -184,8 +178,7 @@ func (s *SQLiteStore) AddUserToGroup(userID, groupID int, role string) error {
 
 // RemoveUserFromGroup removes a user from a group.
 // Returns sql.ErrNoRows if the membership doesn't exist.
-func (s *SQLiteStore) RemoveUserFromGroup(userID, groupID int) error {
-	ctx := context.Background()
+func (s *SQLiteStore) RemoveUserFromGroup(ctx context.Context, userID, groupID int) error {
 	n, err := s.queries.RemoveUserFromGroup(ctx, sqlc.RemoveUserFromGroupParams{
 		UserID:  int64(userID),
 		GroupID: int64(groupID),
@@ -200,8 +193,7 @@ func (s *SQLiteStore) RemoveUserFromGroup(userID, groupID int) error {
 }
 
 // GetGroupUsers returns all users in a group.
-func (s *SQLiteStore) GetGroupUsers(groupID int) ([]auth.User, error) {
-	ctx := context.Background()
+func (s *SQLiteStore) GetGroupUsers(ctx context.Context, groupID int) ([]auth.User, error) {
 	users, err := s.queries.GetGroupUsers(ctx, int64(groupID))
 	if err != nil {
 		return nil, err
@@ -218,8 +210,7 @@ func (s *SQLiteStore) GetGroupUsers(groupID int) ([]auth.User, error) {
 }
 
 // GetUserGroups returns all groups a user belongs to.
-func (s *SQLiteStore) GetUserGroups(userID int) ([]auth.Group, error) {
-	ctx := context.Background()
+func (s *SQLiteStore) GetUserGroups(ctx context.Context, userID int) ([]auth.Group, error) {
 	groups, err := s.queries.GetUserGroups(ctx, int64(userID))
 	if err != nil {
 		return nil, err

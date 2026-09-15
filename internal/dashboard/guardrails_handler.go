@@ -49,7 +49,7 @@ type TestGuardrailRequest struct {
 
 // TestGuardrail executes guardrails checks against a single message and returns the result.
 func (h *GuardrailsHandler) TestGuardrail(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 
 	if h.checker == nil {
 		model.WriteJSONError(w, http.StatusServiceUnavailable, "guardrails_disabled", "Guardrails middleware is not initialized")
@@ -180,18 +180,10 @@ type ListResponse struct {
 	Total int             `json:"total"`
 }
 
-// Filters: type, action, page, limit.
-func (h *GuardrailsHandler) HandleGuardrailViolations(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query()
-	page := parseIntParam(q.Get("page"), 1)
-	limit := min(parseIntParam(q.Get("limit"), 50), 500)
-	offset := (page - 1) * limit
-
-	typeFilter := q.Get("type")
-	actionFilter := q.Get("action")
-
+// buildGuardrailViolationsFilter builds the "WHERE ..." clause (or "" for no
+// filters) and its args for the guardrail_events type/action filters.
+func buildGuardrailViolationsFilter(typeFilter, actionFilter string) (whereClause string, args []any) {
 	var conditions []string
-	var args []any
 
 	if typeFilter != "" {
 		conditions = append(conditions, "guardrail_type = ?")
@@ -202,12 +194,63 @@ func (h *GuardrailsHandler) HandleGuardrailViolations(w http.ResponseWriter, r *
 		args = append(args, actionFilter)
 	}
 
-	whereClause := ""
 	if len(conditions) > 0 {
 		whereClause = "WHERE " + strings.Join(conditions, " AND ")
 	}
+	return whereClause, args
+}
 
-	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM guardrail_events %s", whereClause)
+// scanGuardrailEventRow scans one row of HandleGuardrailViolations' query
+// into a GuardrailEventItem.
+func scanGuardrailEventRow(rows *sql.Rows) (GuardrailEventItem, error) {
+	var item GuardrailEventItem
+	var keyIDStr sql.NullString
+	var vkID sql.NullString
+	var vkName sql.NullString
+	var ownerType sql.NullString
+	var ownerID sql.NullInt64
+	var modelName, provider, details sql.NullString
+
+	if err := rows.Scan(&item.ID, &item.Timestamp, &keyIDStr,
+		&vkID, &vkName, &ownerType, &ownerID,
+		&item.GuardrailType, &item.ActionTaken,
+		&modelName, &provider, &details); err != nil {
+		return item, err
+	}
+	if keyIDStr.Valid {
+		item.KeyID = keyIDStr.String
+	}
+	if vkID.Valid && vkID.String != "" {
+		item.Key = &KeyInfo{
+			ID:        vkID.String,
+			KeyName:   vkName.String,
+			OwnerType: ownerType.String,
+			OwnerID:   int(ownerID.Int64),
+		}
+	}
+	if modelName.Valid {
+		item.Model = modelName.String
+	}
+	if provider.Valid {
+		item.Provider = provider.String
+	}
+	if details.Valid {
+		item.Details = details.String
+	}
+	item.Timestamp = db.FormatSQLiteTimestamp(item.Timestamp)
+	return item, nil
+}
+
+// Filters: type, action, page, limit.
+func (h *GuardrailsHandler) HandleGuardrailViolations(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	page := parseIntParam(q.Get("page"), 1)
+	limit := min(parseIntParam(q.Get("limit"), 50), 500)
+	offset := (page - 1) * limit
+
+	whereClause, args := buildGuardrailViolationsFilter(q.Get("type"), q.Get("action"))
+
+	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM guardrail_events %s", whereClause) //nolint:gosec // whereClause is built from static literals in buildGuardrailViolationsFilter, values are parameterized via args
 	var total int
 	if err := h.store.DB.QueryRow(countQuery, args...).Scan(&total); err != nil {
 		slog.Error("Failed to count guardrail violations", "error", err)
@@ -232,46 +275,15 @@ func (h *GuardrailsHandler) HandleGuardrailViolations(w http.ResponseWriter, r *
 		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	items := make([]GuardrailEventItem, 0, limit)
 	for rows.Next() {
-		var item GuardrailEventItem
-		var keyIDStr sql.NullString
-		var vkID sql.NullString
-		var vkName sql.NullString
-		var ownerType sql.NullString
-		var ownerID sql.NullInt64
-		var model, provider, details sql.NullString
-
-		if err := rows.Scan(&item.ID, &item.Timestamp, &keyIDStr,
-			&vkID, &vkName, &ownerType, &ownerID,
-			&item.GuardrailType, &item.ActionTaken,
-			&model, &provider, &details); err != nil {
-			slog.Error("Failed to scan guardrail row", "error", err)
+		item, errScan := scanGuardrailEventRow(rows)
+		if errScan != nil {
+			slog.Error("Failed to scan guardrail row", "error", errScan)
 			continue
 		}
-		if keyIDStr.Valid {
-			item.KeyID = keyIDStr.String
-		}
-		if vkID.Valid && vkID.String != "" {
-			item.Key = &KeyInfo{
-				ID:        vkID.String,
-				KeyName:   vkName.String,
-				OwnerType: ownerType.String,
-				OwnerID:   int(ownerID.Int64),
-			}
-		}
-		if model.Valid {
-			item.Model = model.String
-		}
-		if provider.Valid {
-			item.Provider = provider.String
-		}
-		if details.Valid {
-			item.Details = details.String
-		}
-		item.Timestamp = db.FormatSQLiteTimestamp(item.Timestamp)
 		items = append(items, item)
 	}
 	if err := rows.Err(); err != nil {
@@ -282,6 +294,66 @@ func (h *GuardrailsHandler) HandleGuardrailViolations(w http.ResponseWriter, r *
 
 	resp := Page[GuardrailEventItem]{Items: items, Total: total, Page: page, Limit: limit}
 	model.WriteJSON(w, http.StatusOK, resp)
+}
+
+// loadGuardrailTypeBreakdown returns the per-guardrail-type event counts
+// (and percentage of total) for events matching sinceClause.
+func (h *GuardrailsHandler) loadGuardrailTypeBreakdown(sinceClause string, total int) ([]GuardrailSummaryItem, error) {
+	typeRows, err := h.store.DB.Query(fmt.Sprintf(
+		`SELECT guardrail_type, COUNT(*) as cnt
+		FROM guardrail_events WHERE %s
+		GROUP BY guardrail_type ORDER BY cnt DESC
+	`, sinceClause,
+	))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = typeRows.Close() }()
+
+	byType := make([]GuardrailSummaryItem, 0)
+	for typeRows.Next() {
+		var item GuardrailSummaryItem
+		if err := typeRows.Scan(&item.GuardrailType, &item.Count); err != nil {
+			continue
+		}
+		if total > 0 {
+			item.Pct = float64(item.Count) / float64(total) * 100
+		}
+		byType = append(byType, item)
+	}
+	if err := typeRows.Err(); err != nil {
+		slog.Warn("error iterating guardrail type breakdown", "error", err)
+	}
+	return byType, nil
+}
+
+// loadGuardrailTrend returns the daily guardrail event counts for the last
+// 14 days, logging (not failing) on error.
+func (h *GuardrailsHandler) loadGuardrailTrend() []TrendItem {
+	trendRows, err := h.store.DB.Query(
+		`SELECT DATE(timestamp) as day, COUNT(*) as cnt
+		FROM guardrail_events
+		WHERE timestamp >= date('now', '-14 days')
+		GROUP BY DATE(timestamp)
+		ORDER BY day ASC
+	`,
+	)
+	trend := make([]TrendItem, 0)
+	if err != nil {
+		return trend
+	}
+	defer func() { _ = trendRows.Close() }()
+	for trendRows.Next() {
+		var item TrendItem
+		if err := trendRows.Scan(&item.Date, &item.Count); err != nil {
+			continue
+		}
+		trend = append(trend, item)
+	}
+	if err := trendRows.Err(); err != nil {
+		slog.Warn("error iterating guardrail trend rows", "error", err)
+	}
+	return trend
 }
 
 // Period options: 24h, 7d, 30d (default: 7d).
@@ -301,56 +373,14 @@ func (h *GuardrailsHandler) HandleGuardrailSummary(w http.ResponseWriter, r *htt
 		slog.Warn("Failed to count guardrail events", "error", err)
 	}
 
-	typeRows, err := h.store.DB.Query(fmt.Sprintf(
-		`SELECT guardrail_type, COUNT(*) as cnt
-		FROM guardrail_events WHERE %s
-		GROUP BY guardrail_type ORDER BY cnt DESC
-	`, sinceClause,
-	))
+	byType, err := h.loadGuardrailTypeBreakdown(sinceClause, total)
 	if err != nil {
 		slog.Error("Failed to query guardrail type breakdown", "error", err)
 		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
-	defer typeRows.Close()
 
-	byType := make([]GuardrailSummaryItem, 0)
-	for typeRows.Next() {
-		var item GuardrailSummaryItem
-		if err = typeRows.Scan(&item.GuardrailType, &item.Count); err != nil {
-			continue
-		}
-		if total > 0 {
-			item.Pct = float64(item.Count) / float64(total) * 100
-		}
-		byType = append(byType, item)
-	}
-	if err := typeRows.Err(); err != nil {
-		slog.Warn("error iterating guardrail type breakdown", "error", err)
-	}
-
-	trendRows, err := h.store.DB.Query(
-		`SELECT DATE(timestamp) as day, COUNT(*) as cnt
-		FROM guardrail_events
-		WHERE timestamp >= date('now', '-14 days')
-		GROUP BY DATE(timestamp)
-		ORDER BY day ASC
-	`,
-	)
-	trend := make([]TrendItem, 0)
-	if err == nil {
-		defer trendRows.Close()
-		for trendRows.Next() {
-			var item TrendItem
-			if err := trendRows.Scan(&item.Date, &item.Count); err != nil {
-				continue
-			}
-			trend = append(trend, item)
-		}
-		if err := trendRows.Err(); err != nil {
-			slog.Warn("error iterating guardrail trend rows", "error", err)
-		}
-	}
+	trend := h.loadGuardrailTrend()
 
 	resp := GuardrailSummaryResponse{
 		TotalEvents: total,
@@ -385,7 +415,7 @@ func (h *GuardrailsHandler) HandleGuardrailExport(w http.ResponseWriter, r *http
 		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	items := make([]GuardrailEventItem, 0, 1000)
 	for rows.Next() {
@@ -437,10 +467,10 @@ func (h *GuardrailsHandler) HandleGuardrailExport(w http.ResponseWriter, r *http
 	model.WriteJSON(w, http.StatusOK, items)
 }
 
-func (h *GuardrailsHandler) HandleAdminGuardrails(w http.ResponseWriter, _ *http.Request) {
+func (h *GuardrailsHandler) HandleAdminGuardrails(w http.ResponseWriter, r *http.Request) {
 	rules := make([]GuardrailRule, 0)
 
-	dbRows, err := h.store.ListGuardrailRules()
+	dbRows, err := h.store.ListGuardrailRules(r.Context())
 	if err == nil {
 		for _, row := range dbRows {
 			rules = append(rules, GuardrailRule{
@@ -477,7 +507,7 @@ func (h *GuardrailsHandler) HandleToggleGuardrail(w http.ResponseWriter, r *http
 		return
 	}
 
-	found, err := h.store.ToggleGuardrailRule(id, req.Enabled)
+	found, err := h.store.ToggleGuardrailRule(r.Context(), id, req.Enabled)
 	if err != nil {
 		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", "Failed to toggle rule")
 		return
@@ -488,7 +518,7 @@ func (h *GuardrailsHandler) HandleToggleGuardrail(w http.ResponseWriter, r *http
 	}
 
 	if h.middleware != nil {
-		h.middleware.LoadDBRules(h.store)
+		h.middleware.LoadDBRules(r.Context(), h.store)
 	}
 
 	model.WriteJSON(w, http.StatusOK, map[string]any{
@@ -553,7 +583,7 @@ func (h *GuardrailsHandler) HandleCreateGuardrailRule(w http.ResponseWriter, r *
 		return
 	}
 
-	err = h.store.CreateGuardrailRule(db.CreateGuardrailRuleParams{
+	err = h.store.CreateGuardrailRule(r.Context(), db.CreateGuardrailRuleParams{
 		ID:          req.ID,
 		Name:        req.Name,
 		Description: req.Description,
@@ -570,7 +600,7 @@ func (h *GuardrailsHandler) HandleCreateGuardrailRule(w http.ResponseWriter, r *
 	}
 
 	if h.middleware != nil {
-		h.middleware.LoadDBRules(h.store)
+		h.middleware.LoadDBRules(r.Context(), h.store)
 	}
 
 	model.WriteJSON(w, http.StatusOK, map[string]any{
@@ -609,7 +639,7 @@ func (h *GuardrailsHandler) HandleUpdateGuardrailRule(w http.ResponseWriter, r *
 		return
 	}
 
-	found, err := h.store.UpdateGuardrailRule(db.UpdateGuardrailRuleParams{
+	found, err := h.store.UpdateGuardrailRule(r.Context(), db.UpdateGuardrailRuleParams{
 		ID:          id,
 		Name:        req.Name,
 		Type:        req.Type,
@@ -631,7 +661,7 @@ func (h *GuardrailsHandler) HandleUpdateGuardrailRule(w http.ResponseWriter, r *
 	}
 
 	if h.middleware != nil {
-		h.middleware.LoadDBRules(h.store)
+		h.middleware.LoadDBRules(r.Context(), h.store)
 	}
 
 	model.WriteJSON(w, http.StatusOK, map[string]any{
@@ -648,7 +678,7 @@ func (h *GuardrailsHandler) HandleDeleteGuardrailRule(w http.ResponseWriter, r *
 		return
 	}
 
-	found, err := h.store.DeleteGuardrailRule(id)
+	found, err := h.store.DeleteGuardrailRule(r.Context(), id)
 	if err != nil {
 		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", "Failed to delete rule")
 		return
@@ -659,7 +689,7 @@ func (h *GuardrailsHandler) HandleDeleteGuardrailRule(w http.ResponseWriter, r *
 	}
 
 	if h.middleware != nil {
-		h.middleware.LoadDBRules(h.store)
+		h.middleware.LoadDBRules(r.Context(), h.store)
 	}
 
 	model.WriteJSON(w, http.StatusOK, map[string]any{

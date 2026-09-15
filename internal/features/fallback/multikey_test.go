@@ -88,7 +88,7 @@ func TestMultiAPIKey_AutomaticFailover(t *testing.T) {
 		if errDo != nil {
 			return 0, nil, errDo
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		if resp.StatusCode >= 400 {
 			return resp.StatusCode, resp.Header, fmt.Errorf("status %d", resp.StatusCode)
 		}

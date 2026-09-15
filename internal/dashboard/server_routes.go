@@ -272,7 +272,7 @@ func (s *Server) registerSPARoutes(r chi.Router, fileServer http.Handler, authMw
 		return func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write(data)
+			_, _ = w.Write(data) //nolint:gosec // data is a static asset from the embedded frontend build, not user input
 		}
 	}
 
@@ -310,7 +310,7 @@ func (s *Server) registerSPARoutes(r chi.Router, fileServer http.Handler, authMw
 		if data, err := fs.ReadFile(subFS, indexPath); err == nil {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write(data)
+			_, _ = w.Write(data) //nolint:gosec // data is a static asset from the embedded frontend build, not user input
 			return
 		}
 		fileServer.ServeHTTP(w, req)

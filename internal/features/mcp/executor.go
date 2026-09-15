@@ -177,7 +177,7 @@ func (ex *Executor) callWithRetry(callCtx context.Context, client TransportClien
 	var resp *JSONRPCResponse
 	var err error
 
-	for attempt := 0; attempt < maxRetries; attempt++ {
+	for attempt := range maxRetries {
 		if attempt > 0 {
 			d := b.NextBackOff()
 			mcpLog.Debug("retrying tool call",

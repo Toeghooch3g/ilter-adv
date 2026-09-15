@@ -44,11 +44,88 @@ var (
 	reMultiUnderscore = regexp.MustCompile(`_+`)
 )
 
+// resolveOperationName builds the sanitized, deduplicated tool name for
+// one operation, appending a numeric suffix on collision. Mutates
+// nameCount to record the name it returns.
+func resolveOperationName(specName, method, path, opID string, nameCount map[string]int) string {
+	var rawName string
+	if opID != "" {
+		rawName = specName + "_" + opID
+	} else {
+		rawName = specName + "_" + strings.ToLower(method) + "_" + pathToSlug(path)
+	}
+
+	name := SanitizeToolName(rawName)
+
+	// Deduplicate: append _N suffix on collision.
+	if _, exists := nameCount[name]; exists {
+		for i := 1; ; i++ {
+			candidate := SanitizeToolName(fmt.Sprintf("%s_%d", rawName, i))
+			if _, exists := nameCount[candidate]; !exists {
+				name = candidate
+				break
+			}
+		}
+	}
+	nameCount[name] = 1
+	return name
+}
+
+// extractBodySchema returns the first request-body content schema
+// declared for op, or nil if it has no body.
+func extractBodySchema(op *openapi3.Operation) *openapi3.SchemaRef {
+	if op.RequestBody == nil || op.RequestBody.Value == nil {
+		return nil
+	}
+	for _, mt := range op.RequestBody.Value.Content {
+		if mt.Schema != nil {
+			return mt.Schema
+		}
+	}
+	return nil
+}
+
+// buildOperation assembles one indexed Operation from its spec pieces.
+func buildOperation(specName, method, path, name, serverURL string, pathItem *openapi3.PathItem, op *openapi3.Operation) Operation {
+	paramSchema, paramStyles := buildParamSchema(pathItem, op)
+	bodySchema := extractBodySchema(op)
+
+	summary := op.Summary
+	if len(summary) > maxSummaryLen {
+		summary = summary[:maxSummaryLen]
+	}
+
+	var tagsCopy []string
+	if len(op.Tags) > 0 {
+		tagsCopy = make([]string, len(op.Tags))
+		copy(tagsCopy, op.Tags)
+	}
+
+	return Operation{
+		ID:          name,
+		API:         specName,
+		Method:      method,
+		Path:        path,
+		ServerURL:   serverURL,
+		Summary:     summary,
+		Description: op.Description,
+		Tags:        tagsCopy,
+		ParamSchema: paramSchema,
+		ParamStyles: paramStyles,
+		BodySchema:  bodySchema,
+	}
+}
+
 // BuildIndex walks a resolved spec and builds an index of every operation
 // it declares — every registered spec exposes its full operation set as
 // callable tools, with no allowlist filtering. It detects name collisions.
 func BuildIndex(spec *openapi3.T, cfg *config.OpenAPISpecConfig) ([]Operation, map[string]*Operation, error) {
 	specName := cfg.Name
+
+	serverURL := ""
+	if len(spec.Servers) > 0 {
+		serverURL = spec.Servers[0].URL
+	}
 
 	var ops []Operation
 	nameCount := make(map[string]int)         // tracks collision count for dedup
@@ -59,80 +136,12 @@ func BuildIndex(spec *openapi3.T, cfg *config.OpenAPISpecConfig) ([]Operation, m
 		if pathItem == nil {
 			continue
 		}
-		operations := pathItem.Operations()
-		for method, op := range operations {
+		for method, op := range pathItem.Operations() {
 			if op == nil {
 				continue
 			}
-
-			opID := op.OperationID
-
-			// Build the raw display name.
-
-			var rawName string
-			if opID != "" {
-				rawName = specName + "_" + opID
-			} else {
-				rawName = specName + "_" + strings.ToLower(method) + "_" + pathToSlug(path)
-			}
-
-			name := SanitizeToolName(rawName)
-
-			// Deduplicate: append _N suffix on collision.
-			if _, exists := nameCount[name]; exists {
-				for i := 1; ; i++ {
-					candidate := SanitizeToolName(fmt.Sprintf("%s_%d", rawName, i))
-					if _, exists := nameCount[candidate]; !exists {
-						name = candidate
-						break
-					}
-				}
-			}
-			nameCount[name] = 1
-
-			// Build the combined parameter schema (path + query params only).
-			paramSchema, paramStyles := buildParamSchema(pathItem, op)
-
-			// Extract request body schema if present.
-			var bodySchema *openapi3.SchemaRef
-			if op.RequestBody != nil && op.RequestBody.Value != nil {
-				for _, mt := range op.RequestBody.Value.Content {
-					if mt.Schema != nil {
-						bodySchema = mt.Schema
-						break
-					}
-				}
-			}
-
-			summary := op.Summary
-			if len(summary) > maxSummaryLen {
-				summary = summary[:maxSummaryLen]
-			}
-
-			var tagsCopy []string
-			if len(op.Tags) > 0 {
-				tagsCopy = make([]string, len(op.Tags))
-				copy(tagsCopy, op.Tags)
-			}
-
-			serverURL := ""
-			if len(spec.Servers) > 0 {
-				serverURL = spec.Servers[0].URL
-			}
-
-			ops = append(ops, Operation{
-				ID:          name,
-				API:         specName,
-				Method:      method,
-				Path:        path,
-				ServerURL:   serverURL,
-				Summary:     summary,
-				Description: op.Description,
-				Tags:        tagsCopy,
-				ParamSchema: paramSchema,
-				ParamStyles: paramStyles,
-				BodySchema:  bodySchema,
-			})
+			name := resolveOperationName(specName, method, path, op.OperationID, nameCount)
+			ops = append(ops, buildOperation(specName, method, path, name, serverURL, pathItem, op))
 		}
 	}
 
@@ -150,6 +159,48 @@ func BuildIndex(spec *openapi3.T, cfg *config.OpenAPISpecConfig) ([]Operation, m
 
 // Search performs weighted keyword search over operations.
 // Returns top-N results sorted by score descending.
+// scoreOperation computes op's keyword-match score against tokens (each
+// token weighted by which field it matched: ID > summary/tags > path >
+// description).
+func scoreOperation(op Operation, tokens []string) int {
+	score := 0
+	opID := strings.ToLower(op.ID)
+	summary := strings.ToLower(op.Summary)
+	path := strings.ToLower(op.Path)
+	desc := strings.ToLower(op.Description)
+
+	for _, token := range tokens {
+		if strings.Contains(opID, token) {
+			score += 6
+		}
+		if strings.Contains(summary, token) {
+			score += 4
+		}
+		for _, tag := range op.Tags {
+			if strings.Contains(strings.ToLower(tag), token) {
+				score += 4
+				break
+			}
+		}
+		if strings.Contains(path, token) {
+			score += 3
+		}
+		if strings.Contains(desc, token) {
+			score += 2
+		}
+	}
+	return score
+}
+
+// isBroadSearchQuery reports whether a query with no keyword matches
+// should still fall back to returning the top operations (e.g. "list all
+// apis", "all", "*").
+func isBroadSearchQuery(trimmedQuery string) bool {
+	return trimmedQuery == "*" || trimmedQuery == "all" ||
+		strings.Contains(trimmedQuery, "list") || strings.Contains(trimmedQuery, "api") ||
+		strings.Contains(trimmedQuery, "show") || strings.Contains(trimmedQuery, "available")
+}
+
 func Search(ops []Operation, query string, limit int) []SearchResult {
 	if limit <= 0 {
 		limit = 10
@@ -167,38 +218,8 @@ func Search(ops []Operation, query string, limit int) []SearchResult {
 	}
 
 	results := make([]scored, 0, len(ops))
-
 	for _, op := range ops {
-		score := 0
-		opID := strings.ToLower(op.ID)
-		summary := strings.ToLower(op.Summary)
-		path := strings.ToLower(op.Path)
-		desc := strings.ToLower(op.Description)
-
-		for _, token := range tokens {
-			if strings.Contains(opID, token) {
-				score += 6
-			}
-			if strings.Contains(summary, token) {
-				score += 4
-			}
-			if len(op.Tags) > 0 {
-				for _, tag := range op.Tags {
-					if strings.Contains(strings.ToLower(tag), token) {
-						score += 4
-						break
-					}
-				}
-			}
-			if strings.Contains(path, token) {
-				score += 3
-			}
-			if strings.Contains(desc, token) {
-				score += 2
-			}
-		}
-
-		if score > 0 {
+		if score := scoreOperation(op, tokens); score > 0 {
 			results = append(results, scored{op: op, score: score})
 		}
 	}
@@ -211,14 +232,9 @@ func Search(ops []Operation, query string, limit int) []SearchResult {
 	})
 
 	// Fallback: if no keyword matched, but query is broad (e.g. "list all apis", "all", "*"), return top operations
-	if len(results) == 0 && len(ops) > 0 {
-		isBroadQuery := trimmedQuery == "*" || trimmedQuery == "all" ||
-			strings.Contains(trimmedQuery, "list") || strings.Contains(trimmedQuery, "api") ||
-			strings.Contains(trimmedQuery, "show") || strings.Contains(trimmedQuery, "available")
-		if isBroadQuery {
-			for _, op := range ops {
-				results = append(results, scored{op: op, score: 1})
-			}
+	if len(results) == 0 && len(ops) > 0 && isBroadSearchQuery(trimmedQuery) {
+		for _, op := range ops {
+			results = append(results, scored{op: op, score: 1})
 		}
 	}
 
@@ -326,30 +342,44 @@ func SanitizeToolName(name string) string {
 // buildParamSchema combines path and query parameters from both the path item
 // and operation into a single object schema, returning the schema and a map of
 // param name to serialization style. Header and cookie params are excluded.
+// mergeParams merges path- and operation-level path/query parameters,
+// keyed by "in:name" so operation-level params override path-level ones
+// on a matching location+name.
+func mergeParams(pathItem *openapi3.PathItem, operation *openapi3.Operation) map[string]*openapi3.Parameter {
+	merged := make(map[string]*openapi3.Parameter)
+	addParams := func(refs openapi3.Parameters) {
+		for _, pref := range refs {
+			if pref == nil || pref.Value == nil {
+				continue
+			}
+			p := pref.Value
+			if p.In == openapi3.ParameterInPath || p.In == openapi3.ParameterInQuery {
+				merged[p.In+":"+p.Name] = p
+			}
+		}
+	}
+	addParams(pathItem.Parameters)
+	addParams(operation.Parameters)
+	return merged
+}
+
+// paramStyleFor determines a parameter's serialization style, defaulting
+// per its location when the spec doesn't set one explicitly.
+func paramStyleFor(p *openapi3.Parameter) string {
+	switch {
+	case p.Style != "":
+		return p.Style
+	case p.In == openapi3.ParameterInQuery:
+		return openapi3.SerializationForm
+	default:
+		return openapi3.SerializationSimple
+	}
+}
+
 func buildParamSchema(pathItem *openapi3.PathItem, operation *openapi3.Operation) (*openapi3.SchemaRef, map[string]string) {
 	// Merge path+query params. Path-level params are inherited by operations;
 	// operation-level params override path-level ones on matching (in:name).
-	merged := make(map[string]*openapi3.Parameter) // key = "in:name"
-
-	for _, pref := range pathItem.Parameters {
-		if pref == nil || pref.Value == nil {
-			continue
-		}
-		p := pref.Value
-		if p.In == openapi3.ParameterInPath || p.In == openapi3.ParameterInQuery {
-			merged[p.In+":"+p.Name] = p
-		}
-	}
-	for _, pref := range operation.Parameters {
-		if pref == nil || pref.Value == nil {
-			continue
-		}
-		p := pref.Value
-		if p.In == openapi3.ParameterInPath || p.In == openapi3.ParameterInQuery {
-			merged[p.In+":"+p.Name] = p
-		}
-	}
-
+	merged := mergeParams(pathItem, operation)
 	if len(merged) == 0 {
 		return nil, nil
 	}
@@ -362,14 +392,7 @@ func buildParamSchema(pathItem *openapi3.PathItem, operation *openapi3.Operation
 		if p.Schema != nil {
 			props[p.Name] = p.Schema
 		}
-		// Determine serialization style with correct default per location.
-		if p.Style != "" {
-			paramStyles[p.Name] = p.Style
-		} else if p.In == openapi3.ParameterInQuery {
-			paramStyles[p.Name] = openapi3.SerializationForm
-		} else {
-			paramStyles[p.Name] = openapi3.SerializationSimple
-		}
+		paramStyles[p.Name] = paramStyleFor(p)
 		if p.Required || p.In == openapi3.ParameterInPath {
 			required = append(required, p.Name)
 		}

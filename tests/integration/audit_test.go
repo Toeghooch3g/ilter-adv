@@ -59,7 +59,7 @@ func (m *mockBodyProvider) Client() *http.Client {
 }
 
 // buildTestHarness creates a full test setup with proxy + auth + audit.
-func buildTestHarness(t *testing.T, logBodies bool) (*db.SQLiteStore, *middleware.AuditLoggerMiddleware, *chi.Mux, func()) {
+func buildTestHarness(t *testing.T, logBodies bool) (*db.SQLiteStore, *chi.Mux, func()) {
 	t.Helper()
 
 	store := dbtest.NewFile(t)
@@ -105,14 +105,14 @@ func buildTestHarness(t *testing.T, logBodies bool) (*db.SQLiteStore, *middlewar
 	cleanup := func() {
 		al.Close()
 	}
-	return store, al, r, cleanup
+	return store, r, cleanup
 }
 
 // ─────────────────────────────────────────────────────────────
 // TEST 1: LogBodies=true  → request_body AND response_body stored
 // ─────────────────────────────────────────────────────────────
 func TestAudit_LogBodiesEnabled(t *testing.T) {
-	store, _, router, cleanup := buildTestHarness(t, true)
+	store, router, cleanup := buildTestHarness(t, true)
 	defer cleanup()
 
 	reqBody := model.ChatCompletionRequest{
@@ -172,11 +172,13 @@ func TestAudit_LogBodiesEnabled(t *testing.T) {
 	require.True(t, ok, "request_body must contain 'messages' array")
 	require.Len(t, messages, 2)
 
-	msg0 := messages[0].(map[string]any)
+	msg0, ok := messages[0].(map[string]any)
+	require.True(t, ok)
 	assert.Equal(t, "system", msg0["role"])
 	assert.Equal(t, "You are a helpful assistant.", msg0["content"])
 
-	msg1 := messages[1].(map[string]any)
+	msg1, ok := messages[1].(map[string]any)
+	require.True(t, ok)
 	assert.Equal(t, "user", msg1["role"])
 	assert.Equal(t, "What is the capital of France?", msg1["content"])
 
@@ -200,7 +202,7 @@ func TestAudit_LogBodiesEnabled(t *testing.T) {
 // TEST 2: LogBodies=false → request_body AND response_body NULL
 // ─────────────────────────────────────────────────────────────
 func TestAudit_LogBodiesDisabled(t *testing.T) {
-	store, _, router, cleanup := buildTestHarness(t, false)
+	store, router, cleanup := buildTestHarness(t, false)
 	defer cleanup()
 
 	reqBody := model.ChatCompletionRequest{
@@ -232,7 +234,7 @@ func TestAudit_LogBodiesDisabled(t *testing.T) {
 // TEST 3: Multiple sequential requests all store bodies
 // ─────────────────────────────────────────────────────────────
 func TestAudit_LogBodiesMultipleRequests(t *testing.T) {
-	store, _, router, cleanup := buildTestHarness(t, true)
+	store, router, cleanup := buildTestHarness(t, true)
 	defer cleanup()
 
 	prompts := []string{"First message", "Second message here", "Third and final"}
@@ -254,7 +256,7 @@ func TestAudit_LogBodiesMultipleRequests(t *testing.T) {
 		`SELECT request_body, response_body FROM audit_log ORDER BY id ASC`,
 	)
 	require.NoError(t, err)
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	count := 0
 	for rows.Next() {
@@ -275,7 +277,7 @@ func TestAudit_LogBodiesMultipleRequests(t *testing.T) {
 // TEST 4: Metadata still logged correctly when bodies disabled
 // ─────────────────────────────────────────────────────────────
 func TestAudit_BodiesDisabledStillLogsMetadata(t *testing.T) {
-	store, _, router, cleanup := buildTestHarness(t, false)
+	store, router, cleanup := buildTestHarness(t, false)
 	defer cleanup()
 
 	reqBody := model.ChatCompletionRequest{

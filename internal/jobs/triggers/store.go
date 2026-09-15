@@ -55,7 +55,7 @@ func (s *Store) Get(id string) (*TriggerRow, error) {
 		 FROM triggers WHERE id = ?`, id,
 	).Scan(&t.ID, &t.JobID, &t.Kind, &enabled, &configStr, &token, &tokenHash, &lastUsedAt, &t.CreatedAt, &t.UpdatedAt)
 	if err == sql.ErrNoRows {
-		return nil, nil
+		return nil, nil //nolint:nilnil // documented not-found contract, see doc comment above
 	}
 	if err != nil {
 		return nil, fmt.Errorf("get trigger %s: %w", id, err)
@@ -85,7 +85,7 @@ func (s *Store) ListByJobID(jobID string) ([]TriggerRow, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list triggers by job %s: %w", jobID, err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	return scanTriggers(rows)
 }
 
@@ -104,7 +104,7 @@ func (s *Store) ListEnabled() ([]TriggerRow, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list enabled triggers: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	return scanTriggers(rows)
 }
 
@@ -162,7 +162,7 @@ func (s *Store) GetByTokenHash(hash string) (*TriggerRow, error) {
 		 FROM triggers WHERE token = ? AND enabled = 1`, hash,
 	).Scan(&t.ID, &t.JobID, &t.Kind, &enabled, &configStr, &token, &tokenHash, &lastUsedAt, &t.CreatedAt, &t.UpdatedAt)
 	if err == sql.ErrNoRows {
-		return nil, nil
+		return nil, nil //nolint:nilnil // documented not-found contract, see doc comment above
 	}
 	if err != nil {
 		return nil, fmt.Errorf("get trigger by token: %w", err)

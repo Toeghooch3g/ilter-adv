@@ -171,7 +171,7 @@ func cappedJitter(d time.Duration) time.Duration {
 			j = 0
 		}
 		// Capped keys retry at 80-100% of MaxRetryAfterDuration, not all at exactly 1h
-		spread := 0.8 + rand.Float64()*0.2
+		spread := 0.8 + rand.Float64()*0.2 //nolint:gosec // non-cryptographic jitter spread, not a security context
 		capped := time.Duration(float64(MaxRetryAfterDuration) * spread)
 		slog.Warn("retry-after capped", "parsed_duration", parsed, "jittered", j, "capped", capped)
 		return capped
@@ -184,7 +184,7 @@ func applyJitter(d time.Duration) time.Duration {
 		return 20 * time.Second
 	}
 	// Add pseudo-jitter ±10% to prevent thundering herd
-	factor := 0.9 + rand.Float64()*0.2
+	factor := 0.9 + rand.Float64()*0.2 //nolint:gosec // non-cryptographic jitter factor, not a security context
 	jitter := time.Duration(float64(d) * factor)
 	if jitter <= 0 {
 		return d

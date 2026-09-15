@@ -52,7 +52,7 @@ func (h *Handler) ListAllGrants(w http.ResponseWriter, r *http.Request) {
 		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", errListGrants)
 		return
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	grants := make([]map[string]any, 0)
 	for rows.Next() {
@@ -92,7 +92,7 @@ func (h *Handler) listGrantsByServer(w http.ResponseWriter, serverID string) {
 		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", errListGrants)
 		return
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	grants := make([]map[string]any, 0)
 	for rows.Next() {
@@ -160,29 +160,26 @@ func (h *Handler) GetGrant(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (h *Handler) CreateGrant(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close()
+type createGrantRequest struct {
+	SubjectType string `json:"subject_type"`
+	SubjectID   string `json:"subject_id"`
+	ServerID    string `json:"server_id"`
+	Tools       string `json:"tools"`
+	Effect      string `json:"effect"`
+	Enabled     *bool  `json:"enabled,omitempty"`
+	Priority    *int   `json:"priority,omitempty"`
+}
 
-	var req struct {
-		SubjectType string `json:"subject_type"`
-		SubjectID   string `json:"subject_id"`
-		ServerID    string `json:"server_id"`
-		Tools       string `json:"tools"`
-		Effect      string `json:"effect"`
-		Enabled     *bool  `json:"enabled,omitempty"`
-		Priority    *int   `json:"priority,omitempty"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		model.WriteJSONError(w, http.StatusBadRequest, "invalid_request_error", "Invalid request body")
-		return
-	}
+// prepareCreateGrantRequest validates req's required fields and fills in
+// its defaults (tools="*", effect="allow", server_id="*"), in the same
+// order CreateGrant always applied them. Returns a non-empty error message
+// if validation fails.
+func prepareCreateGrantRequest(req *createGrantRequest) string {
 	if req.SubjectType != "key" && req.SubjectType != "user" && req.SubjectType != "group" {
-		model.WriteJSONError(w, http.StatusBadRequest, "invalid_request_error", "subject_type must be 'key', 'user', or 'group'")
-		return
+		return "subject_type must be 'key', 'user', or 'group'"
 	}
 	if req.SubjectID == "" {
-		model.WriteJSONError(w, http.StatusBadRequest, "invalid_request_error", "subject_id is required")
-		return
+		return "subject_id is required"
 	}
 	if req.Tools == "" {
 		req.Tools = "*"
@@ -191,11 +188,45 @@ func (h *Handler) CreateGrant(w http.ResponseWriter, r *http.Request) {
 		req.Effect = "allow"
 	}
 	if req.Effect != "allow" && req.Effect != "deny" {
-		model.WriteJSONError(w, http.StatusBadRequest, "invalid_request_error", "effect must be 'allow' or 'deny'")
-		return
+		return "effect must be 'allow' or 'deny'"
 	}
 	if req.ServerID == "" {
 		req.ServerID = "*"
+	}
+	return ""
+}
+
+// auditGrantCreate logs an mcp_grant creation, if an auditor is configured.
+func (h *Handler) auditGrantCreate(r *http.Request, id string, req createGrantRequest, enabled, priority int) {
+	if h.auditor == nil {
+		return
+	}
+	vals := map[string]any{
+		"subject_type": req.SubjectType,
+		"subject_id":   req.SubjectID,
+		"server_id":    req.ServerID,
+		"tools":        req.Tools,
+		"effect":       req.Effect,
+		"enabled":      enabled == 1,
+		"priority":     priority,
+	}
+	if err := h.auditor.LogCreate(r.Context(), "mcp_grant", id, vals, reqmeta.GetKeyID(r.Context())); err != nil {
+		slog.Error("failed to log audit create mcp_grant", "error", err)
+	}
+}
+
+func (h *Handler) CreateGrant(w http.ResponseWriter, r *http.Request) {
+	defer func() { _ = r.Body.Close() }()
+
+	var req createGrantRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		model.WriteJSONError(w, http.StatusBadRequest, "invalid_request_error", "Invalid request body")
+		return
+	}
+
+	if errMsg := prepareCreateGrantRequest(&req); errMsg != "" {
+		model.WriteJSONError(w, http.StatusBadRequest, "invalid_request_error", errMsg)
+		return
 	}
 
 	enabled := 1
@@ -218,76 +249,42 @@ func (h *Handler) CreateGrant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.auditor != nil {
-		vals := map[string]any{
-			"subject_type": req.SubjectType,
-			"subject_id":   req.SubjectID,
-			"server_id":    req.ServerID,
-			"tools":        req.Tools,
-			"effect":       req.Effect,
-			"enabled":      enabled == 1,
-			"priority":     priority,
-		}
-		if err := h.auditor.LogCreate("mcp_grant", id, vals, reqmeta.GetKeyID(r.Context())); err != nil {
-			slog.Error("failed to log audit create mcp_grant", "error", err)
-		}
-	}
+	h.auditGrantCreate(r, id, req, enabled, priority)
 
 	model.WriteJSON(w, http.StatusCreated, map[string]any{"status": "ok", "id": id})
 }
 
-func (h *Handler) UpdateGrant(w http.ResponseWriter, r *http.Request) {
-	grantID := chi.URLParam(r, "id")
-	if grantID == "" {
-		model.WriteJSONError(w, http.StatusBadRequest, "invalid_request_error", "Grant ID is required")
-		return
-	}
+type updateGrantRequest struct {
+	SubjectType *string `json:"subject_type,omitempty"`
+	SubjectID   *string `json:"subject_id,omitempty"`
+	ServerID    *string `json:"server_id,omitempty"`
+	Tools       *string `json:"tools,omitempty"`
+	Effect      *string `json:"effect,omitempty"`
+	Enabled     *bool   `json:"enabled,omitempty"`
+	Priority    *int    `json:"priority,omitempty"`
+}
 
-	defer r.Body.Close()
-
-	var req struct {
-		SubjectType *string `json:"subject_type,omitempty"`
-		SubjectID   *string `json:"subject_id,omitempty"`
-		ServerID    *string `json:"server_id,omitempty"`
-		Tools       *string `json:"tools,omitempty"`
-		Effect      *string `json:"effect,omitempty"`
-		Enabled     *bool   `json:"enabled,omitempty"`
-		Priority    *int    `json:"priority,omitempty"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		model.WriteJSONError(w, http.StatusBadRequest, "invalid_request_error", "Invalid request body")
-		return
-	}
-
-	var existingID string
-	err := h.store.DB.QueryRow("SELECT id FROM mcp_grant WHERE id = ?", grantID).Scan(&existingID)
-	if errors.Is(err, sql.ErrNoRows) {
-		model.WriteJSONError(w, http.StatusNotFound, "not_found", "Grant not found")
-		return
-	}
-	if err != nil {
-		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", "Failed to get grant")
-		return
-	}
-
+// validateUpdateGrantRequest returns an error message for the first
+// invalid set field in req, or "" if every set field is valid.
+func validateUpdateGrantRequest(req updateGrantRequest) string {
 	if req.SubjectType != nil {
 		st := *req.SubjectType
 		if st != "key" && st != "user" && st != "group" {
-			model.WriteJSONError(w, http.StatusBadRequest, "invalid_request_error", "subject_type must be 'key', 'user', or 'group'")
-			return
+			return "subject_type must be 'key', 'user', or 'group'"
 		}
 	}
 	if req.Effect != nil {
 		eff := *req.Effect
 		if eff != "allow" && eff != "deny" {
-			model.WriteJSONError(w, http.StatusBadRequest, "invalid_request_error", "effect must be 'allow' or 'deny'")
-			return
+			return "effect must be 'allow' or 'deny'"
 		}
 	}
+	return ""
+}
 
-	var setClauses []string
-	var args []any
-
+// buildGrantUpdateSets builds the "SET col = ?" clauses and matching args
+// for every field req actually sets.
+func buildGrantUpdateSets(req updateGrantRequest) (setClauses []string, args []any) {
 	if req.SubjectType != nil {
 		setClauses = append(setClauses, "subject_type = ?")
 		args = append(args, *req.SubjectType)
@@ -320,14 +317,81 @@ func (h *Handler) UpdateGrant(w http.ResponseWriter, r *http.Request) {
 		setClauses = append(setClauses, "priority = ?")
 		args = append(args, *req.Priority)
 	}
+	return setClauses, args
+}
 
+// auditGrantUpdate logs an mcp_grant update, if an auditor is configured,
+// diffing req's set fields against the grant's pre-update column values.
+func (h *Handler) auditGrantUpdate(
+	r *http.Request, grantID string, req updateGrantRequest,
+	oldSubjectType, oldSubjectID, oldServerID, oldTools, oldEffect string,
+	oldEnabled, oldPriority int,
+) {
+	if h.auditor == nil {
+		return
+	}
+	oldVals := map[string]any{
+		"subject_type": oldSubjectType,
+		"subject_id":   oldSubjectID,
+		"server_id":    oldServerID,
+		"tools":        oldTools,
+		"effect":       oldEffect,
+		"enabled":      oldEnabled == 1,
+		"priority":     oldPriority,
+	}
+	newVals := map[string]any{
+		"subject_type": ifVal(req.SubjectType, oldSubjectType),
+		"subject_id":   ifVal(req.SubjectID, oldSubjectID),
+		"server_id":    ifVal(req.ServerID, oldServerID),
+		"tools":        ifVal(req.Tools, oldTools),
+		"effect":       ifVal(req.Effect, oldEffect),
+		"enabled":      ifBoolPtr(req.Enabled, oldEnabled == 1),
+		"priority":     ifIntPtr(req.Priority, oldPriority),
+	}
+	if err := h.auditor.LogUpdate(r.Context(), "mcp_grant", grantID, oldVals, newVals, reqmeta.GetKeyID(r.Context())); err != nil {
+		slog.Error("failed to log audit update mcp_grant", "error", err)
+	}
+}
+
+func (h *Handler) UpdateGrant(w http.ResponseWriter, r *http.Request) {
+	grantID := chi.URLParam(r, "id")
+	if grantID == "" {
+		model.WriteJSONError(w, http.StatusBadRequest, "invalid_request_error", "Grant ID is required")
+		return
+	}
+
+	defer func() { _ = r.Body.Close() }()
+
+	var req updateGrantRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		model.WriteJSONError(w, http.StatusBadRequest, "invalid_request_error", "Invalid request body")
+		return
+	}
+
+	var existingID string
+	err := h.store.DB.QueryRow("SELECT id FROM mcp_grant WHERE id = ?", grantID).Scan(&existingID)
+	if errors.Is(err, sql.ErrNoRows) {
+		model.WriteJSONError(w, http.StatusNotFound, "not_found", "Grant not found")
+		return
+	}
+	if err != nil {
+		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", "Failed to get grant")
+		return
+	}
+
+	if errMsg := validateUpdateGrantRequest(req); errMsg != "" {
+		model.WriteJSONError(w, http.StatusBadRequest, "invalid_request_error", errMsg)
+		return
+	}
+
+	setClauses, args := buildGrantUpdateSets(req)
 	if len(setClauses) == 0 {
 		model.WriteJSONError(w, http.StatusBadRequest, "invalid_request_error", "No fields to update")
 		return
 	}
 
 	args = append(args, grantID)
-	query := "UPDATE mcp_grant SET " + strings.Join(setClauses, ", ") + " WHERE id = ?"
+	query := "UPDATE mcp_grant SET " + strings.Join(setClauses, ", ") + " WHERE id = ?" //nolint:gosec // setClauses are static literals, values are parameterized via args
 
 	// Capture old grant values before update
 	var oldSubjectType, oldSubjectID, oldServerID, oldTools, oldEffect string
@@ -346,29 +410,7 @@ func (h *Handler) UpdateGrant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.auditor != nil {
-		oldVals := map[string]any{
-			"subject_type": oldSubjectType,
-			"subject_id":   oldSubjectID,
-			"server_id":    oldServerID,
-			"tools":        oldTools,
-			"effect":       oldEffect,
-			"enabled":      oldEnabled == 1,
-			"priority":     oldPriority,
-		}
-		newVals := map[string]any{
-			"subject_type": ifVal(req.SubjectType, oldSubjectType),
-			"subject_id":   ifVal(req.SubjectID, oldSubjectID),
-			"server_id":    ifVal(req.ServerID, oldServerID),
-			"tools":        ifVal(req.Tools, oldTools),
-			"effect":       ifVal(req.Effect, oldEffect),
-			"enabled":      ifBoolPtr(req.Enabled, oldEnabled == 1),
-			"priority":     ifIntPtr(req.Priority, oldPriority),
-		}
-		if err := h.auditor.LogUpdate("mcp_grant", grantID, oldVals, newVals, reqmeta.GetKeyID(r.Context())); err != nil {
-			slog.Error("failed to log audit update mcp_grant", "error", err)
-		}
-	}
+	h.auditGrantUpdate(r, grantID, req, oldSubjectType, oldSubjectID, oldServerID, oldTools, oldEffect, oldEnabled, oldPriority)
 
 	model.WriteJSON(w, http.StatusOK, map[string]any{"status": "ok", "id": grantID})
 }
@@ -410,7 +452,7 @@ func (h *Handler) DeleteGrant(w http.ResponseWriter, r *http.Request) {
 			"enabled":      oldEnabled == 1,
 			"priority":     oldPriority,
 		}
-		if err := h.auditor.LogDelete("mcp_grant", grantID, vals, reqmeta.GetKeyID(r.Context())); err != nil {
+		if err := h.auditor.LogDelete(r.Context(), "mcp_grant", grantID, vals, reqmeta.GetKeyID(r.Context())); err != nil {
 			slog.Error("failed to log audit delete mcp_grant", "error", err)
 		}
 	}
@@ -457,7 +499,7 @@ func (h *Handler) ToggleGrant(w http.ResponseWriter, r *http.Request) {
 		if enabled == 0 {
 			oldEnabled = 1
 		}
-		if err := h.auditor.LogUpdate("mcp_grant", grantID,
+		if err := h.auditor.LogUpdate(r.Context(), "mcp_grant", grantID,
 			map[string]any{"enabled": oldEnabled == 1},
 			map[string]any{"enabled": enabled == 1},
 			reqmeta.GetKeyID(r.Context())); err != nil {
@@ -512,7 +554,7 @@ func (h *Handler) GetDefaultPolicy(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (h *Handler) SetDefaultPolicy(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 
 	var req struct {
 		DefaultPolicy string `json:"default_policy"`
@@ -544,7 +586,7 @@ func (h *Handler) SetDefaultPolicy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.auditor != nil {
-		if err := h.auditor.LogCreate("mcp_default_policy", "global",
+		if err := h.auditor.LogCreate(r.Context(), "mcp_default_policy", "global",
 			map[string]any{"default_policy": req.DefaultPolicy},
 			reqmeta.GetKeyID(r.Context())); err != nil {
 			slog.Warn("Failed to log audit create", "error", err)
@@ -561,8 +603,85 @@ type TestRuleRequest struct {
 	ToolName    string `json:"tool_name"`
 }
 
+// resolveServerIDFromToolName extracts the server ID prefix from a tool
+// name in "server_id/tool_name" or "server_id__tool_name" format, or ""
+// if the tool name carries no server prefix.
+func resolveServerIDFromToolName(toolName string) string {
+	if before, _, ok := strings.Cut(toolName, "/"); ok {
+		return before
+	}
+	if before, _, ok := strings.Cut(toolName, "__"); ok {
+		return before
+	}
+	return ""
+}
+
+// grantEvalState accumulates evaluateGrantRows' deny/allow/matched state
+// across mcp_grant rows.
+type grantEvalState struct {
+	hasDeny       bool
+	hasAllow      bool
+	matchedRule   string
+	matchedSource string
+}
+
+// applyRow updates state from one matching grant row's tools/effect
+// (deny-overrides: the first deny wins the matched label, and any deny
+// suppresses a later allow from claiming it).
+func (g *grantEvalState) applyRow(tools, effect string) {
+	if effect == "deny" {
+		g.hasDeny = true
+		if g.matchedRule == "" {
+			g.matchedRule = "db_deny:" + tools
+			g.matchedSource = "grant"
+		}
+		return
+	}
+	g.hasAllow = true
+	if !g.hasDeny {
+		g.matchedRule = "db_allow:" + tools
+		g.matchedSource = "grant"
+	}
+}
+
+// evaluateGrantRows scans mcp_grant rows (ordered by priority DESC) and
+// determines whether any deny/allow grant matches serverID/toolName,
+// returning the first matched rule label and its source ("grant").
+func evaluateGrantRows(rows *sql.Rows, serverID, toolName string) (hasDeny, hasAllow bool, matchedRule, matchedSource string) {
+	var state grantEvalState
+	for rows.Next() {
+		var tools, effect, sID string
+		if err := rows.Scan(&tools, &effect, &sID); err != nil {
+			continue
+		}
+		if serverID != "" && sID != "*" && sID != serverID {
+			continue
+		}
+		if !toolMatchPattern(tools, toolName) {
+			continue
+		}
+		state.applyRow(tools, effect)
+	}
+	return state.hasDeny, state.hasAllow, state.matchedRule, state.matchedSource
+}
+
+// resolveTestRuleDefaultPolicy determines the allow/deny outcome for
+// TestRule when no grant matched, falling back to the configured
+// default_policy.
+func (h *Handler) resolveTestRuleDefaultPolicy() (allowed bool, matchedRule, matchedSource string) {
+	var value string
+	err := h.store.DB.QueryRow(
+		`SELECT value FROM runtime_config WHERE section = 'mcp' AND key = 'default_policy' LIMIT 1`,
+	).Scan(&value)
+	policy := "deny"
+	if err == nil && value == "true" {
+		policy = "allow"
+	}
+	return policy == "allow", "default_policy:" + policy, "default"
+}
+
 func (h *Handler) TestRule(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 	var req TestRuleRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		model.WriteJSONError(w, http.StatusBadRequest, "invalid_request_error", "Invalid request body")
@@ -577,13 +696,7 @@ func (h *Handler) TestRule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Resolve server ID from tool name (format "server_id/tool_name" or "server_id__tool_name").
-	serverID := ""
-	if idx := strings.IndexByte(req.ToolName, '/'); idx >= 0 {
-		serverID = req.ToolName[:idx]
-	} else if idx := strings.Index(req.ToolName, "__"); idx >= 0 {
-		serverID = req.ToolName[:idx]
-	}
+	serverID := resolveServerIDFromToolName(req.ToolName)
 
 	rows, err := h.store.DB.Query(
 		`SELECT tools, effect, server_id FROM mcp_grant
@@ -596,65 +709,26 @@ func (h *Handler) TestRule(w http.ResponseWriter, r *http.Request) {
 		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", "Failed to query grants")
 		return
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
-	var allowedResult bool
-	matchedRule := ""
-	matchedSource := ""
-	hasDeny := false
-	hasAllow := false
-
-	for rows.Next() {
-		var tools, effect, sID string
-		if err := rows.Scan(&tools, &effect, &sID); err != nil {
-			continue
-		}
-		if serverID != "" && sID != "*" && sID != serverID {
-			continue
-		}
-		if !toolMatchPattern(tools, req.ToolName) {
-			continue
-		}
-		if effect == "deny" {
-			hasDeny = true
-			if matchedRule == "" {
-				matchedRule = "db_deny:" + tools
-				matchedSource = "grant"
-			}
-		} else {
-			hasAllow = true
-			if !hasDeny {
-				matchedRule = "db_allow:" + tools
-				matchedSource = "grant"
-			}
-		}
-	}
+	hasDeny, hasAllow, matchedRule, matchedSource := evaluateGrantRows(rows, serverID, req.ToolName)
 	if err := rows.Err(); err != nil {
 		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", "Failed to query grants")
 		return
 	}
 
-	if hasDeny {
+	var allowedResult bool
+	switch {
+	case hasDeny:
 		allowedResult = false
 		if matchedRule == "" {
 			matchedRule = "db_deny:*"
 			matchedSource = "grant"
 		}
-	} else if hasAllow {
+	case hasAllow:
 		allowedResult = true
-	} else {
-		// Fall back to default policy when no grants match.
-		var value string
-		err := h.store.DB.QueryRow(
-			`SELECT value FROM runtime_config WHERE section = 'mcp' AND key = 'default_policy' LIMIT 1`,
-		).Scan(&value)
-		policy := "deny"
-		if err == nil && value == "true" {
-			policy = "allow"
-		}
-		allowedResult = policy == "allow"
-		matchedRule = "default_policy:" + policy
-		matchedSource = "default"
+	default:
+		allowedResult, matchedRule, matchedSource = h.resolveTestRuleDefaultPolicy()
 	}
 
 	model.WriteJSON(w, http.StatusOK, map[string]any{

@@ -100,7 +100,7 @@ func (r *JobRunner) runExecution(ctx context.Context, job Job, run *JobRun, star
 			run.LLMError = sqlNullString(stepsErr.Error())
 		}
 		if isLLMCallError(stepsErr) {
-			r.retryOrFail(run, start)
+			r.retryOrFail(run, start) //nolint:contextcheck // retry timer fires minutes later via time.AfterFunc, deliberately detached from this request's ctx, see retryOrFail
 		} else {
 			run.Status = StatusDeadLetter
 			failRun(run, start)
@@ -179,7 +179,7 @@ func (r *JobRunner) callLLM(ctx context.Context, modelName string, prompt string
 	if err != nil {
 		return "", "", 0, 0, 0, fmt.Errorf("proxy request: %w", err)
 	}
-	defer httpResp.Body.Close()
+	defer func() { _ = httpResp.Body.Close() }()
 
 	respBody, _ := io.ReadAll(httpResp.Body)
 
@@ -287,7 +287,9 @@ func (r *JobRunner) retryOrFail(run *JobRun, start time.Time) bool {
 		run.DurationMs = int(now.Sub(start).Milliseconds())
 		// Reset terminal fields — the run isn't done yet.
 		run.FinishedAt = sql.NullTime{}
-		time.AfterFunc(delay, func() {
+		// Background context is intentional: this timer fires minutes later,
+		// long after any request-scoped context would have expired.
+		time.AfterFunc(delay, func() { //nolint:contextcheck // delayed background timer, not request-scoped
 			r.Reconcile(context.Background(), r.cfg.MaxAttempts)
 		})
 		return true

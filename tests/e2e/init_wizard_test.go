@@ -68,16 +68,16 @@ func TestInitWizard_EnterKey(t *testing.T) {
 		return output.String()
 	}
 
-	waitFor := func(sub string) string {
+	waitFor := func(sub string) {
 		for {
 			outStr := getOutput()
 			if strings.Contains(outStr, sub) {
-				return outStr
+				return
 			}
 			select {
 			case _, ok := <-outCh:
 				if !ok {
-					return getOutput()
+					return
 				}
 			case <-time.After(30 * time.Second):
 				t.Fatalf("timeout waiting for %q in:\n%s", sub, getOutput())
@@ -112,7 +112,7 @@ func TestInitWizard_EnterKey(t *testing.T) {
 
 	waitFor("Seed applied")
 	t.Log("Wizard completed!")
-	f.Close()
+	_ = f.Close()
 
 	require.NoError(t, cmd.Wait(), "exit 0 = Enter key works")
 }

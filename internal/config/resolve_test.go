@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // ─────────────────────────────────────────────────────────────────────
@@ -162,7 +163,9 @@ func TestOptionBool_ImplementsOptionAny(t *testing.T) {
 func TestOptionFloat64_ImplementsOptionAny(t *testing.T) {
 	var v optionAny = OptionFloat64{optionCore: optionCore[float64]{val: 3.14, present: true}}
 	assert.True(t, v.isSet())
-	assert.InDelta(t, 3.14, v.get().(float64), 0.001)
+	got, ok := v.get().(float64)
+	require.True(t, ok)
+	assert.InDelta(t, 3.14, got, 0.001)
 }
 
 func TestOptionFloat64_UnsetImplementsOptionAny(t *testing.T) {

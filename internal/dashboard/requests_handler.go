@@ -26,6 +26,10 @@ func NewRequestsHandler(store *db.SQLiteStore) *RequestsHandler {
 	return &RequestsHandler{store: store}
 }
 
+// maxDecompressedRequestBody caps decompression of stored request/response
+// bodies to guard against a decompression-bomb blowing up server memory.
+const maxDecompressedRequestBody = 32 * 1024 * 1024 // 32MB
+
 // Helper function to decompress bytes inline
 func decompressBytesInline(data []byte) *string {
 	if len(data) == 0 {
@@ -37,9 +41,9 @@ func decompressBytesInline(data []byte) *string {
 		s := string(data)
 		return &s
 	}
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 	var buf bytes.Buffer
-	if _, err := io.Copy(&buf, reader); err != nil {
+	if _, err := io.Copy(&buf, io.LimitReader(reader, maxDecompressedRequestBody)); err != nil {
 		s := string(data)
 		return &s
 	}
@@ -124,67 +128,77 @@ func (h *RequestsHandler) HandleRequestDetail(w http.ResponseWriter, r *http.Req
 	model.WriteJSON(w, http.StatusOK, detail)
 }
 
-func (h *RequestsHandler) HandleListRequests(w http.ResponseWriter, r *http.Request) {
-	// Parse pagination parameters
-	page := 1
+// requestListFilter holds the query-string filters accepted by
+// HandleListRequests.
+type requestListFilter struct {
+	status     string
+	modelQuery string
+	provider   string
+	start      string
+	end        string
+}
+
+func parseRequestListPageLimit(r *http.Request) (page, limit int) {
+	page = 1
 	if pStr := r.URL.Query().Get("page"); pStr != "" {
 		if p, err := strconv.Atoi(pStr); err == nil && p > 0 {
 			page = p
 		}
 	}
-
-	limit := 50
+	limit = 50
 	if lStr := r.URL.Query().Get("limit"); lStr != "" {
 		if l, err := strconv.Atoi(lStr); err == nil && l > 0 {
 			limit = l
 		}
 	}
-	offset := (page - 1) * limit
+	return page, limit
+}
 
-	// Parse filters
-	status := r.URL.Query().Get("status")
-	modelQuery := r.URL.Query().Get("model")
-	provider := r.URL.Query().Get("provider")
-	start := r.URL.Query().Get("start")
-	end := r.URL.Query().Get("end")
+func parseRequestListFilter(r *http.Request) requestListFilter {
+	q := r.URL.Query()
+	return requestListFilter{
+		status:     q.Get("status"),
+		modelQuery: q.Get("model"),
+		provider:   q.Get("provider"),
+		start:      q.Get("start"),
+		end:        q.Get("end"),
+	}
+}
 
-	// Build query
-	query := `SELECT
+// buildRequestListQuery builds the data + count SQL (and their args) for
+// HandleListRequests, applying f's filters identically to both queries.
+func buildRequestListQuery(f requestListFilter) (query, countQuery string, args, countArgs []any) {
+	query = `SELECT
 		al.id, al.timestamp, al.key_id, al.model, al.provider,
 		al.prompt_tokens, al.completion_tokens, al.total_cost, al.latency_ms,
 		al.status_code, al.cache_hit, al.client_ip, al.trace_id, al.prompt_preview,
 		EXISTS(SELECT 1 FROM audit_body WHERE audit_log_id = al.id) AS has_body
 	FROM audit_log al WHERE 1=1`
 
-	countQuery := `SELECT COUNT(*) FROM audit_log al WHERE 1=1`
+	countQuery = `SELECT COUNT(*) FROM audit_log al WHERE 1=1`
 
-	var args []any
-	var countArgs []any
-
-	if status != "" {
-		switch status {
-		case "success":
-			query += " AND al.status_code < 400"
-			countQuery += " AND al.status_code < 400"
-		case "error":
-			query += " AND al.status_code >= 400"
-			countQuery += " AND al.status_code >= 400"
-		}
+	switch f.status {
+	case "success":
+		query += " AND al.status_code < 400"
+		countQuery += " AND al.status_code < 400"
+	case "error":
+		query += " AND al.status_code >= 400"
+		countQuery += " AND al.status_code >= 400"
 	}
 
-	if modelQuery != "" {
-		filterPattern := "%" + modelQuery + "%"
+	if f.modelQuery != "" {
+		filterPattern := "%" + f.modelQuery + "%"
 		query += " AND (al.model LIKE ? OR al.provider LIKE ? OR al.client_ip LIKE ? OR al.key_id LIKE ?)"
 		countQuery += " AND (al.model LIKE ? OR al.provider LIKE ? OR al.client_ip LIKE ? OR al.key_id LIKE ?)"
 		args = append(args, filterPattern, filterPattern, filterPattern, filterPattern)
 		countArgs = append(countArgs, filterPattern, filterPattern, filterPattern, filterPattern)
 	}
 
-	if provider != "" {
+	if f.provider != "" {
 		query += " AND al.provider = ?"
 		countQuery += " AND al.provider = ?"
-		args = append(args, provider)
-		countArgs = append(countArgs, provider)
+		args = append(args, f.provider)
+		countArgs = append(countArgs, f.provider)
 	}
 
 	// datetime(...) on both sides: al.timestamp is a bare "YYYY-MM-DD HH:MM:SS"
@@ -192,21 +206,64 @@ func (h *RequestsHandler) HandleListRequests(w http.ResponseWriter, r *http.Requ
 	// ("...T....000Z"). A raw string comparison between those two formats is
 	// lexicographically wrong (space < 'T') and silently drops same-day rows;
 	// wrapping both in datetime() normalizes them before comparing.
-	if start != "" {
+	if f.start != "" {
 		query += " AND datetime(al.timestamp) >= datetime(?)"
 		countQuery += " AND datetime(al.timestamp) >= datetime(?)"
-		args = append(args, start)
-		countArgs = append(countArgs, start)
+		args = append(args, f.start)
+		countArgs = append(countArgs, f.start)
 	}
 
-	if end != "" {
+	if f.end != "" {
 		query += " AND datetime(al.timestamp) <= datetime(?)"
 		countQuery += " AND datetime(al.timestamp) <= datetime(?)"
-		args = append(args, end)
-		countArgs = append(countArgs, end)
+		args = append(args, f.end)
+		countArgs = append(countArgs, f.end)
 	}
 
-	// Get total count
+	return query, countQuery, args, countArgs
+}
+
+// scanRequestSummaryRow scans one row of HandleListRequests' data query
+// into a RequestSummary.
+func scanRequestSummaryRow(rows *sql.Rows) (RequestSummary, error) {
+	var item RequestSummary
+	var keyID *string
+	var clientIP *string
+	var traceID *string
+	var promptPreview *string
+
+	if err := rows.Scan(
+		&item.ID, &item.Timestamp, &keyID, &item.Model, &item.Provider,
+		&item.PromptTokens, &item.CompletionTokens, &item.TotalCost, &item.LatencyMs,
+		&item.StatusCode, &item.CacheHit, &clientIP, &traceID, &promptPreview,
+		&item.HasBody,
+	); err != nil {
+		return item, err
+	}
+
+	if keyID != nil {
+		item.KeyID = *keyID
+	}
+	if clientIP != nil {
+		item.ClientIP = *clientIP
+	}
+	if traceID != nil {
+		item.TraceID = traceID
+	}
+	if promptPreview != nil {
+		item.PromptPreview = *promptPreview
+	}
+	item.Timestamp = db.FormatSQLiteTimestamp(item.Timestamp)
+	return item, nil
+}
+
+func (h *RequestsHandler) HandleListRequests(w http.ResponseWriter, r *http.Request) {
+	page, limit := parseRequestListPageLimit(r)
+	offset := (page - 1) * limit
+	filter := parseRequestListFilter(r)
+
+	query, countQuery, args, countArgs := buildRequestListQuery(filter)
+
 	var total int
 	sqldb := h.store.DB
 	err := sqldb.QueryRow(countQuery, countArgs...).Scan(&total)
@@ -226,42 +283,16 @@ func (h *RequestsHandler) HandleListRequests(w http.ResponseWriter, r *http.Requ
 		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	items := make([]RequestSummary, 0)
 	for rows.Next() {
-		var item RequestSummary
-		var keyID *string
-		var clientIP *string
-		var traceID *string
-		var promptPreview *string
-
-		err := rows.Scan(
-			&item.ID, &item.Timestamp, &keyID, &item.Model, &item.Provider,
-			&item.PromptTokens, &item.CompletionTokens, &item.TotalCost, &item.LatencyMs,
-			&item.StatusCode, &item.CacheHit, &clientIP, &traceID, &promptPreview,
-			&item.HasBody,
-		)
-		if err != nil {
-			slog.Error("Failed to scan request summary row", "error", err)
-			model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		item, errScan := scanRequestSummaryRow(rows)
+		if errScan != nil {
+			slog.Error("Failed to scan request summary row", "error", errScan)
+			model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", errScan.Error())
 			return
 		}
-
-		if keyID != nil {
-			item.KeyID = *keyID
-		}
-		if clientIP != nil {
-			item.ClientIP = *clientIP
-		}
-		if traceID != nil {
-			item.TraceID = traceID
-		}
-		if promptPreview != nil {
-			item.PromptPreview = *promptPreview
-		}
-		item.Timestamp = db.FormatSQLiteTimestamp(item.Timestamp)
-
 		items = append(items, item)
 	}
 	if err := rows.Err(); err != nil {

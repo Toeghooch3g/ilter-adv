@@ -41,7 +41,7 @@ func (s *JobStore) CreateJob(ctx context.Context, job *Job) error {
 	return nil
 }
 
-// GetJob retrieves a job by ID.
+// GetJob retrieves a job by ID. It returns (nil, nil) if no job with that ID exists.
 func (s *JobStore) GetJob(id string) (*Job, error) {
 	var j Job
 	var enabled int
@@ -53,7 +53,7 @@ func (s *JobStore) GetJob(id string) (*Job, error) {
 		&j.StepsJSON, &j.VariablesConfig, &j.DeliveryConfig, &j.TimeoutMs,
 		&enabled, &j.APIKeyID, &j.CreatedAt, &j.UpdatedAt)
 	if err == sql.ErrNoRows {
-		return nil, nil
+		return nil, nil //nolint:nilnil // documented not-found contract, see doc comment above
 	}
 	if err != nil {
 		return nil, fmt.Errorf("get job %s: %w", id, err)
@@ -73,7 +73,7 @@ func (s *JobStore) ListJobs() ([]Job, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list jobs: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	jobs := make([]Job, 0)
 	for rows.Next() {
@@ -104,7 +104,7 @@ func (s *JobStore) ListEnabledJobs() ([]Job, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list enabled jobs: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	jobs := make([]Job, 0)
 	for rows.Next() {
@@ -225,7 +225,7 @@ func (s *JobStore) UpdateRun(ctx context.Context, run *JobRun) error {
 	return nil
 }
 
-// GetRun retrieves a run by ID.
+// GetRun retrieves a run by ID. It returns (nil, nil) if no run with that ID exists.
 func (s *JobStore) GetRun(id string) (*JobRun, error) {
 	var r JobRun
 	err := s.db.QueryRow(
@@ -242,7 +242,7 @@ func (s *JobStore) GetRun(id string) (*JobRun, error) {
 		&r.RequestBody, &r.ExecutionKey,
 		&r.NextRetryAt, &r.LastError, &r.Steps)
 	if err == sql.ErrNoRows {
-		return nil, nil
+		return nil, nil //nolint:nilnil // documented not-found contract, see doc comment above
 	}
 	if err != nil {
 		return nil, fmt.Errorf("get run %s: %w", id, err)
@@ -267,7 +267,7 @@ func (s *JobStore) ListRuns(jobID string, page, perPage int) ([]JobRun, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list runs for job %s: %w", jobID, err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	runs := make([]JobRun, 0)
 	for rows.Next() {

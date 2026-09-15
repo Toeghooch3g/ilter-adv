@@ -41,19 +41,26 @@ func matchesCondition(cond string, req *model.ChatCompletionRequest, score float
 	// prompt contains "text"
 	if strings.HasPrefix(cond, "prompt contains ") {
 		target := extractQuoted(strings.TrimSpace(cond[16:]))
-		if target == "" {
-			return false
-		}
-		for _, msg := range req.Messages {
-			if msg.Content != nil {
-				if s, ok := msg.Content.(string); ok && strings.Contains(s, target) {
-					return true
-				}
-			}
-		}
-		return false
+		return promptContains(req.Messages, target)
 	}
 
+	return false
+}
+
+// promptContains reports whether any message's string content contains
+// target (an empty target never matches).
+func promptContains(messages []model.Message, target string) bool {
+	if target == "" {
+		return false
+	}
+	for _, msg := range messages {
+		if msg.Content == nil {
+			continue
+		}
+		if s, ok := msg.Content.(string); ok && strings.Contains(s, target) {
+			return true
+		}
+	}
 	return false
 }
 

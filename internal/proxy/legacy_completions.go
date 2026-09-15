@@ -160,7 +160,7 @@ func translateChatResponseToLegacyCompletion(resp *model.ChatCompletionResponse,
 // translating prompt-based requests into a chat-completion request and back,
 // reusing chatChain the same way AnthropicMessages does.
 func (h *Handler) LegacyCompletions(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 
 	bodyBytes, err := io.ReadAll(r.Body)
 	if err != nil {

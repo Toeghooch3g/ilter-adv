@@ -30,11 +30,11 @@ type dummyProvider struct{}
 func (d *dummyProvider) Name() string { return "openai" }
 func (d *dummyProvider) Type() string { return "openai" }
 func (d *dummyProvider) TransformRequest(_ context.Context, _ *model.ChatCompletionRequest) (*http.Request, error) {
-	return nil, nil
+	return nil, nil //nolint:nilnil // unused interface stub, never called by this test
 }
 
 func (d *dummyProvider) TransformResponse(_ context.Context, _ *http.Response) (*model.ChatCompletionResponse, error) {
-	return nil, nil
+	return nil, nil //nolint:nilnil // unused interface stub, never called by this test
 }
 func (d *dummyProvider) Client() *http.Client                { return nil }
 func (d *dummyProvider) HealthCheck(_ context.Context) error { return nil }
@@ -45,8 +45,8 @@ func (d *dummyProvider) DiscoverModels(_ context.Context) ([]catalog.ModelInfo, 
 func TestDashboardServer_API(t *testing.T) {
 	store, tmpDir := setupTestStore(t)
 	defer func() {
-		store.Close()
-		os.RemoveAll(tmpDir)
+		_ = store.Close()
+		_ = os.RemoveAll(tmpDir)
 	}()
 
 	// Seed key and audits
@@ -570,10 +570,20 @@ func TestDashboardServer_API(t *testing.T) {
 		if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
 			t.Fatalf("failed to unmarshal keys response: %v", err)
 		}
-		keys := resp["api_keys"].([]any)
+		keys, ok := resp["api_keys"].([]any)
+		if !ok {
+			t.Fatal("expected api_keys to be a []any")
+		}
 		for _, k := range keys {
-			key := k.(map[string]any)
-			if key["id"].(string) == keyID {
+			key, ok := k.(map[string]any)
+			if !ok {
+				t.Fatal("expected key entry to be a map[string]any")
+			}
+			id, ok := key["id"].(string)
+			if !ok {
+				t.Fatal("expected key id to be a string")
+			}
+			if id == keyID {
 				t.Errorf("key %s was not deleted", keyID)
 			}
 		}
@@ -583,8 +593,8 @@ func TestDashboardServer_API(t *testing.T) {
 func TestDashboardServer_AdditionalHandlers(t *testing.T) {
 	store, tmpDir := setupTestStore(t)
 	defer func() {
-		store.Close()
-		os.RemoveAll(tmpDir)
+		_ = store.Close()
+		_ = os.RemoveAll(tmpDir)
 	}()
 
 	// Seed api_key
@@ -924,8 +934,8 @@ func TestDashboardServer_AdditionalHandlers(t *testing.T) {
 func TestDashboardServer_GuardrailsAndLatency(t *testing.T) {
 	store, tmpDir := setupTestStore(t)
 	defer func() {
-		store.Close()
-		os.RemoveAll(tmpDir)
+		_ = store.Close()
+		_ = os.RemoveAll(tmpDir)
 	}()
 
 	// Seed api_key
@@ -1149,8 +1159,8 @@ func TestDashboardServer_GuardrailsAndLatency(t *testing.T) {
 func TestDashboardServer_StartAndAuth(t *testing.T) {
 	store, tmpDir := setupTestStore(t)
 	defer func() {
-		store.Close()
-		os.RemoveAll(tmpDir)
+		_ = store.Close()
+		_ = os.RemoveAll(tmpDir)
 	}()
 
 	cfg := &config.Config{
@@ -1196,7 +1206,7 @@ func TestDashboardServer_StartAndAuth(t *testing.T) {
 			queryToken := r.URL.Query().Get("token")
 			if token == "" && queryToken != "" {
 				token = queryToken
-				http.SetCookie(w, &http.Cookie{
+				http.SetCookie(w, &http.Cookie{ //nolint:gosec // test server over plain HTTP, not a security-relevant cookie
 					Name:     "token",
 					Value:    token,
 					Path:     "/",
@@ -1302,8 +1312,8 @@ func TestHandleLogin(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			store, tmpDir := setupTestStore(t)
-			defer store.Close()
-			defer os.RemoveAll(tmpDir)
+			defer func() { _ = store.Close() }()
+			defer func() { _ = os.RemoveAll(tmpDir) }()
 
 			cfg := &config.Config{
 				Dashboard: config.DashboardConfig{

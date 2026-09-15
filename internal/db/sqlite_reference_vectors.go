@@ -22,7 +22,7 @@ func (s *SQLiteStore) LoadReferenceVectors(ctx context.Context) (map[string][]fl
 		return nil, fmt.Errorf("reference_vector: query section: %w", err)
 	}
 	if len(rows) == 0 {
-		return nil, nil
+		return nil, nil //nolint:nilnil // documented not-found contract, see doc comment above
 	}
 
 	result := make(map[string][]float32, len(rows))

@@ -51,12 +51,12 @@ func setupWebhookTestDB(t testTB) (*Store, func()) {
 		);
 	`)
 	if err != nil {
-		db.Close()
+		_ = db.Close()
 		t.Fatalf("create triggers table: %v", err)
 	}
 
 	store := NewStore(db)
-	cleanup := func() { db.Close() }
+	cleanup := func() { _ = db.Close() }
 	return store, cleanup
 }
 
@@ -205,7 +205,7 @@ func TestVerifyAndActivate_GitLab_Success(t *testing.T) {
 	store, cleanup := setupWebhookTestDB(t)
 	defer cleanup()
 
-	gitlabSecret := "gitlab-shared-secret"
+	gitlabSecret := "gitlab-shared-secret" //nolint:gosec // test fixture secret, not a real credential
 	insertWebhookTrigger(t, store, "trig-3", "job-3", "wht_gitlab_url", gitlabSecret, "gitlab", true)
 
 	wt := NewWebhookTrigger(store, config.JobsConfig{}, slog.Default())
@@ -315,7 +315,7 @@ func TestVerifyAndActivate_Generic_Success(t *testing.T) {
 	store, cleanup := setupWebhookTestDB(t)
 	defer cleanup()
 
-	secret := "generic-hmac-secret"
+	secret := "generic-hmac-secret" //nolint:gosec // test fixture secret, not a real credential
 	insertWebhookTrigger(t, store, "trig-5", "job-5", "wht_generic", secret, "generic", true)
 
 	wt := NewWebhookTrigger(store, config.JobsConfig{}, slog.Default())

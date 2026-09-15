@@ -95,7 +95,10 @@ func TestPIIMasker_Handler(t *testing.T) {
 				t.Fatalf("Messages array is empty")
 			}
 
-			content := parsedBody.Messages[0].Content.(string)
+			content, ok := parsedBody.Messages[0].Content.(string)
+			if !ok {
+				t.Fatalf("expected value to be a string")
+			}
 			if !strings.Contains(content, tt.expectedMatch) {
 				t.Errorf("Expected content to contain %q, but got %q", tt.expectedMatch, content)
 			}
@@ -222,7 +225,10 @@ func TestPIIMasker_ReversibleAndBlock(t *testing.T) {
 
 			var parsedBody model.ChatCompletionRequest
 			_ = json.Unmarshal(processedBody, &parsedBody)
-			content := parsedBody.Messages[0].Content.(string)
+			content, ok := parsedBody.Messages[0].Content.(string)
+			if !ok {
+				t.Fatalf("expected value to be a string")
+			}
 
 			// Capture placeholders
 			for word := range strings.FieldsSeq(content) {
@@ -295,7 +301,10 @@ func TestPIIMasker_ReversibleAndBlock(t *testing.T) {
 			t.Fatalf("Failed to parse error response: %v", err)
 		}
 
-		code := errResp["error"]["code"].(string)
+		code, ok := errResp["error"]["code"].(string)
+		if !ok {
+			t.Fatalf("expected value to be a string")
+		}
 		if code != "pii_blocked" {
 			t.Errorf("Expected error code 'pii_blocked', got %q", code)
 		}
@@ -326,7 +335,10 @@ func TestPIIMasker_ReversibleStreamingSplit(t *testing.T) {
 
 		var parsedBody model.ChatCompletionRequest
 		_ = json.Unmarshal(processedBody, &parsedBody)
-		content := parsedBody.Messages[0].Content.(string)
+		content, ok := parsedBody.Messages[0].Content.(string)
+		if !ok {
+			t.Fatalf("expected value to be a string")
+		}
 
 		// John should have been masked with something like PII:NAMES:abc123
 		// Let's capture the placeholder
@@ -395,7 +407,10 @@ func TestPIIResponseUnmask(t *testing.T) {
 			if err := json.Unmarshal(body, &parsed); err != nil {
 				t.Fatalf("Failed to parse masked body: %v", err)
 			}
-			content := parsed.Messages[0].Content.(string)
+			content, ok := parsed.Messages[0].Content.(string)
+			if !ok {
+				t.Fatalf("expected value to be a string")
+			}
 
 			for word := range strings.FieldsSeq(content) {
 				if strings.HasPrefix(word, "PII:") {
@@ -458,7 +473,10 @@ func TestPIIReversibleCrossRequest(t *testing.T) {
 		if err := json.Unmarshal(body, &parsed); err != nil {
 			t.Fatalf("Request 1: failed to parse masked body: %v", err)
 		}
-		content := parsed.Messages[0].Content.(string)
+		content, ok := parsed.Messages[0].Content.(string)
+		if !ok {
+			t.Fatalf("expected value to be a string")
+		}
 
 		for word := range strings.FieldsSeq(content) {
 			if strings.HasPrefix(word, "PII:") {
@@ -499,7 +517,10 @@ func TestPIIReversibleCrossRequest(t *testing.T) {
 		if err := json.Unmarshal(body, &parsed); err != nil {
 			t.Fatalf("Request 2: failed to parse body: %v", err)
 		}
-		content := parsed.Messages[0].Content.(string)
+		content, ok := parsed.Messages[0].Content.(string)
+		if !ok {
+			t.Fatalf("expected value to be a string")
+		}
 		if strings.Contains(content, "PII:") {
 			t.Errorf("Request 2: body should not contain placeholders (no PII in input), got: %q", content)
 		}
@@ -583,7 +604,7 @@ func TestPIIMaskedEventsPersisted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to query pii_events details: %v", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	for rows.Next() {
 		var piiType, actionTaken, preview, piiValue, clientIP string
@@ -631,7 +652,10 @@ func TestPIIPhoneUnmask(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&parsed); err != nil {
 			t.Fatalf("decode: %v", err)
 		}
-		content := parsed.Messages[0].Content.(string)
+		content, ok := parsed.Messages[0].Content.(string)
+		if !ok {
+			t.Fatalf("expected value to be a string")
+		}
 
 		for word := range strings.FieldsSeq(content) {
 			if strings.HasPrefix(word, "PII:") {

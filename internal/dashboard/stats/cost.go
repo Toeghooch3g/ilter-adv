@@ -36,7 +36,7 @@ func (h *Handler) HandleTopExpensiveRequests(w http.ResponseWriter, _ *http.Requ
 		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	items := make([]TopExpensiveItem, 0, 10)
 	for rows.Next() {
@@ -89,7 +89,7 @@ func (h *Handler) HandleCostTrend(w http.ResponseWriter, r *http.Request) {
 		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	items := make([]CostTrendItem, 0)
 	for rows.Next() {
@@ -148,7 +148,7 @@ func (h *Handler) HandleCostByModel(w http.ResponseWriter, _ *http.Request) {
 		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	items := make([]ModelCostItem, 0)
 	for rows.Next() {
@@ -205,10 +205,22 @@ type tierCheapest struct {
 	outRate float64
 }
 
-func (h *Handler) HandleSavingsOpportunity(w http.ResponseWriter, _ *http.Request) {
+type modelAccum struct {
+	actualCost       float64
+	altCost          float64
+	count            int
+	recommendedModel string
+}
+
+// computeModelTierCheapest maps each catalog model to its tier and finds
+// the cheapest (input+output rate) model in each tier, for savings
+// comparison.
+func computeModelTierCheapest() (modelTier map[string]string, cheapestInTier map[string]tierCheapest) {
 	catalog.ModelsMu.RLock()
-	modelTier := make(map[string]string, len(catalog.Models))
-	cheapestInTier := make(map[string]tierCheapest)
+	defer catalog.ModelsMu.RUnlock()
+
+	modelTier = make(map[string]string, len(catalog.Models))
+	cheapestInTier = make(map[string]tierCheapest)
 	for name, infos := range catalog.Models {
 		if len(infos) == 0 {
 			continue
@@ -226,30 +238,53 @@ func (h *Handler) HandleSavingsOpportunity(w http.ResponseWriter, _ *http.Reques
 			cheapestInTier[tier] = tierCheapest{name: name, inRate: info.CostPerInputToken, outRate: info.CostPerOutputToken}
 		}
 	}
-	catalog.ModelsMu.RUnlock()
+	return modelTier, cheapestInTier
+}
 
-	rows, err := h.store.DB.Query(`
-		SELECT model, total_cost, prompt_tokens, completion_tokens
-		FROM audit_log
-		WHERE timestamp >= datetime('now', '-7 days') AND model != ''
-	`)
-	if err != nil {
-		slog.Error("Failed to query audit_log for savings opportunity", "error", err)
-		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", err.Error())
-		return
+// savingsForRow computes one audit_log row's cheapest-in-tier alternative
+// cost (capped at the actual cost — never a "savings" that costs more) and
+// which model that alternative is.
+func savingsForRow(actualCost float64, pTokens, cTokens int, tier string, cheapestInTier map[string]tierCheapest) (altCost float64, recModel string) {
+	cheapest, ok := cheapestInTier[tier]
+	if ok {
+		altCost = float64(pTokens)*cheapest.inRate + float64(cTokens)*cheapest.outRate
+		recModel = cheapest.name
+	} else {
+		altCost = actualCost
 	}
-	defer rows.Close()
+	if actualCost < altCost {
+		altCost = actualCost
+	}
+	return altCost, recModel
+}
 
-	type modelAccum struct {
-		actualCost       float64
-		altCost          float64
-		count            int
-		recommendedModel string
+// buildSavingsOpportunities renders accum's per-model totals as
+// SavingsItems, returning the combined total savings too.
+func buildSavingsOpportunities(accum map[string]*modelAccum) ([]SavingsItem, float64) {
+	opportunities := make([]SavingsItem, 0, len(accum))
+	var totalSavings float64
+	for modelName, a := range accum {
+		savings := a.actualCost - a.altCost
+		if savings < 0 {
+			savings = 0
+		}
+		totalSavings += savings
+		opportunities = append(opportunities, SavingsItem{
+			Model:                   modelName,
+			ActualCost:              a.actualCost,
+			CheapestAlternativeCost: a.altCost,
+			Savings:                 savings,
+			RequestCount:            a.count,
+			RecommendedModel:        a.recommendedModel,
+		})
 	}
-	accum := make(map[string]*modelAccum)
-	var totalActual float64
-	var totalAlt float64
-	var totalCount int
+	return opportunities, totalSavings
+}
+
+// accumulateSavingsRows scans audit_log rows into per-model cost
+// accumulators, logging (not failing) on a per-row scan error.
+func accumulateSavingsRows(rows *sql.Rows, modelTier map[string]string, cheapestInTier map[string]tierCheapest) (accum map[string]*modelAccum, totalActual, totalAlt float64, totalCount int) {
+	accum = make(map[string]*modelAccum)
 
 	for rows.Next() {
 		var modelName string
@@ -274,20 +309,7 @@ func (h *Handler) HandleSavingsOpportunity(w http.ResponseWriter, _ *http.Reques
 			cTokens = int(completionTokens.Int64)
 		}
 
-		tier := modelTier[modelName]
-		cheapest, ok := cheapestInTier[tier]
-		var altCost float64
-		recModel := ""
-		if ok {
-			altCost = float64(pTokens)*cheapest.inRate + float64(cTokens)*cheapest.outRate
-			recModel = cheapest.name
-		} else {
-			altCost = actualCost
-		}
-
-		if actualCost < altCost {
-			altCost = actualCost
-		}
+		altCost, recModel := savingsForRow(actualCost, pTokens, cTokens, modelTier[modelName], cheapestInTier)
 
 		totalActual += actualCost
 		totalAlt += altCost
@@ -305,6 +327,25 @@ func (h *Handler) HandleSavingsOpportunity(w http.ResponseWriter, _ *http.Reques
 			a.recommendedModel = recModel
 		}
 	}
+	return accum, totalActual, totalAlt, totalCount
+}
+
+func (h *Handler) HandleSavingsOpportunity(w http.ResponseWriter, _ *http.Request) {
+	modelTier, cheapestInTier := computeModelTierCheapest()
+
+	rows, err := h.store.DB.Query(`
+		SELECT model, total_cost, prompt_tokens, completion_tokens
+		FROM audit_log
+		WHERE timestamp >= datetime('now', '-7 days') AND model != ''
+	`)
+	if err != nil {
+		slog.Error("Failed to query audit_log for savings opportunity", "error", err)
+		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	defer func() { _ = rows.Close() }()
+
+	accum, totalActual, _, totalCount := accumulateSavingsRows(rows, modelTier, cheapestInTier)
 
 	if err := rows.Err(); err != nil {
 		slog.Error("Rows iteration error in savings opportunity", "error", err)
@@ -312,23 +353,7 @@ func (h *Handler) HandleSavingsOpportunity(w http.ResponseWriter, _ *http.Reques
 		return
 	}
 
-	opportunities := make([]SavingsItem, 0, len(accum))
-	var totalSavings float64
-	for modelName, a := range accum {
-		savings := a.actualCost - a.altCost
-		if savings < 0 {
-			savings = 0
-		}
-		totalSavings += savings
-		opportunities = append(opportunities, SavingsItem{
-			Model:                   modelName,
-			ActualCost:              a.actualCost,
-			CheapestAlternativeCost: a.altCost,
-			Savings:                 savings,
-			RequestCount:            a.count,
-			RecommendedModel:        a.recommendedModel,
-		})
-	}
+	opportunities, totalSavings := buildSavingsOpportunities(accum)
 
 	savingsRate := 0.0
 	if totalActual > 0 {
@@ -377,20 +402,116 @@ type CostAttributionResponse struct {
 	SavingsSummary    any                     `json:"savings_summary"`
 }
 
-func (h *Handler) HandleCostsOverview(w http.ResponseWriter, r *http.Request) {
-	period := r.URL.Query().Get("period")
-	var since string
+// resolveCostPeriod maps a period query param ("24h", "7d", "30d") to its
+// SQLite datetime() offset, defaulting to 30d for anything else.
+func resolveCostPeriod(period string) (since, resolvedPeriod string) {
 	switch period {
 	case "24h":
-		since = "-24 hours"
+		return "-24 hours", "24h"
 	case "7d":
-		since = "-7 days"
-	case "30d":
-		since = "-30 days"
+		return "-7 days", "7d"
 	default:
-		since = "-30 days"
-		period = "30d"
+		return "-30 days", "30d"
 	}
+}
+
+// queryProviderCostBreakdown returns per-provider cost/count for the
+// period, with each item's Pct computed against totalCost.
+func queryProviderCostBreakdown(sdb *sql.DB, since string, totalCost float64) ([]ProviderCostBreakdown, error) {
+	provRows, err := sdb.Query(`
+		SELECT provider, COALESCE(SUM(total_cost), 0.0) as cost, COUNT(*) as count
+		FROM audit_log
+		WHERE timestamp >= datetime('now', ?) AND provider != ''
+		GROUP BY provider
+		ORDER BY cost DESC
+	`, since)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = provRows.Close() }()
+
+	byProvider := make([]ProviderCostBreakdown, 0)
+	for provRows.Next() {
+		var item ProviderCostBreakdown
+		if scanErr := provRows.Scan(&item.Provider, &item.Cost, &item.Count); scanErr == nil {
+			if totalCost > 0 {
+				item.Pct = (item.Cost / totalCost) * 100.0
+			}
+			byProvider = append(byProvider, item)
+		}
+	}
+	if err := provRows.Err(); err != nil {
+		return nil, err
+	}
+	return byProvider, nil
+}
+
+// queryModelCostBreakdown returns per-model cost/count for the period,
+// with each item's Pct computed against totalCost.
+func queryModelCostBreakdown(sdb *sql.DB, since string, totalCost float64) ([]ModelCostBreakdown, error) {
+	modelRows, err := sdb.Query(`
+		SELECT model, COALESCE(SUM(total_cost), 0.0) as cost, COUNT(*) as count
+		FROM audit_log
+		WHERE timestamp >= datetime('now', ?) AND model != ''
+		GROUP BY model
+		ORDER BY cost DESC
+	`, since)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = modelRows.Close() }()
+
+	byModel := make([]ModelCostBreakdown, 0)
+	for modelRows.Next() {
+		var item ModelCostBreakdown
+		if scanErr := modelRows.Scan(&item.Model, &item.Cost, &item.Count); scanErr == nil {
+			if totalCost > 0 {
+				item.Pct = (item.Cost / totalCost) * 100.0
+			}
+			byModel = append(byModel, item)
+		}
+	}
+	if err := modelRows.Err(); err != nil {
+		return nil, err
+	}
+	return byModel, nil
+}
+
+// queryCostTimeSeries returns the period's cost/request time series,
+// bucketed hourly for "24h" and daily otherwise.
+func queryCostTimeSeries(sdb *sql.DB, since, period string) ([]TimeCostItem, error) {
+	timeFormat := "%Y-%m-%d"
+	if period == "24h" {
+		timeFormat = "%Y-%m-%d %H:00"
+	}
+
+	tsRows, err := sdb.Query(`
+		SELECT strftime(?, timestamp) as time_period, COALESCE(SUM(total_cost), 0.0) as cost, COUNT(*) as count
+		FROM audit_log
+		WHERE timestamp >= datetime('now', ?)
+		GROUP BY time_period
+		ORDER BY time_period ASC
+	`, timeFormat, since)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tsRows.Close() }()
+
+	timeSeries := make([]TimeCostItem, 0)
+	for tsRows.Next() {
+		var item TimeCostItem
+		if scanErr := tsRows.Scan(&item.Period, &item.Cost, &item.Count); scanErr == nil {
+			timeSeries = append(timeSeries, item)
+		}
+	}
+	if err := tsRows.Err(); err != nil {
+		return nil, err
+	}
+	return timeSeries, nil
+}
+
+func (h *Handler) HandleCostsOverview(w http.ResponseWriter, r *http.Request) {
+	since, period := resolveCostPeriod(r.URL.Query().Get("period"))
 
 	db := h.store.DB
 
@@ -413,99 +534,23 @@ func (h *Handler) HandleCostsOverview(w http.ResponseWriter, r *http.Request) {
 		avgCost = totalCost / float64(totalRequests)
 	}
 
-	// 2. Provider Breakdown
-	provRows, err := db.Query(`
-		SELECT provider, COALESCE(SUM(total_cost), 0.0) as cost, COUNT(*) as count
-		FROM audit_log
-		WHERE timestamp >= datetime('now', ?) AND provider != ''
-		GROUP BY provider
-		ORDER BY cost DESC
-	`, since)
+	byProvider, err := queryProviderCostBreakdown(db, since, totalCost)
 	if err != nil {
 		slog.Error("Failed to query costs by provider", "error", err)
 		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
-	defer provRows.Close()
 
-	byProvider := make([]ProviderCostBreakdown, 0)
-	for provRows.Next() {
-		var item ProviderCostBreakdown
-		if scanErr := provRows.Scan(&item.Provider, &item.Cost, &item.Count); scanErr == nil {
-			if totalCost > 0 {
-				item.Pct = (item.Cost / totalCost) * 100.0
-			}
-			byProvider = append(byProvider, item)
-		}
-	}
-	if err := provRows.Err(); err != nil {
-		slog.Error("error iterating costs by provider", "error", err)
-		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", err.Error())
-		return
-	}
-
-	// 3. Model Breakdown
-	modelRows, err := db.Query(`
-		SELECT model, COALESCE(SUM(total_cost), 0.0) as cost, COUNT(*) as count
-		FROM audit_log
-		WHERE timestamp >= datetime('now', ?) AND model != ''
-		GROUP BY model
-		ORDER BY cost DESC
-	`, since)
+	byModel, err := queryModelCostBreakdown(db, since, totalCost)
 	if err != nil {
 		slog.Error("Failed to query costs by model", "error", err)
 		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
-	defer modelRows.Close()
 
-	byModel := make([]ModelCostBreakdown, 0)
-	for modelRows.Next() {
-		var item ModelCostBreakdown
-		if scanErr := modelRows.Scan(&item.Model, &item.Cost, &item.Count); scanErr == nil {
-			if totalCost > 0 {
-				item.Pct = (item.Cost / totalCost) * 100.0
-			}
-			byModel = append(byModel, item)
-		}
-	}
-	if err := modelRows.Err(); err != nil {
-		slog.Error("error iterating costs by model", "error", err)
-		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", err.Error())
-		return
-	}
-
-	// 4. Time Series
-	var timeFormat string
-	if period == "24h" {
-		timeFormat = "%Y-%m-%d %H:00"
-	} else {
-		timeFormat = "%Y-%m-%d"
-	}
-
-	tsRows, err := db.Query(`
-		SELECT strftime(?, timestamp) as time_period, COALESCE(SUM(total_cost), 0.0) as cost, COUNT(*) as count
-		FROM audit_log
-		WHERE timestamp >= datetime('now', ?)
-		GROUP BY time_period
-		ORDER BY time_period ASC
-	`, timeFormat, since)
+	timeSeries, err := queryCostTimeSeries(db, since, period)
 	if err != nil {
 		slog.Error("Failed to query costs time series", "error", err)
-		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", err.Error())
-		return
-	}
-	defer tsRows.Close()
-
-	timeSeries := make([]TimeCostItem, 0)
-	for tsRows.Next() {
-		var item TimeCostItem
-		if scanErr := tsRows.Scan(&item.Period, &item.Cost, &item.Count); scanErr == nil {
-			timeSeries = append(timeSeries, item)
-		}
-	}
-	if err := tsRows.Err(); err != nil {
-		slog.Error("error iterating costs time series", "error", err)
 		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
@@ -575,7 +620,7 @@ func (h *Handler) HandleCostsByKey(w http.ResponseWriter, r *http.Request) {
 		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	byKey := make([]KeyCostBreakdown, 0)
 	for rows.Next() {

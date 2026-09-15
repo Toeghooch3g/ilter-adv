@@ -47,6 +47,56 @@ func (t *reasoningTeeWriter) Header() http.Header { return t.header }
 
 func (t *reasoningTeeWriter) WriteHeader(code int) { t.code = code }
 
+// emitReasoningChunk writes a reasoning-only tee chunk derived from cc/ch to
+// the real response writer, sending headers on the first such write.
+func (t *reasoningTeeWriter) emitReasoningChunk(cc model.ChatCompletionChunk, ch model.ChunkChoice) {
+	teeChunk := model.ChatCompletionChunk{
+		ID:      cc.ID,
+		Object:  cc.Object,
+		Created: cc.Created,
+		Model:   cc.Model,
+	}
+	teeChunk.Choices = []model.ChunkChoice{{
+		Index: ch.Index,
+		Delta: model.Delta{ReasoningContent: ch.Delta.ReasoningContent},
+	}}
+	teeData, _ := json.Marshal(teeChunk)
+	// This is the first write to the real t.w this turn — Go implicitly
+	// (and, via the Flush below, immediately) commits whatever headers are
+	// on t.w right now. Copy the downstream handler's headers
+	// (X-Ilter-Model-Actual etc., set on t.header via t.Header()) across
+	// first, or they're silently dropped for every response that streams
+	// reasoning content.
+	if !t.headersSent {
+		copyHeaders(t.w.Header(), t.header)
+		t.headersSent = true
+	}
+	_, _ = fmt.Fprintf(t.w, "data: %s\n\n", string(teeData))
+	if t.flusher != nil {
+		t.flusher.Flush()
+	}
+}
+
+// processReasoningEvent parses one SSE "data: ..." event and, if it carries
+// reasoning_content, tees a matching reasoning-only chunk to the real
+// response writer immediately.
+func (t *reasoningTeeWriter) processReasoningEvent(event []byte) {
+	body, ok := strings.CutPrefix(string(event), "data: ")
+	if !ok || body == "[DONE]" {
+		return
+	}
+	var cc model.ChatCompletionChunk
+	if err := json.Unmarshal([]byte(body), &cc); err != nil {
+		return
+	}
+	for _, ch := range cc.Choices {
+		if ch.Delta.ReasoningContent != "" {
+			t.emitReasoningChunk(cc, ch)
+			return
+		}
+	}
+}
+
 func (t *reasoningTeeWriter) Write(p []byte) (int, error) {
 	if t.code == 0 {
 		t.code = http.StatusOK
@@ -61,45 +111,7 @@ func (t *reasoningTeeWriter) Write(p []byte) (int, error) {
 		}
 		event := t.writeBuf[:idx]
 		t.writeBuf = t.writeBuf[idx+2:]
-
-		body, ok := strings.CutPrefix(string(event), "data: ")
-		if !ok || body == "[DONE]" {
-			continue
-		}
-		var cc model.ChatCompletionChunk
-		if err := json.Unmarshal([]byte(body), &cc); err != nil {
-			continue
-		}
-		for _, ch := range cc.Choices {
-			if ch.Delta.ReasoningContent != "" {
-				teeChunk := model.ChatCompletionChunk{
-					ID:      cc.ID,
-					Object:  cc.Object,
-					Created: cc.Created,
-					Model:   cc.Model,
-				}
-				teeChunk.Choices = []model.ChunkChoice{{
-					Index: ch.Index,
-					Delta: model.Delta{ReasoningContent: ch.Delta.ReasoningContent},
-				}}
-				teeData, _ := json.Marshal(teeChunk)
-				// This is the first write to the real t.w this turn — Go
-				// implicitly (and, via the Flush below, immediately) commits
-				// whatever headers are on t.w right now. Copy the downstream
-				// handler's headers (X-Ilter-Model-Actual etc., set on t.header
-				// via t.Header()) across first, or they're silently dropped
-				// for every response that streams reasoning content.
-				if !t.headersSent {
-					copyHeaders(t.w.Header(), t.header)
-					t.headersSent = true
-				}
-				fmt.Fprintf(t.w, "data: %s\n\n", string(teeData))
-				if t.flusher != nil {
-					t.flusher.Flush()
-				}
-				break
-			}
-		}
+		t.processReasoningEvent(event)
 	}
 	return len(p), nil
 }

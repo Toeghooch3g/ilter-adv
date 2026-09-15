@@ -42,8 +42,8 @@ func (d *DelayedMockProvider) Name() string { return d.name }
 
 func (d *DelayedMockProvider) Type() string { return "delayed-mock" }
 
-func (d *DelayedMockProvider) TransformRequest(_ context.Context, _ *model.ChatCompletionRequest) (*http.Request, error) {
-	return http.NewRequestWithContext(context.Background(), http.MethodPost, "http://delayed-mock", http.NoBody)
+func (d *DelayedMockProvider) TransformRequest(ctx context.Context, _ *model.ChatCompletionRequest) (*http.Request, error) {
+	return http.NewRequestWithContext(ctx, http.MethodPost, "http://delayed-mock", http.NoBody)
 }
 
 func (d *DelayedMockProvider) TransformResponse(_ context.Context, _ *http.Response) (*model.ChatCompletionResponse, error) {

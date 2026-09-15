@@ -48,12 +48,13 @@ func RequestLogger(next http.Handler) http.Handler {
 			"dur", fmt.Sprintf("%dms", duration.Milliseconds()),
 		)
 
-		if srw.statusCode >= 500 {
-			slog.ErrorContext(r.Context(), msg, attrs...)
-		} else if srw.statusCode >= 400 {
-			slog.WarnContext(r.Context(), msg, attrs...)
-		} else {
-			slog.InfoContext(r.Context(), msg, attrs...)
+		switch {
+		case srw.statusCode >= 500:
+			slog.ErrorContext(ctx, msg, attrs...)
+		case srw.statusCode >= 400:
+			slog.WarnContext(ctx, msg, attrs...)
+		default:
+			slog.InfoContext(ctx, msg, attrs...)
 		}
 	})
 }

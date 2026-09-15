@@ -103,7 +103,7 @@ func (fe *FallbackExecutor) Execute(
 		lastStatus = status
 		lastErr = tryErr
 
-		verdict, dynamicCooldown := ClassifyWithHeaders(status, tryErr, headers)
+		verdict, dynamicCooldown := ClassifyWithHeaders(status, tryErr, headers) //nolint:contextcheck // deep call chain ends in a fire-and-forget metric increment with no ctx to thread through, see internal/features/fallback/metrics.go
 		if dynamicCooldown <= 0 {
 			dynamicCooldown = cooldownDuration
 		}
@@ -116,7 +116,7 @@ func (fe *FallbackExecutor) Execute(
 		}
 		if dynamicCooldown > maxCooldown {
 			slog.Warn("cooldown capped by safety limit", "original", dynamicCooldown, "capped", maxCooldown, "configured", fe.cfg.CooldownDuration)
-			incCooldownCapped()
+			incCooldownCapped() //nolint:contextcheck // fire-and-forget metric increment, no ctx to thread through, see internal/features/fallback/metrics.go
 			dynamicCooldown = maxCooldown
 		}
 		slog.Warn(

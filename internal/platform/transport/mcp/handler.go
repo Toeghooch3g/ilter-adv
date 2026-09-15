@@ -168,7 +168,7 @@ func (h *GatewayHandler) handleSSE(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 
 	endpoint := fmt.Sprintf("%s?sessionId=%s", r.URL.Path, sessionID)
-	fmt.Fprintf(w, "event: endpoint\ndata: %s\n\n", endpoint)
+	_, _ = fmt.Fprintf(w, "event: endpoint\ndata: %s\n\n", endpoint) //nolint:gosec // SSE data frame, not HTML; r.URL.Path/sessionID can't carry CR/LF via net/http's request-line parsing
 	flusher.Flush()
 
 	ctx := r.Context()
@@ -185,7 +185,7 @@ func (h *GatewayHandler) handleSSE(w http.ResponseWriter, r *http.Request) {
 				transportLog.Error("failed to marshal response", "error", err)
 				continue
 			}
-			fmt.Fprintf(w, "event: message\ndata: %s\n\n", data)
+			_, _ = fmt.Fprintf(w, "event: message\ndata: %s\n\n", data)
 			flusher.Flush()
 		}
 	}
@@ -198,7 +198,7 @@ func (h *GatewayHandler) handleMessage(w http.ResponseWriter, r *http.Request) {
 	keyPrefix := ""
 	if keyID != "" && !mcp.IsSyntheticKeyID(keyID) {
 		var err error
-		keyPrefix, err = mcp.ExtractKeyInfo(keyID, h.gateway.Store())
+		keyPrefix, err = mcp.ExtractKeyInfo(r.Context(), keyID, h.gateway.Store())
 		if err != nil {
 			transportLog.Debug("failed to resolve key prefix", "key_id", keyID, "error", err)
 		}
@@ -227,7 +227,7 @@ func (h *GatewayHandler) handleMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	body, err := io.ReadAll(r.Body)
-	r.Body.Close()
+	_ = r.Body.Close()
 	if err != nil {
 		writeJSONRPCError(w, nil, mcp.ErrorCodeParse, "Failed to read request body")
 		return
@@ -277,7 +277,7 @@ func (h *GatewayHandler) handleMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := h.gateway.Dispatch(&req, rctx)
+	resp := h.gateway.Dispatch(&req, rctx) //nolint:contextcheck // Dispatch has no context.Context param (takes *RequestContext instead); its metric recording is intentionally fire-and-forget, see Gateway.finishDispatch
 
 	// Persist whatever version Dispatch negotiated (set on a successful
 	// initialize; unchanged otherwise) back onto the session so the next

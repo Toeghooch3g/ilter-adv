@@ -117,21 +117,68 @@ func (h *Handler) HandleSmartRouterStats(w http.ResponseWriter, _ *http.Request)
 	model.WriteJSON(w, http.StatusOK, resp)
 }
 
-func (h *Handler) HandleSmartRouterHistory(w http.ResponseWriter, r *http.Request) {
-	page := 1
-	limit := 20
-	if r != nil {
-		if pStr := r.URL.Query().Get("page"); pStr != "" {
-			if p, err := strconv.Atoi(pStr); err == nil && p > 0 {
-				page = p
-			}
-		}
-		if lStr := r.URL.Query().Get("limit"); lStr != "" {
-			if l, err := strconv.Atoi(lStr); err == nil && l > 0 {
-				limit = l
-			}
+func parseHistoryPageLimit(r *http.Request) (page, limit int) {
+	page, limit = 1, 20
+	if r == nil {
+		return page, limit
+	}
+	if pStr := r.URL.Query().Get("page"); pStr != "" {
+		if p, err := strconv.Atoi(pStr); err == nil && p > 0 {
+			page = p
 		}
 	}
+	if lStr := r.URL.Query().Get("limit"); lStr != "" {
+		if l, err := strconv.Atoi(lStr); err == nil && l > 0 {
+			limit = l
+		}
+	}
+	return page, limit
+}
+
+// loadSmartRouterHistory fetches the total count and one page of audit_log
+// rows for the smart router history view, appending to resp in place.
+func loadSmartRouterHistory(sdb *sql.DB, page, limit int, resp *HistoryResponse) {
+	var total int
+	_ = sdb.QueryRow(`SELECT COUNT(*) FROM audit_log`).Scan(&total)
+	resp.Total = total
+
+	offset := (page - 1) * limit
+	rows, err := sdb.Query(`
+		SELECT id, timestamp, key_id, model, provider, status_code, latency_ms, COALESCE(complexity_score, 0)
+		FROM audit_log
+		ORDER BY timestamp DESC
+		LIMIT ? OFFSET ?
+	`, limit, offset)
+	if err != nil {
+		return
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var ts string
+		var keyID, reqModel, providerName string
+		var status, latency int
+		var complexity float64
+		var id int
+		if err := rows.Scan(&id, &ts, &keyID, &reqModel, &providerName, &status, &latency, &complexity); err == nil {
+			resp.Items = append(resp.Items, HistoryItem{
+				ID:              id,
+				Timestamp:       ts,
+				Model:           reqModel,
+				Provider:        providerName,
+				Tier:            "standard",
+				ComplexityScore: complexity,
+				StatusCode:      status,
+				LatencyMs:       latency,
+			})
+		}
+	}
+	if err := rows.Err(); err != nil {
+		slog.Warn("error iterating smart router history rows", "error", err)
+	}
+}
+
+func (h *Handler) HandleSmartRouterHistory(w http.ResponseWriter, r *http.Request) {
+	page, limit := parseHistoryPageLimit(r)
 
 	resp := HistoryResponse{
 		Items: []HistoryItem{},
@@ -141,44 +188,7 @@ func (h *Handler) HandleSmartRouterHistory(w http.ResponseWriter, r *http.Reques
 	}
 
 	if h.store != nil && h.store.DB != nil {
-		var total int
-		_ = h.store.DB.QueryRow(`SELECT COUNT(*) FROM audit_log`).Scan(&total)
-		resp.Total = total
-
-		offset := (page - 1) * limit
-		rows, err := h.store.DB.Query(`
-			SELECT id, timestamp, key_id, model, provider, status_code, latency_ms, COALESCE(complexity_score, 0)
-			FROM audit_log
-			ORDER BY timestamp DESC
-			LIMIT ? OFFSET ?
-		`, limit, offset)
-		if err == nil {
-			defer rows.Close()
-			for rows.Next() {
-				var item HistoryItem
-				var ts string
-				var keyID, reqModel, providerName string
-				var status, latency int
-				var complexity float64
-				var id int
-				if err := rows.Scan(&id, &ts, &keyID, &reqModel, &providerName, &status, &latency, &complexity); err == nil {
-					item = HistoryItem{
-						ID:              id,
-						Timestamp:       ts,
-						Model:           reqModel,
-						Provider:        providerName,
-						Tier:            "standard",
-						ComplexityScore: complexity,
-						StatusCode:      status,
-						LatencyMs:       latency,
-					}
-					resp.Items = append(resp.Items, item)
-				}
-			}
-			if err := rows.Err(); err != nil {
-				slog.Warn("error iterating smart router history rows", "error", err)
-			}
-		}
+		loadSmartRouterHistory(h.store.DB, page, limit, &resp)
 	}
 
 	model.WriteJSON(w, http.StatusOK, resp)
@@ -188,8 +198,8 @@ func (h *Handler) HandleSmartRouterUnified(w http.ResponseWriter, _ *http.Reques
 	model.WriteJSON(w, http.StatusOK, map[string]any{"stats": map[string]any{}, "history": map[string]any{}})
 }
 
-func (h *Handler) HandleListStrategies(w http.ResponseWriter, _ *http.Request) {
-	entries, err := h.store.GetBySection("routing_strategy")
+func (h *Handler) HandleListStrategies(w http.ResponseWriter, r *http.Request) {
+	entries, err := h.store.GetBySection(r.Context(), "routing_strategy")
 	if err != nil {
 		model.WriteJSONError(w, http.StatusInternalServerError, "db_error", err.Error())
 		return
@@ -204,7 +214,7 @@ func (h *Handler) HandleListStrategies(w http.ResponseWriter, _ *http.Request) {
 	}
 
 	activeName := ""
-	if activeEntry, err := h.store.GetRuntimeConfigEntry("active_routing_strategy", "active"); err == nil && activeEntry != nil && activeEntry.Value != "" {
+	if activeEntry, err := h.store.GetRuntimeConfigEntry(r.Context(), "active_routing_strategy", "active"); err == nil && activeEntry != nil && activeEntry.Value != "" {
 		_ = json.Unmarshal([]byte(activeEntry.Value), &activeName)
 		if activeName == "" {
 			activeName = activeEntry.Value
@@ -224,7 +234,7 @@ func (h *Handler) HandleGetStrategy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	entry, err := h.store.GetRuntimeConfigEntry("routing_strategy", name)
+	entry, err := h.store.GetRuntimeConfigEntry(r.Context(), "routing_strategy", name)
 	if err != nil || entry == nil || entry.Value == "" {
 		model.WriteJSONError(w, http.StatusNotFound, "not_found", "strategy not found")
 		return
@@ -276,7 +286,7 @@ func (h *Handler) HandleSetStrategy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.store.UpsertRuntimeConfig("routing_strategy", s.Name, string(data), "admin"); err != nil {
+	if err := h.store.UpsertRuntimeConfig(r.Context(), "routing_strategy", s.Name, string(data), "admin"); err != nil {
 		model.WriteJSONError(w, http.StatusInternalServerError, "db_error", err.Error())
 		return
 	}
@@ -299,14 +309,14 @@ func (h *Handler) HandleSetStrategy(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) HandleDeleteStrategy(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 	if name != "" {
-		_ = h.store.DeleteRuntimeConfig("routing_strategy", name)
+		_ = h.store.DeleteRuntimeConfig(r.Context(), "routing_strategy", name)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (h *Handler) HandleGetActiveStrategy(w http.ResponseWriter, _ *http.Request) {
+func (h *Handler) HandleGetActiveStrategy(w http.ResponseWriter, r *http.Request) {
 	activeName := ""
-	if activeEntry, err := h.store.GetRuntimeConfigEntry("active_routing_strategy", "active"); err == nil && activeEntry != nil && activeEntry.Value != "" {
+	if activeEntry, err := h.store.GetRuntimeConfigEntry(r.Context(), "active_routing_strategy", "active"); err == nil && activeEntry != nil && activeEntry.Value != "" {
 		if err := json.Unmarshal([]byte(activeEntry.Value), &activeName); err != nil {
 			slog.Warn("failed to unmarshal active strategy", "value", activeEntry.Value, "error", err)
 		}
@@ -328,7 +338,7 @@ func (h *Handler) HandleSetActiveStrategy(w http.ResponseWriter, r *http.Request
 	}
 
 	data, _ := json.Marshal(req.Name)
-	if err := h.store.UpsertRuntimeConfig("active_routing_strategy", "active", string(data), "admin"); err != nil {
+	if err := h.store.UpsertRuntimeConfig(r.Context(), "active_routing_strategy", "active", string(data), "admin"); err != nil {
 		model.WriteJSONError(w, http.StatusInternalServerError, "db_error", err.Error())
 		return
 	}

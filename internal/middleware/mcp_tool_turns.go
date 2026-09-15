@@ -12,6 +12,143 @@ import (
 	"github.com/ilter-ai/ilter/internal/platform/reqmeta"
 )
 
+// writeBufferedResponse copies rec's headers/status to w then writes body
+// (either rec's original bytes, or a transformed replacement).
+func writeBufferedResponse(w http.ResponseWriter, rec *bufferedResponseWriter, body []byte) {
+	copyHeaders(w.Header(), rec.header)
+	w.WriteHeader(rec.code)
+	_, _ = w.Write(body)
+}
+
+// writeSSEDone writes the terminal "data: [DONE]" SSE event and flushes.
+func writeSSEDone(w http.ResponseWriter) {
+	_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+// detectNonStreamToolCalls extracts tool calls from chatResp, falling back
+// to parsing text-embedded tool-call XML when the model doesn't natively
+// support tool calling.
+func (m *MCPInjectMiddleware) detectNonStreamToolCalls(chatResp *model.ChatCompletionResponse, modelName string) []model.ToolCall {
+	toolCalls := mcp.ExtractToolCalls(chatResp)
+	if len(toolCalls) == 0 && m.supportsToolsFn != nil && !m.supportsToolsFn(modelName) {
+		if mcp.NormalizeTextToolCalls(chatResp) {
+			toolCalls = mcp.ExtractToolCalls(chatResp)
+		}
+	}
+	return toolCalls
+}
+
+// emitNoToolCallsSSE emits chatResp as a single SSE chunk followed by
+// [DONE], for a client that originally requested streaming.
+func emitNoToolCallsSSE(w http.ResponseWriter, chatResp model.ChatCompletionResponse, statusCode, markerIdx int) int {
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	if len(chatResp.Choices) > 0 {
+		w.WriteHeader(statusCode)
+
+		var content string
+		content, markerIdx = mcp.StripToolCallXML(chatResp.Choices[0].Message.Content, markerIdx)
+		var finishReason *string
+		if chatResp.Choices[0].FinishReason != "" {
+			fr := chatResp.Choices[0].FinishReason
+			finishReason = &fr
+		}
+		chunk := model.ChatCompletionChunk{
+			ID:      chatResp.ID,
+			Object:  "chat.completion.chunk",
+			Created: chatResp.Created,
+			Model:   chatResp.Model,
+			Choices: []model.ChunkChoice{
+				{
+					Index: 0,
+					Delta: model.Delta{
+						Content:          content,
+						ReasoningContent: chatResp.Choices[0].Message.ReasoningContent,
+					},
+					FinishReason: finishReason,
+				},
+			},
+		}
+		chunkBytes, _ := json.Marshal(chunk)
+		_, _ = fmt.Fprintf(w, "data: %s\n\n", string(chunkBytes))
+	}
+	writeSSEDone(w)
+	return markerIdx
+}
+
+// respondNoToolCalls writes chatResp back to the client (its tool-call XML
+// markers stripped) for a turn that produced no tool calls at all.
+func respondNoToolCalls(w http.ResponseWriter, rec *bufferedResponseWriter, chatResp model.ChatCompletionResponse, originalStream bool, markerIdx int) int {
+	if originalStream {
+		return emitNoToolCallsSSE(w, chatResp, rec.code, markerIdx)
+	}
+	for i := range chatResp.Choices {
+		var content string
+		content, markerIdx = mcp.StripToolCallXML(chatResp.Choices[i].Message.Content, markerIdx)
+		chatResp.Choices[i].Message.Content = content
+	}
+	cleanBytes, _ := json.Marshal(chatResp)
+	writeBufferedResponse(w, rec, cleanBytes)
+	return markerIdx
+}
+
+// respondDuplicateToolCalls writes chatResp back to the client with tool
+// calls cleared and finish_reason forced to "stop", for a turn where every
+// detected tool call turned out to be a duplicate of one already issued.
+func respondDuplicateToolCalls(w http.ResponseWriter, rec *bufferedResponseWriter, chatResp model.ChatCompletionResponse, originalStream bool, markerIdx int) int {
+	mcpLog.Warn("all tool calls are duplicates, writing original response")
+	if originalStream {
+		content := ""
+		if len(chatResp.Choices) > 0 {
+			content, markerIdx = mcp.StripToolCallXML(chatResp.Choices[0].Message.Content, markerIdx)
+		}
+		chunk := model.ChatCompletionChunk{
+			ID: chatResp.ID, Object: "chat.completion.chunk", Created: chatResp.Created, Model: chatResp.Model,
+			Choices: []model.ChunkChoice{
+				{Index: 0, Delta: model.Delta{Content: content}, FinishReason: new("stop")},
+			},
+		}
+		chunkBytes, _ := json.Marshal(chunk)
+		_, _ = fmt.Fprintf(w, "data: %s\n\n", string(chunkBytes))
+		writeSSEDone(w)
+		return markerIdx
+	}
+	for i := range chatResp.Choices {
+		var content string
+		content, markerIdx = mcp.StripToolCallXML(chatResp.Choices[i].Message.Content, markerIdx)
+		chatResp.Choices[i].Message.ToolCalls = nil
+		chatResp.Choices[i].FinishReason = "stop"
+		chatResp.Choices[i].Message.Content = content
+	}
+	cleanBytes, _ := json.Marshal(chatResp)
+	writeBufferedResponse(w, rec, cleanBytes)
+	return markerIdx
+}
+
+// respondEmptyToolExecution writes chatResp back with an explanatory
+// message in place of the tool call, when tool execution produced no
+// result messages at all (e.g. the MCP server was unreachable).
+func respondEmptyToolExecution(w http.ResponseWriter, rec *bufferedResponseWriter, chatResp model.ChatCompletionResponse, toolCalls []model.ToolCall, markerIdx int) int {
+	mcpLog.Warn("tool execution produced no messages")
+	for i := range chatResp.Choices {
+		var content string
+		content, markerIdx = mcp.StripToolCallXML(chatResp.Choices[i].Message.Content, markerIdx)
+		if content == "" {
+			content = fmt.Sprintf("Tool %s could not be executed. The MCP server may be offline or not responding.", toolCalls[0].Function.Name)
+		}
+		chatResp.Choices[i].Message.Content = content
+		chatResp.Choices[i].Message.ToolCalls = nil
+		chatResp.Choices[i].FinishReason = "stop"
+	}
+	cleanBytes, _ := json.Marshal(chatResp)
+	writeBufferedResponse(w, rec, cleanBytes)
+	return markerIdx
+}
+
 func (m *MCPInjectMiddleware) handleNonStreamingOnce(
 	w http.ResponseWriter,
 	r *http.Request,
@@ -20,8 +157,6 @@ func (m *MCPInjectMiddleware) handleNonStreamingOnce(
 	originalStream bool,
 	markerOffset int,
 ) (bool, []model.Message, []bool, int) {
-	markerIdx := markerOffset
-
 	rec := &bufferedResponseWriter{
 		header: make(http.Header),
 		buf:    &bytes.Buffer{},
@@ -30,81 +165,20 @@ func (m *MCPInjectMiddleware) handleNonStreamingOnce(
 	next.ServeHTTP(rec, r)
 
 	if rec.code != http.StatusOK {
-		copyHeaders(w.Header(), rec.header)
-		w.WriteHeader(rec.code)
-		_, _ = w.Write(rec.buf.Bytes())
-		return false, nil, nil, markerIdx
+		writeBufferedResponse(w, rec, rec.buf.Bytes())
+		return false, nil, nil, markerOffset
 	}
 
 	var chatResp model.ChatCompletionResponse
 	if err := json.Unmarshal(rec.buf.Bytes(), &chatResp); err != nil {
-		copyHeaders(w.Header(), rec.header)
-		w.WriteHeader(rec.code)
-		_, _ = w.Write(rec.buf.Bytes())
-		return false, nil, nil, markerIdx
+		writeBufferedResponse(w, rec, rec.buf.Bytes())
+		return false, nil, nil, markerOffset
 	}
 
-	toolCalls := mcp.ExtractToolCalls(&chatResp)
+	toolCalls := m.detectNonStreamToolCalls(&chatResp, req.Model)
 
 	if len(toolCalls) == 0 {
-		if m.supportsToolsFn != nil && !m.supportsToolsFn(req.Model) {
-			if mcp.NormalizeTextToolCalls(&chatResp) {
-				toolCalls = mcp.ExtractToolCalls(&chatResp)
-			}
-		}
-	}
-
-	if len(toolCalls) == 0 {
-		if originalStream {
-			w.Header().Set("Content-Type", "text/event-stream")
-			w.Header().Set("Cache-Control", "no-cache")
-			w.Header().Set("Connection", "keep-alive")
-			if len(chatResp.Choices) > 0 {
-				w.WriteHeader(rec.code)
-
-				var content string
-				content, markerIdx = mcp.StripToolCallXML(chatResp.Choices[0].Message.Content, markerIdx)
-				var finishReason *string
-				if chatResp.Choices[0].FinishReason != "" {
-					fr := chatResp.Choices[0].FinishReason
-					finishReason = &fr
-				}
-				chunk := model.ChatCompletionChunk{
-					ID:      chatResp.ID,
-					Object:  "chat.completion.chunk",
-					Created: chatResp.Created,
-					Model:   chatResp.Model,
-					Choices: []model.ChunkChoice{
-						{
-							Index: 0,
-							Delta: model.Delta{
-								Content:          content,
-								ReasoningContent: chatResp.Choices[0].Message.ReasoningContent,
-							},
-							FinishReason: finishReason,
-						},
-					},
-				}
-				chunkBytes, _ := json.Marshal(chunk)
-				fmt.Fprintf(w, "data: %s\n\n", string(chunkBytes))
-			}
-			fmt.Fprintf(w, "data: [DONE]\n\n")
-			if flusher, ok := w.(http.Flusher); ok {
-				flusher.Flush()
-			}
-			return false, nil, nil, markerIdx
-		}
-
-		cleanResp := chatResp
-		for i := range cleanResp.Choices {
-			var content string
-			content, markerIdx = mcp.StripToolCallXML(cleanResp.Choices[i].Message.Content, markerIdx)
-			cleanResp.Choices[i].Message.Content = content
-		}
-		cleanBytes, _ := json.Marshal(cleanResp)
-		copyHeaders(w.Header(), rec.header)
-		w.WriteHeader(rec.code)
-		_, _ = w.Write(cleanBytes)
+		markerIdx := respondNoToolCalls(w, rec, chatResp, originalStream, markerOffset)
 		return false, nil, nil, markerIdx
 	}
 
@@ -115,6 +189,7 @@ func (m *MCPInjectMiddleware) handleNonStreamingOnce(
 	mcpLog.Info("[PROXY] LLM model returned tool calls", "count", len(toolCalls), "tool_calls", toolCalls)
 
 	cleanedAssistantText := ""
+	markerIdx := markerOffset
 	if len(chatResp.Choices) > 0 {
 		cleanedAssistantText, markerIdx = mcp.StripToolCallXML(chatResp.Choices[0].Message.Content, markerIdx)
 	}
@@ -137,67 +212,183 @@ func (m *MCPInjectMiddleware) handleNonStreamingOnce(
 	}
 
 	if len(toolCalls) == 0 {
-		mcpLog.Warn("all tool calls are duplicates, writing original response")
-		if originalStream {
-			content := ""
-			if len(chatResp.Choices) > 0 {
-				content, markerIdx = mcp.StripToolCallXML(chatResp.Choices[0].Message.Content, markerIdx)
-			}
-			chunk := model.ChatCompletionChunk{
-				ID: chatResp.ID, Object: "chat.completion.chunk", Created: chatResp.Created, Model: chatResp.Model,
-				Choices: []model.ChunkChoice{
-					{Index: 0, Delta: model.Delta{Content: content}, FinishReason: new("stop")},
-				},
-			}
-			chunkBytes, _ := json.Marshal(chunk)
-			fmt.Fprintf(w, "data: %s\n\n", string(chunkBytes))
-			fmt.Fprintf(w, "data: [DONE]\n\n")
-			if flusher, ok := w.(http.Flusher); ok {
-				flusher.Flush()
-			}
-			return false, nil, nil, markerIdx
-		}
-		cleanResp := chatResp
-		for i := range cleanResp.Choices {
-			var content string
-			content, markerIdx = mcp.StripToolCallXML(cleanResp.Choices[i].Message.Content, markerIdx)
-			cleanResp.Choices[i].Message.ToolCalls = nil
-			cleanResp.Choices[i].FinishReason = "stop"
-			cleanResp.Choices[i].Message.Content = content
-		}
-		cleanBytes, _ := json.Marshal(cleanResp)
-		copyHeaders(w.Header(), rec.header)
-		w.WriteHeader(rec.code)
-		_, _ = w.Write(cleanBytes)
+		markerIdx = respondDuplicateToolCalls(w, rec, chatResp, originalStream, markerIdx)
 		return false, nil, nil, markerIdx
 	}
 
 	toolMsgs, toolErrors := m.executeFn(r.Context(), keyID, "", toolCalls)
 	if len(toolMsgs) == 0 {
-		mcpLog.Warn("tool execution produced no messages")
-		errResp := chatResp
-		for i := range errResp.Choices {
-			var content string
-			content, markerIdx = mcp.StripToolCallXML(errResp.Choices[i].Message.Content, markerIdx)
-			if content == "" {
-				content = fmt.Sprintf("Tool %s could not be executed. The MCP server may be offline or not responding.", toolCalls[0].Function.Name)
-			}
-			errResp.Choices[i].Message.Content = content
-			errResp.Choices[i].Message.ToolCalls = nil
-			errResp.Choices[i].FinishReason = "stop"
-		}
-		cleanBytes, _ := json.Marshal(errResp)
-		copyHeaders(w.Header(), rec.header)
-		w.WriteHeader(rec.code)
-		_, _ = w.Write(cleanBytes)
+		markerIdx = respondEmptyToolExecution(w, rec, chatResp, toolCalls, markerIdx)
 		return false, nil, nil, markerIdx
 	}
 
 	allMsgs := []model.Message{assistantMsg}
-	if len(toolMsgs) > 0 {
-		allMsgs = append(allMsgs, toolMsgs...)
-	}
+	allMsgs = append(allMsgs, toolMsgs...)
 	return true, allMsgs, toolErrors, markerIdx
+}
+
+// mergeTextToolCalls appends any text-embedded tool calls found in fullText
+// to reconstructedToolCalls when the model doesn't natively support tool
+// calling and the stream itself carried no structured tool calls.
+func (m *MCPInjectMiddleware) mergeTextToolCalls(modelName, fullText string, toolCallFound bool, reconstructedToolCalls []model.ToolCall) ([]model.ToolCall, bool) {
+	if m.supportsToolsFn == nil || m.supportsToolsFn(modelName) || (toolCallFound && len(reconstructedToolCalls) > 0) {
+		return reconstructedToolCalls, toolCallFound
+	}
+	allTCs, _ := mcp.FindAllToolCallsInText(fullText)
+	if len(allTCs) == 0 {
+		return reconstructedToolCalls, toolCallFound
+	}
+	mcpLog.Debug("found text tool calls in stream", "count", len(allTCs))
+	for i := range allTCs {
+		tc := &allTCs[i]
+		if tc.ID == "" {
+			tc.ID = fmt.Sprintf("call_stream_%d", i)
+		}
+		if tc.Type == "" {
+			tc.Type = "function"
+		}
+		reconstructedToolCalls = append(reconstructedToolCalls, *tc)
+	}
+	return reconstructedToolCalls, true
+}
+
+// stripReasoningFromChunk attempts to parse data as a ChatCompletionChunk
+// and clear any reasoning_content deltas. Returns the re-marshaled bytes
+// and true if it changed anything; otherwise ok is false and the caller
+// should relay data unmodified.
+func stripReasoningFromChunk(data string) (out []byte, ok bool) {
+	body, isData := strings.CutPrefix(data, "data: ")
+	if !isData || body == "[DONE]" {
+		return nil, false
+	}
+	var cc model.ChatCompletionChunk
+	if err := json.Unmarshal([]byte(body), &cc); err != nil {
+		return nil, false
+	}
+	modified := false
+	for i := range cc.Choices {
+		if cc.Choices[i].Delta.ReasoningContent != "" {
+			cc.Choices[i].Delta.ReasoningContent = ""
+			modified = true
+		}
+	}
+	if !modified {
+		return nil, false
+	}
+	newData, _ := json.Marshal(cc)
+	return newData, true
+}
+
+// relayOriginalChunksStrippingReasoning re-emits every original SSE chunk
+// verbatim, except reasoning_content deltas are cleared (already surfaced
+// separately during streaming; echoing them again in the final relay would
+// duplicate them client-side).
+func relayOriginalChunksStrippingReasoning(w http.ResponseWriter, chunks []mcp.SSEChunk) {
+	for _, c := range chunks {
+		if newData, ok := stripReasoningFromChunk(string(c.Data)); ok {
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", string(newData))
+			continue
+		}
+		_, _ = w.Write(c.Data)
+		_, _ = w.Write([]byte("\n\n"))
+	}
+}
+
+// relayCleanStream writes the SSE stream back to the client when no tool
+// calls were found: either a single synthesized chunk (if content changed
+// due to marker stripping) or every original chunk with any reasoning
+// content stripped out.
+func relayCleanStream(w http.ResponseWriter, rec *reasoningTeeWriter, chunks []mcp.SSEChunk, fullText, cleanedText string) {
+	copyHeaders(w.Header(), rec.header)
+	w.Header().Set("Cache-Control", "no-cache")
+	w.WriteHeader(rec.code)
+	if cleanedText != strings.TrimSpace(fullText) {
+		chunk := baseChunkFromChunks(chunks)
+		chunk.Choices = []model.ChunkChoice{{
+			Index:        0,
+			Delta:        model.Delta{Content: cleanedText},
+			FinishReason: new("stop"),
+		}}
+		chunkBytes, _ := json.Marshal(chunk)
+		_, _ = fmt.Fprintf(w, "data: %s\n\n", string(chunkBytes))
+	} else {
+		relayOriginalChunksStrippingReasoning(w, chunks)
+	}
+	writeSSEDone(w)
+}
+
+// relayDuplicateToolCallsStream emits a final chunk with cleanedText (if
+// there's anything to show) followed by [DONE], for a streaming turn where
+// every detected tool call turned out to be a duplicate.
+func relayDuplicateToolCallsStream(w http.ResponseWriter, rec *reasoningTeeWriter, chunks []mcp.SSEChunk, cleanedText, reasoningText string, toolCallCount int) {
+	copyHeaders(w.Header(), rec.header)
+	w.Header().Set("Cache-Control", "no-cache")
+	w.WriteHeader(rec.code)
+	if cleanedText != "" || reasoningText != "" || toolCallCount > 0 {
+		chunk := baseChunkFromChunks(chunks)
+		chunk.Choices = []model.ChunkChoice{{
+			Index:        0,
+			Delta:        model.Delta{Content: cleanedText},
+			FinishReason: new("stop"),
+		}}
+		chunkBytes, _ := json.Marshal(chunk)
+		_, _ = fmt.Fprintf(w, "data: %s\n\n", string(chunkBytes))
+	}
+	writeSSEDone(w)
+}
+
+// emitAssistantContentChunk sends the assistant's visible content (with
+// tool-call markers appended, unless already present) as one SSE chunk, if
+// there's anything to show. markerIdx is advanced past every marker emitted.
+func emitAssistantContentChunk(w http.ResponseWriter, chunks []mcp.SSEChunk, cleanedText, reasoningText string, toolCallCount int, markerIdx *int) {
+	if cleanedText == "" && reasoningText == "" && toolCallCount == 0 {
+		return
+	}
+	emitText := cleanedText
+	if toolCallCount > 0 && !strings.Contains(emitText, mcp.MarkerPrefix) {
+		var sb strings.Builder
+		sb.Grow(toolCallCount * len(mcp.MarkerFor(0)))
+		for range toolCallCount {
+			sb.WriteString(mcp.MarkerFor(*markerIdx))
+			*markerIdx++
+		}
+		emitText += sb.String()
+	}
+	chunk := baseChunkFromChunks(chunks)
+	chunk.Choices = []model.ChunkChoice{{
+		Index: 0,
+		Delta: model.Delta{Content: emitText},
+	}}
+	chunkBytes, _ := json.Marshal(chunk)
+	_, _ = fmt.Fprintf(w, "data: %s\n\n", string(chunkBytes))
+}
+
+// emitStreamingToolExecutionError sends an explanatory chunk (falling back
+// to a generic message) plus [DONE], when tool execution produced no result
+// messages at all.
+func emitStreamingToolExecutionError(w http.ResponseWriter, chunks []mcp.SSEChunk, cleanedText, reasoningText string, reconstructedToolCalls []model.ToolCall) {
+	mcpLog.Warn("streaming tool execution produced no messages")
+	errContent := cleanedText
+	if stripped, _ := mcp.StripToolCallXML(errContent, 0); stripped != "" {
+		errContent = stripped
+	}
+	if errContent == "" && len(reconstructedToolCalls) > 0 {
+		errContent = fmt.Sprintf(
+			"Tool %s could not be executed. The MCP server may be offline or not responding.",
+			reconstructedToolCalls[0].Function.Name,
+		)
+	}
+	if errContent != "" || reasoningText != "" || len(reconstructedToolCalls) > 0 {
+		errChunk := baseChunkFromChunks(chunks)
+		errChunk.Choices = []model.ChunkChoice{{
+			Index:        0,
+			Delta:        model.Delta{Content: errContent},
+			FinishReason: new("stop"),
+		}}
+		errBytes, _ := json.Marshal(errChunk)
+		_, _ = fmt.Fprintf(w, "data: %s\n\n", string(errBytes))
+	}
+	writeSSEDone(w)
 }
 
 func (m *MCPInjectMiddleware) handleStreamingOnce(
@@ -226,66 +417,12 @@ func (m *MCPInjectMiddleware) handleStreamingOnce(
 
 	chunks, toolCallFound, reconstructedToolCalls := mcp.ParseSSEStream(rec.buf)
 	fullText, reasoningText := mcp.ReassembleStreamContent(chunks)
-	allTCs, _ := mcp.FindAllToolCallsInText(fullText)
-
-	if m.supportsToolsFn != nil && !m.supportsToolsFn(req.Model) && (!toolCallFound || len(reconstructedToolCalls) == 0) && len(allTCs) > 0 {
-		mcpLog.Debug("found text tool calls in stream", "count", len(allTCs))
-		for i := range allTCs {
-			tc := &allTCs[i]
-			if tc.ID == "" {
-				tc.ID = fmt.Sprintf("call_stream_%d", i)
-			}
-			if tc.Type == "" {
-				tc.Type = "function"
-			}
-			reconstructedToolCalls = append(reconstructedToolCalls, *tc)
-		}
-		toolCallFound = true
-	}
+	reconstructedToolCalls, toolCallFound = m.mergeTextToolCalls(req.Model, fullText, toolCallFound, reconstructedToolCalls)
 
 	cleanedText, markerIdx := mcp.StripToolCallXML(fullText, toolOffset)
 
 	if !toolCallFound || len(reconstructedToolCalls) == 0 {
-		copyHeaders(w.Header(), rec.header)
-		w.Header().Set("Cache-Control", "no-cache")
-		w.WriteHeader(rec.code)
-		if cleanedText != strings.TrimSpace(fullText) {
-			chunk := baseChunkFromChunks(chunks)
-			chunk.Choices = []model.ChunkChoice{{
-				Index:        0,
-				Delta:        model.Delta{Content: cleanedText},
-				FinishReason: new("stop"),
-			}}
-			chunkBytes, _ := json.Marshal(chunk)
-			fmt.Fprintf(w, "data: %s\n\n", string(chunkBytes))
-		} else {
-			for _, c := range chunks {
-				body, ok := strings.CutPrefix(string(c.Data), "data: ")
-				if ok && body != "[DONE]" {
-					var cc model.ChatCompletionChunk
-					if err := json.Unmarshal([]byte(body), &cc); err == nil {
-						modified := false
-						for i := range cc.Choices {
-							if cc.Choices[i].Delta.ReasoningContent != "" {
-								cc.Choices[i].Delta.ReasoningContent = ""
-								modified = true
-							}
-						}
-						if modified {
-							newData, _ := json.Marshal(cc)
-							fmt.Fprintf(w, "data: %s\n\n", string(newData))
-							continue
-						}
-					}
-				}
-				_, _ = w.Write(c.Data)
-				_, _ = w.Write([]byte("\n\n"))
-			}
-		}
-		fmt.Fprintf(w, "data: [DONE]\n\n")
-		if flusher, ok := w.(http.Flusher); ok {
-			flusher.Flush()
-		}
+		relayCleanStream(w, rec, chunks, fullText, cleanedText)
 		return false, nil, nil, markerIdx
 	}
 
@@ -295,23 +432,7 @@ func (m *MCPInjectMiddleware) handleStreamingOnce(
 	newToolCalls := mcp.FilterNewToolCalls(req.Messages, reconstructedToolCalls)
 	if len(newToolCalls) == 0 {
 		mcpLog.Debug("all tool calls are duplicates in stream, writing clean response", "tool", reconstructedToolCalls[0].Function.Name)
-		copyHeaders(w.Header(), rec.header)
-		w.Header().Set("Cache-Control", "no-cache")
-		w.WriteHeader(rec.code)
-		if cleanedText != "" || reasoningText != "" || len(reconstructedToolCalls) > 0 {
-			chunk := baseChunkFromChunks(chunks)
-			chunk.Choices = []model.ChunkChoice{{
-				Index:        0,
-				Delta:        model.Delta{Content: cleanedText},
-				FinishReason: new("stop"),
-			}}
-			chunkBytes, _ := json.Marshal(chunk)
-			fmt.Fprintf(w, "data: %s\n\n", string(chunkBytes))
-		}
-		fmt.Fprintf(w, "data: [DONE]\n\n")
-		if flusher, ok := w.(http.Flusher); ok {
-			flusher.Flush()
-		}
+		relayDuplicateToolCallsStream(w, rec, chunks, cleanedText, reasoningText, len(reconstructedToolCalls))
 		return false, nil, nil, markerIdx
 	}
 	reconstructedToolCalls = newToolCalls
@@ -329,25 +450,7 @@ func (m *MCPInjectMiddleware) handleStreamingOnce(
 		m.toolEventWriter(w, "ilter.tool_calls", eventData)
 	}
 
-	if cleanedText != "" || reasoningText != "" || len(reconstructedToolCalls) > 0 {
-		emitText := cleanedText
-		if len(reconstructedToolCalls) > 0 && !strings.Contains(emitText, mcp.MarkerPrefix) {
-			var sb strings.Builder
-			sb.Grow(len(reconstructedToolCalls) * len(mcp.MarkerFor(0)))
-			for range reconstructedToolCalls {
-				sb.WriteString(mcp.MarkerFor(markerIdx))
-				markerIdx++
-			}
-			emitText += sb.String()
-		}
-		chunk := baseChunkFromChunks(chunks)
-		chunk.Choices = []model.ChunkChoice{{
-			Index: 0,
-			Delta: model.Delta{Content: emitText},
-		}}
-		chunkBytes, _ := json.Marshal(chunk)
-		fmt.Fprintf(w, "data: %s\n\n", string(chunkBytes))
-	}
+	emitAssistantContentChunk(w, chunks, cleanedText, reasoningText, len(reconstructedToolCalls), &markerIdx)
 	if flusher, ok := w.(http.Flusher); ok {
 		flusher.Flush()
 	}
@@ -361,38 +464,12 @@ func (m *MCPInjectMiddleware) handleStreamingOnce(
 	}
 
 	if len(toolMsgs) == 0 {
-		mcpLog.Warn("streaming tool execution produced no messages")
-		errContent := cleanedText
-		if stripped, _ := mcp.StripToolCallXML(errContent, 0); stripped != "" {
-			errContent = stripped
-		}
-		if errContent == "" && len(reconstructedToolCalls) > 0 {
-			errContent = fmt.Sprintf(
-				"Tool %s could not be executed. The MCP server may be offline or not responding.",
-				reconstructedToolCalls[0].Function.Name,
-			)
-		}
-		if errContent != "" || reasoningText != "" || len(reconstructedToolCalls) > 0 {
-			errChunk := baseChunkFromChunks(chunks)
-			errChunk.Choices = []model.ChunkChoice{{
-				Index:        0,
-				Delta:        model.Delta{Content: errContent},
-				FinishReason: new("stop"),
-			}}
-			errBytes, _ := json.Marshal(errChunk)
-			fmt.Fprintf(w, "data: %s\n\n", string(errBytes))
-		}
-		fmt.Fprintf(w, "data: [DONE]\n\n")
-		if flusher, ok := w.(http.Flusher); ok {
-			flusher.Flush()
-		}
+		emitStreamingToolExecutionError(w, chunks, cleanedText, reasoningText, reconstructedToolCalls)
 		return false, nil, nil, markerIdx
 	}
 
 	allMsgs := []model.Message{assistantMsg}
-	if len(toolMsgs) > 0 {
-		allMsgs = append(allMsgs, toolMsgs...)
-	}
+	allMsgs = append(allMsgs, toolMsgs...)
 
 	return true, allMsgs, toolErrors, markerIdx
 }

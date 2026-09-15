@@ -20,31 +20,70 @@ func CalculateCost(m config.ModelConfig, promptTokens, completionTokens int) flo
 	return math.Round((inputCost+outputCost)*1e6) / 1e6
 }
 
+// countContentWords counts words in a Message.Content value, which may be
+// a plain string or a multi-part []any content array (text/image blocks).
+func countContentWords(content any) int {
+	switch v := content.(type) {
+	case string:
+		return len(strings.Fields(v))
+	case []any:
+		count := 0
+		for _, item := range v {
+			if s, ok := item.(string); ok {
+				count += len(strings.Fields(s))
+			} else if m, ok := item.(map[string]any); ok {
+				if text, ok := m["text"].(string); ok {
+					count += len(strings.Fields(text))
+				}
+			}
+		}
+		return count
+	default:
+		return 0
+	}
+}
+
 func estimateInputTokens(messages []model.Message) int {
 	var wordCount int
 	for _, msg := range messages {
 		if msg.Content == nil {
 			continue
 		}
-		switch v := msg.Content.(type) {
-		case string:
-			wordCount += len(strings.Fields(v))
-		case []any:
-			for _, item := range v {
-				if s, ok := item.(string); ok {
-					wordCount += len(strings.Fields(s))
-				} else if m, ok := item.(map[string]any); ok {
-					if text, ok := m["text"].(string); ok {
-						wordCount += len(strings.Fields(text))
-					}
-				}
-			}
-		}
+		wordCount += countContentWords(msg.Content)
 	}
 	if wordCount < 4 {
 		wordCount = 4
 	}
 	return int(float64(wordCount) * 1.3)
+}
+
+// normalizeTier treats "free" as "economy" for alternative-cost matching.
+func normalizeTier(tier string) string {
+	if tier == "free" {
+		return "economy"
+	}
+	return tier
+}
+
+// cheapestCostInTier scans catalog.Models (caller must hold ModelsMu) for
+// the cheapest model in targetTier other than excludeModel, returning
+// found=false if none exists.
+func cheapestCostInTier(targetTier, excludeModel string, inputTokens, outputTokens int) (cost float64, found bool) {
+	for name, infos := range catalog.Models {
+		if name == excludeModel || len(infos) == 0 {
+			continue
+		}
+		info := infos[0]
+		if normalizeTier(info.Tier) != targetTier {
+			continue
+		}
+		c := float64(inputTokens)*info.CostPerInputToken + float64(outputTokens)*info.CostPerOutputToken
+		if !found || c < cost {
+			cost = c
+			found = true
+		}
+	}
+	return cost, found
 }
 
 func findCheapestAlternativeCost(selectedModel string, inputTokens, outputTokens int) float64 {
@@ -55,39 +94,13 @@ func findCheapestAlternativeCost(selectedModel string, inputTokens, outputTokens
 	if !found || len(selectedInfos) == 0 {
 		return 0
 	}
-	selectedInfo := selectedInfos[0]
+	targetTier := normalizeTier(selectedInfos[0].Tier)
 
-	// Normalize tier for comparison — treat "free" as "economy" for alternative matching
-	targetTier := selectedInfo.Tier
-	if targetTier == "free" {
-		targetTier = "economy"
-	}
-
-	var cheapestCost float64
-	var foundCheaper bool
-
-	for name, infos := range catalog.Models {
-		if name == selectedModel || len(infos) == 0 {
-			continue
-		}
-		info := infos[0]
-		compareTier := info.Tier
-		if compareTier == "free" {
-			compareTier = "economy"
-		}
-		if compareTier == targetTier {
-			cost := float64(inputTokens)*info.CostPerInputToken + float64(outputTokens)*info.CostPerOutputToken
-			if !foundCheaper || cost < cheapestCost {
-				cheapestCost = cost
-				foundCheaper = true
-			}
-		}
-	}
-
+	cost, foundCheaper := cheapestCostInTier(targetTier, selectedModel, inputTokens, outputTokens)
 	if !foundCheaper {
 		return 0
 	}
-	return math.Round(cheapestCost*1e6) / 1e6
+	return math.Round(cost*1e6) / 1e6
 }
 
 func providerErrorStatus(err error) int {

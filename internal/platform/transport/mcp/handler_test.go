@@ -57,7 +57,7 @@ func TestHandler_POST_Initialize(t *testing.T) {
 	h.ServeHTTP(w, req)
 
 	resp := w.Result()
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
@@ -89,7 +89,7 @@ func TestHandler_POST_UnknownMethod(t *testing.T) {
 	h.ServeHTTP(w, req)
 
 	resp := w.Result()
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
@@ -112,7 +112,7 @@ func TestHandler_POST_EmptyBody(t *testing.T) {
 	h.ServeHTTP(w, req)
 
 	resp := w.Result()
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200 for JSON-RPC error, got %d", resp.StatusCode)
 	}
@@ -135,7 +135,7 @@ func TestHandler_POST_InvalidJSON(t *testing.T) {
 	h.ServeHTTP(w, req)
 
 	resp := w.Result()
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200 (JSON-RPC error response), got %d", resp.StatusCode)
 	}
@@ -160,7 +160,7 @@ func TestHandler_GET_SSE(t *testing.T) {
 	h.ServeHTTP(w, req)
 
 	resp := w.Result()
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
@@ -185,7 +185,7 @@ func TestHandler_POST_InitializeThenListTools(t *testing.T) {
 	h.ServeHTTP(w, req)
 
 	resp := w.Result()
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("init failed: %d", resp.StatusCode)
 	}
@@ -202,7 +202,7 @@ func TestHandler_POST_InitializeThenListTools(t *testing.T) {
 	h.ServeHTTP(w2, req2)
 
 	resp2 := w2.Result()
-	defer resp2.Body.Close()
+	defer func() { _ = resp2.Body.Close() }()
 	if resp2.StatusCode != http.StatusOK {
 		t.Fatalf("list tools failed: %d", resp2.StatusCode)
 	}
@@ -277,7 +277,7 @@ func TestHandler_POST_ServerDiscover(t *testing.T) {
 	h.ServeHTTP(w, req)
 
 	resp := w.Result()
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}

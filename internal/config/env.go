@@ -99,9 +99,17 @@ func (e *EnvVar[T]) Resolve() T {
 			"name", e.entry.Name,
 			"error", e.entry.resolveErr,
 		)
-		return e.entry.Default.(T)
+		v, ok := e.entry.Default.(T)
+		if !ok {
+			panic(fmt.Sprintf("env %s: default value has wrong type %T", e.entry.Name, e.entry.Default))
+		}
+		return v
 	}
-	return e.entry.value.(T)
+	v, ok := e.entry.value.(T)
+	if !ok {
+		panic(fmt.Sprintf("env %s: resolved value has wrong type %T", e.entry.Name, e.entry.value))
+	}
+	return v
 }
 
 // ResolveE reads the environment variable and returns a typed value or a
@@ -115,9 +123,17 @@ func (e *EnvVar[T]) ResolveE() (T, error) {
 		return zero, e.entry.resolveErr
 	}
 	if !e.entry.set {
-		return e.entry.Default.(T), nil
+		v, ok := e.entry.Default.(T)
+		if !ok {
+			panic(fmt.Sprintf("env %s: default value has wrong type %T", e.entry.Name, e.entry.Default))
+		}
+		return v, nil
 	}
-	return e.entry.value.(T), nil
+	v, ok := e.entry.value.(T)
+	if !ok {
+		panic(fmt.Sprintf("env %s: resolved value has wrong type %T", e.entry.Name, e.entry.value))
+	}
+	return v, nil
 }
 
 // WasSet reports whether the environment variable was actually present
@@ -247,43 +263,29 @@ var (
 // ApplyEnvOverrides sets Config fields from environment variables that were
 // actually set.  Precedence (highest wins): explicit ILTER_ prefixed env
 // vars, then compiled-in DefaultConfig values.
-func ApplyEnvOverrides(cfg *Config) {
-	if ServerPortEnv.WasSet() {
-		if val, err := ServerPortEnv.ResolveE(); err != nil {
-			slog.Error("invalid env var, using default", "name", "ILTER_SERVER_PORT", "error", err)
-		} else {
-			cfg.Server.Port = val
-		}
+// applyEnvOverride resolves envVar if it was explicitly set, logging (not
+// failing) on a resolve error; otherwise it calls apply with the resolved
+// value.
+func applyEnvOverride[T any](envVar *EnvVar[T], name string, apply func(T)) {
+	if !envVar.WasSet() {
+		return
 	}
-	if StoragePathEnv.WasSet() {
-		if val, err := StoragePathEnv.ResolveE(); err != nil {
-			slog.Error("invalid env var, using default", "name", "ILTER_STORAGE_PATH", "error", err)
-		} else {
-			cfg.Storage.SqlitePath = val
-		}
+	val, err := envVar.ResolveE()
+	if err != nil {
+		slog.Error("invalid env var, using default", "name", name, "error", err)
+		return
 	}
-	if LogLevelEnv.WasSet() {
-		if val, err := LogLevelEnv.ResolveE(); err != nil {
-			slog.Error("invalid env var, using default", "name", "ILTER_LOG_LEVEL", "error", err)
-		} else {
-			cfg.Logging.Level = val
-		}
-	}
-	if AdminKeyEnv.WasSet() {
-		if val, err := AdminKeyEnv.ResolveE(); err != nil {
-			slog.Error("invalid env var, using default", "name", "ILTER_ADMIN_API_KEY", "error", err)
-		} else {
-			cfg.Auth.AdminKey = val
-		}
-	}
+	apply(val)
+}
 
-	if RedisURLEnv.WasSet() {
-		if val, err := RedisURLEnv.ResolveE(); err != nil {
-			slog.Error("invalid env var, using default", "name", "ILTER_REDIS_URL", "error", err)
-		} else {
-			cfg.Cache.RedisURL = val
-			cfg.RateLimit.RedisURL = val
-			cfg.PII.RedisURL = val
-		}
-	}
+func ApplyEnvOverrides(cfg *Config) {
+	applyEnvOverride(ServerPortEnv, "ILTER_SERVER_PORT", func(v int) { cfg.Server.Port = v })
+	applyEnvOverride(StoragePathEnv, "ILTER_STORAGE_PATH", func(v string) { cfg.Storage.SqlitePath = v })
+	applyEnvOverride(LogLevelEnv, "ILTER_LOG_LEVEL", func(v string) { cfg.Logging.Level = v })
+	applyEnvOverride(AdminKeyEnv, "ILTER_ADMIN_API_KEY", func(v string) { cfg.Auth.AdminKey = v })
+	applyEnvOverride(RedisURLEnv, "ILTER_REDIS_URL", func(v string) {
+		cfg.Cache.RedisURL = v
+		cfg.RateLimit.RedisURL = v
+		cfg.PII.RedisURL = v
+	})
 }

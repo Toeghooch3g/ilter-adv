@@ -85,12 +85,34 @@ func (r *ProviderSet) Execute(ctx context.Context, keyID, keyPrefix string, call
 		return nil, nil
 	}
 
-	// 1 — Group calls by owning provider, collect results.
-	type result struct {
-		msg model.Message
-		err bool
+	results := r.executeProviders(ctx, keyID, keyPrefix, calls)
+
+	// Composite assistant message (one, with every call the LLM made).
+	assistantMsg := model.Message{
+		Role:      "assistant",
+		ToolCalls: calls,
+		Content:   "",
 	}
-	results := make(map[string]result, len(calls))
+	out := make([]model.Message, 1, 1+len(calls))
+	out[0] = assistantMsg
+	errFlags := make([]bool, 0, len(calls))
+
+	return r.appendCallResults(out, errFlags, calls, results, keyID)
+}
+
+// providerCallResult is one tool call's result, as collected from whichever
+// provider claimed it.
+type providerCallResult struct {
+	msg model.Message
+	err bool
+}
+
+// executeProviders groups calls by owning provider (via pickByPrefix),
+// executes each provider once with its owned subset, and collects the
+// per-tool-call-ID results. Each provider's own assistant message
+// (msgs[0]) is discarded — ProviderSet builds a single composite one.
+func (r *ProviderSet) executeProviders(ctx context.Context, keyID, keyPrefix string, calls []model.ToolCall) map[string]providerCallResult {
+	results := make(map[string]providerCallResult, len(calls))
 
 	for _, p := range r.providers {
 		if p.Execute == nil {
@@ -109,22 +131,18 @@ func (r *ProviderSet) Execute(ctx context.Context, keyID, keyPrefix string, call
 				continue
 			}
 			isErr := toolIdx < len(errs) && errs[toolIdx]
-			results[m.ToolCallID] = result{msg: m, err: isErr}
+			results[m.ToolCallID] = providerCallResult{msg: m, err: isErr}
 			toolIdx++
 		}
 	}
 
-	// 2 — Composite assistant message (one, with every call the LLM made).
-	assistantMsg := model.Message{
-		Role:      "assistant",
-		ToolCalls: calls,
-		Content:   "",
-	}
-	out := make([]model.Message, 1, 1+len(calls))
-	out[0] = assistantMsg
-	errFlags := make([]bool, 0, len(calls))
+	return results
+}
 
-	// 3 — Emit results in original call order; fill gaps with errors.
+// appendCallResults emits calls' results in original order, filling gaps
+// (calls no provider claimed) with a self-correction error message that
+// lists the caller's currently authorized tool names.
+func (r *ProviderSet) appendCallResults(out []model.Message, errFlags []bool, calls []model.ToolCall, results map[string]providerCallResult, keyID string) ([]model.Message, []bool) {
 	var validNames string // computed lazily, only if a call actually goes unmatched
 	for _, c := range calls {
 		res, ok := results[c.ID]
@@ -132,25 +150,11 @@ func (r *ProviderSet) Execute(ctx context.Context, keyID, keyPrefix string, call
 			if validNames == "" {
 				validNames = strings.Join(r.toolNames(keyID), ", ")
 			}
-			var msg string
-			if c.Function.Name == "" {
-				msg = fmt.Sprintf(
-					"Error: this tool call is missing a function name, so it could not be routed. "+
-						"Retry the call with an exact, non-empty \"name\" from this list: %s",
-					validNames,
-				)
-			} else {
-				msg = fmt.Sprintf(
-					"Error: no tool named %q is available. "+
-						"Retry the call with an exact name from this list: %s",
-					c.Function.Name, validNames,
-				)
-			}
 			out = append(out, model.Message{
 				Role:       "tool",
 				ToolCallID: c.ID,
 				Name:       c.Function.Name,
-				Content:    msg,
+				Content:    unmatchedToolCallMessage(c, validNames),
 			})
 			errFlags = append(errFlags, true)
 			continue
@@ -158,8 +162,24 @@ func (r *ProviderSet) Execute(ctx context.Context, keyID, keyPrefix string, call
 		out = append(out, res.msg)
 		errFlags = append(errFlags, res.err)
 	}
-
 	return out, errFlags
+}
+
+// unmatchedToolCallMessage builds the self-correction hint sent back to the
+// LLM when a tool call couldn't be routed to any provider.
+func unmatchedToolCallMessage(c model.ToolCall, validNames string) string {
+	if c.Function.Name == "" {
+		return fmt.Sprintf(
+			"Error: this tool call is missing a function name, so it could not be routed. "+
+				"Retry the call with an exact, non-empty \"name\" from this list: %s",
+			validNames,
+		)
+	}
+	return fmt.Sprintf(
+		"Error: no tool named %q is available. "+
+			"Retry the call with an exact name from this list: %s",
+		c.Function.Name, validNames,
+	)
 }
 
 // toolNames returns every tool name currently authorized for this key, for

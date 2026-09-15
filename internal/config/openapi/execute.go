@@ -33,6 +33,182 @@ import (
 //   - String params with CRLF are rejected (header-injection prevention).
 //   - Auth token NEVER appears in the returned tool result content.
 //   - All outcomes return a tool-role message — never an HTTP 500.
+//
+// validateRequiredParams checks that every name in required is present in
+// args, returning an error tool message for the first one that's missing.
+func validateRequiredParams(toolCallID, opName string, args map[string]any, required []string) *model.Message {
+	for _, name := range required {
+		if _, ok := args[name]; !ok {
+			return toolMsg(toolCallID, opName, fmt.Sprintf("Error: missing required parameter %q", name))
+		}
+	}
+	return nil
+}
+
+// classifyArgs routes each known arg to its path or query destination
+// (dropping unknown params — see the security note on ExecuteToolCall —
+// and rejecting CRLF in any value). Returns an error tool message for the
+// first CRLF violation.
+func classifyArgs(toolCallID, opName string, args map[string]any, props map[string]*openapi3.SchemaRef, op *Operation) (pathVals map[string]string, queryVals url.Values, errMsg *model.Message) {
+	pathVals = make(map[string]string)
+	queryVals = url.Values{}
+
+	for name, raw := range args {
+		prop, ok := props[name]
+		if !ok {
+			// Cookie and header params are excluded from the schema by the
+			// indexer (BuildIndex → buildParamSchema). They become "unknown"
+			// here and are silently dropped. This is the correct security
+			// boundary: the LLM can never inject header/cookie values.
+			openapiLog.Debug("dropping unknown param (not in spec schema)",
+				"param", name, "op", op.ID)
+			continue
+		}
+
+		str := fmt.Sprintf("%v", raw)
+		if containsCRLF(str) {
+			return nil, nil, toolMsg(toolCallID, opName, fmt.Sprintf("Error: CRLF characters rejected in parameter %q", name))
+		}
+
+		// Path params match {name} in the path template; everything else is query.
+		if isPathParam(name, op.Path) {
+			pathVals[name] = url.PathEscape(str)
+			continue
+		}
+
+		propSchema := propSchema(prop)
+		style := op.ParamStyles[name]
+		switch {
+		case style == openapi3.SerializationDeepObject && isObjectish(raw, propSchema):
+			serializeDeepObject(name, raw, queryVals)
+		case isArrayish(raw, propSchema):
+			for _, v := range serializeForm(raw) {
+				queryVals.Add(name, v)
+			}
+		default:
+			queryVals.Set(name, str)
+		}
+	}
+	return pathVals, queryVals, nil
+}
+
+// buildRequestURL builds the request URL from the operation's server URL
+// and path template, substituting escaped path params and attaching the
+// query string.
+func buildRequestURL(op *Operation, pathVals map[string]string, queryVals url.Values) (*url.URL, error) {
+	base := strings.TrimRight(op.ServerURL, "/")
+	path := op.Path
+	for name, escaped := range pathVals {
+		path = strings.ReplaceAll(path, "{"+name+"}", escaped)
+	}
+	u, err := url.ParseRequestURI(base + path)
+	if err != nil {
+		return nil, err
+	}
+	if len(queryVals) > 0 {
+		u.RawQuery = queryVals.Encode()
+	}
+	return u, nil
+}
+
+// buildRequestBody JSON-encodes any args not consumed as path/query params
+// into the request body, if the operation defines one.
+func buildRequestBody(op *Operation, args map[string]any, props map[string]*openapi3.SchemaRef) ([]byte, error) {
+	if op.BodySchema == nil {
+		return nil, nil
+	}
+	leftover := make(map[string]any)
+	for k, v := range args {
+		if _, isParam := props[k]; !isParam {
+			leftover[k] = v
+		}
+	}
+	if len(leftover) == 0 {
+		return nil, nil
+	}
+	return json.Marshal(leftover)
+}
+
+// applyConfiguredAuth sets the Authorization/API-key header from the
+// spec's configured auth, if any.
+func applyConfiguredAuth(req *http.Request, cfg *config.OpenAPISpecConfig) {
+	if strings.TrimSpace(cfg.Auth.Value) == "" {
+		return
+	}
+	switch cfg.Auth.Type {
+	case "bearer":
+		req.Header.Set("Authorization", "Bearer "+cfg.Auth.Value)
+	case "basic":
+		encoded := base64.StdEncoding.EncodeToString([]byte(cfg.Auth.Value))
+		req.Header.Set("Authorization", "Basic "+encoded)
+	case "api_key":
+		hdr := cfg.Auth.Key
+		if hdr == "" {
+			hdr = "X-API-Key"
+		}
+		req.Header.Set(hdr, cfg.Auth.Value)
+	}
+}
+
+// applyLocalAdminAuth falls back to the gateway's admin key for
+// unauthenticated requests to localhost, so ilter's own dashboard/MCP
+// meta-tools can call the local API without a separately configured spec
+// auth.
+func applyLocalAdminAuth(req *http.Request, u *url.URL, adminKey string) {
+	if req.Header.Get("Authorization") != "" || req.Header.Get("X-API-Key") != "" {
+		return
+	}
+	if adminKey == "" {
+		return
+	}
+	if !strings.Contains(u.Host, "127.0.0.1") && !strings.Contains(u.Host, "localhost") {
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+adminKey)
+	req.Header.Set("X-Admin-Key", adminKey)
+}
+
+// buildHTTPRequest builds the outgoing HTTP request and injects
+// gateway-side auth — the LLM never sees these values.
+func buildHTTPRequest(ctx context.Context, method string, u *url.URL, body []byte, cfg *config.OpenAPISpecConfig, adminKey string) (*http.Request, error) {
+	var bodyRd io.Reader
+	if len(body) > 0 {
+		bodyRd = bytes.NewReader(body)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, u.String(), bodyRd)
+	if err != nil {
+		return nil, err
+	}
+
+	applyConfiguredAuth(req, cfg)
+	applyLocalAdminAuth(req, u, adminKey)
+
+	if len(body) > 0 {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	return req, nil
+}
+
+// formatHTTPResult renders the upstream HTTP response as tool-result text:
+// text content is truncated to 8KB (UTF-8 safe), non-text content is
+// summarized, and non-2xx/3xx status codes are prefixed.
+func formatHTTPResult(contentType string, rawBody []byte, statusCode int) string {
+	var result string
+	if isTextContent(contentType) {
+		result = string(rawBody)
+		if len(result) > 8192 {
+			result = utf8SafeTruncate(result, 8192)
+			result += "...[truncated]"
+		}
+	} else {
+		result = fmt.Sprintf("[non-text response: %s, %d bytes]", contentType, len(rawBody))
+	}
+	if statusCode >= 400 {
+		result = fmt.Sprintf("HTTP %d: %s", statusCode, result)
+	}
+	return result
+}
+
 func ExecuteToolCall(
 	ctx context.Context,
 	toolCallID string,
@@ -55,136 +231,40 @@ func ExecuteToolCall(
 		timeout = 30 * time.Second
 	}
 
-	// 1. Index known params from the operation's ParamSchema (a JSON Schema
+	// Index known params from the operation's ParamSchema (a JSON Schema
 	// object with per-property schemas). Header and cookie params are excluded
 	// by the indexer — they won't appear here and will be dropped as unknown.
 	props, required := schemaProperties(op.ParamSchema)
 
-	// 2. Validate required params.
-	for _, name := range required {
-		if _, ok := args[name]; !ok {
-			return toolMsg(toolCallID, opName, fmt.Sprintf("Error: missing required parameter %q", name))
-		}
+	if errMsg := validateRequiredParams(toolCallID, opName, args, required); errMsg != nil {
+		return errMsg
 	}
 
-	// 3. Classify args — route to path/query, drop unknown, reject CRLF.
-	pathVals := make(map[string]string)
-	queryVals := url.Values{}
-
-	for name, raw := range args {
-		prop, ok := props[name]
-		if !ok {
-			// Cookie and header params are excluded from the schema by the
-			// indexer (BuildIndex → buildParamSchema). They become "unknown"
-			// here and are silently dropped. This is the correct security
-			// boundary: the LLM can never inject header/cookie values.
-			openapiLog.Debug("dropping unknown param (not in spec schema)",
-				"param", name, "op", op.ID)
-			continue
-		}
-
-		str := fmt.Sprintf("%v", raw)
-		if containsCRLF(str) {
-			return toolMsg(toolCallID, opName, fmt.Sprintf("Error: CRLF characters rejected in parameter %q", name))
-		}
-
-		// Path params match {name} in the path template; everything else is query.
-		if isPathParam(name, op.Path) {
-			pathVals[name] = url.PathEscape(str)
-		} else {
-			propSchema := propSchema(prop)
-			style := op.ParamStyles[name]
-
-			if style == openapi3.SerializationDeepObject && isObjectish(raw, propSchema) {
-				serializeDeepObject(name, raw, queryVals)
-			} else if isArrayish(raw, propSchema) {
-				for _, v := range serializeForm(raw) {
-					queryVals.Add(name, v)
-				}
-			} else {
-				queryVals.Set(name, str)
-			}
-		}
+	pathVals, queryVals, errMsg := classifyArgs(toolCallID, opName, args, props, op)
+	if errMsg != nil {
+		return errMsg
 	}
 
-	// 4. Build URL: server URL + path template with escaped path params.
-	base := strings.TrimRight(op.ServerURL, "/")
-	path := op.Path
-	for name, escaped := range pathVals {
-		path = strings.ReplaceAll(path, "{"+name+"}", escaped)
-	}
-	u, err := url.ParseRequestURI(base + path)
+	u, err := buildRequestURL(op, pathVals, queryVals)
 	if err != nil {
 		return toolMsg(toolCallID, opName, fmt.Sprintf("Error: invalid URL: %v", err))
 	}
-	if len(queryVals) > 0 {
-		u.RawQuery = queryVals.Encode()
+
+	body, err := buildRequestBody(op, args, props)
+	if err != nil {
+		return toolMsg(toolCallID, opName, fmt.Sprintf("Error: serializing request body: %v", err))
 	}
 
-	// 5. Build body from leftover args not consumed by params.
-	var body []byte
-	if op.BodySchema != nil {
-		leftover := make(map[string]any)
-		for k, v := range args {
-			if _, isParam := props[k]; !isParam {
-				leftover[k] = v
-			}
-		}
-		if len(leftover) > 0 {
-			body, err = json.Marshal(leftover)
-			if err != nil {
-				return toolMsg(toolCallID, opName, fmt.Sprintf("Error: serializing request body: %v", err))
-			}
-		}
-	}
-
-	// 6. Build HTTP request.
 	method := strings.ToUpper(strings.TrimSpace(op.Method))
 	if method == "" {
 		return toolMsg(toolCallID, opName, "Error: empty HTTP method")
 	}
 
-	var bodyRd io.Reader
-	if len(body) > 0 {
-		bodyRd = bytes.NewReader(body)
-	}
-	req, err := http.NewRequestWithContext(ctx, method, u.String(), bodyRd)
+	req, err := buildHTTPRequest(ctx, method, u, body, cfg, adminKey)
 	if err != nil {
 		return toolMsg(toolCallID, opName, fmt.Sprintf("Error: creating request: %v", err))
 	}
 
-	// Auth injection — gateway-side, LLM never sees these values.
-	if strings.TrimSpace(cfg.Auth.Value) != "" {
-		switch cfg.Auth.Type {
-		case "bearer":
-			req.Header.Set("Authorization", "Bearer "+cfg.Auth.Value)
-		case "basic":
-			encoded := base64.StdEncoding.EncodeToString([]byte(cfg.Auth.Value))
-			req.Header.Set("Authorization", "Basic "+encoded)
-		case "api_key":
-			hdr := cfg.Auth.Key
-			if hdr == "" {
-				hdr = "X-API-Key"
-			}
-			req.Header.Set(hdr, cfg.Auth.Value)
-		}
-	}
-
-	if req.Header.Get("Authorization") == "" && req.Header.Get("X-API-Key") == "" {
-		if strings.Contains(u.Host, "127.0.0.1") || strings.Contains(u.Host, "localhost") {
-			if adminKey != "" {
-				req.Header.Set("Authorization", "Bearer "+adminKey)
-				req.Header.Set("X-Admin-Key", adminKey)
-			}
-		}
-	}
-
-	// Content-Type for body-bearing requests.
-	if len(body) > 0 {
-		req.Header.Set("Content-Type", "application/json")
-	}
-
-	// 7. Execute HTTP call.
 	client := &http.Client{Timeout: timeout}
 	if !isSafeMethod(method) {
 		client.CheckRedirect = func(*http.Request, []*http.Request) error {
@@ -196,31 +276,15 @@ func ExecuteToolCall(
 	if err != nil {
 		return toolMsg(toolCallID, opName, fmt.Sprintf("Error: %v", err))
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
-	// 8. Read response — limit to 1MB, then truncate to 8KB for the LLM.
+	// Read response — limit to 1MB, then truncate to 8KB for the LLM.
 	rawBody, err := io.ReadAll(io.LimitReader(resp.Body, 1_048_576))
 	if err != nil {
 		return toolMsg(toolCallID, opName, fmt.Sprintf("Error: reading response: %v", err))
 	}
 
-	contentType := resp.Header.Get("Content-Type")
-	var result string
-
-	if isTextContent(contentType) {
-		result = string(rawBody)
-		if len(result) > 8192 {
-			result = utf8SafeTruncate(result, 8192)
-			result += "...[truncated]"
-		}
-	} else {
-		result = fmt.Sprintf("[non-text response: %s, %d bytes]", contentType, len(rawBody))
-	}
-
-	if resp.StatusCode >= 400 {
-		result = fmt.Sprintf("HTTP %d: %s", resp.StatusCode, result)
-	}
-
+	result := formatHTTPResult(resp.Header.Get("Content-Type"), rawBody, resp.StatusCode)
 	return toolMsg(toolCallID, opName, result)
 }
 

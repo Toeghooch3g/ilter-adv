@@ -104,13 +104,13 @@ func (s *SQLiteStore) Close() error {
 // The key_id is the API key ID (e.g. "abc123" or "legacy_5").
 //
 //nolint:revive // argument-limit: pre-existing signature, called from internal/proxy outside this batch's scope
-func (s *SQLiteStore) RecordDailyUsage(keyID string, date, model, provider string, promptTokens, completionTokens, cacheHits int, cost float64) error {
+func (s *SQLiteStore) RecordDailyUsage(ctx context.Context, keyID string, date, model, provider string, promptTokens, completionTokens, cacheHits int, cost float64) error {
 	totalTokens := int64(promptTokens + completionTokens)
 	prompt := int64(promptTokens)
 	completion := int64(completionTokens)
 	hits := int64(cacheHits)
 
-	return s.queries.RecordDailyUsage(context.Background(), sqlc.RecordDailyUsageParams{
+	return s.queries.RecordDailyUsage(ctx, sqlc.RecordDailyUsageParams{
 		KeyID:            &keyID,
 		Date:             &date,
 		Model:            &model,

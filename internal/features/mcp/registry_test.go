@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"context"
 	"testing"
 
 	"github.com/ilter-ai/ilter/internal/config"
@@ -44,7 +45,7 @@ func TestRegistry_SyncToolsPersistsAndReloads(t *testing.T) {
 		{Name: "tool-a", Description: "does a thing", InputSchema: []byte(`{"type":"object"}`)},
 		{Name: "tool-b", Description: "does another thing"},
 	}
-	if syncErr := reg.SyncTools("srv1", tools); syncErr != nil {
+	if syncErr := reg.SyncTools(context.Background(), "srv1", tools); syncErr != nil {
 		t.Fatalf("SyncTools: %v", syncErr)
 	}
 
@@ -82,7 +83,7 @@ func TestRegistry_SyncToolsPersistsAndReloads(t *testing.T) {
 	}
 
 	// Re-sync with a shorter tool list — delete-then-reinsert must drop tool-b.
-	if shrinkErr := reg.SyncTools("srv1", []ToolDefinition{tools[0]}); shrinkErr != nil {
+	if shrinkErr := reg.SyncTools(context.Background(), "srv1", []ToolDefinition{tools[0]}); shrinkErr != nil {
 		t.Fatalf("SyncTools (shrink): %v", shrinkErr)
 	}
 	reg3, err := NewRegistryFromCache(servers, store)

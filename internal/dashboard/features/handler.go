@@ -1,7 +1,6 @@
 package features
 
 import (
-	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -98,7 +97,7 @@ func (h *Handler) bootFeatures() []FeatureItem {
 }
 
 func (h *Handler) HandleToggleFeature(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 	var req toggleFeatureRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		model.WriteJSONError(w, http.StatusBadRequest, "invalid_request_error", "Invalid request body")
@@ -147,7 +146,7 @@ func (h *Handler) HandleToggleFeature(w http.ResponseWriter, r *http.Request) {
 	if h.auditor != nil {
 		oldVals := map[string]any{"enabled": oldEnabled == "true"}
 		newVals := map[string]any{"enabled": req.Enabled}
-		if err := h.auditor.LogUpdate("feature", req.FeatureKey, oldVals, newVals, reqmeta.GetKeyID(r.Context())); err != nil {
+		if err := h.auditor.LogUpdate(r.Context(), "feature", req.FeatureKey, oldVals, newVals, reqmeta.GetKeyID(r.Context())); err != nil {
 			slog.Warn("audit log failed for feature toggle", "feature", req.FeatureKey, "error", err)
 		}
 	}
@@ -155,7 +154,7 @@ func (h *Handler) HandleToggleFeature(w http.ResponseWriter, r *http.Request) {
 	// Hot-apply: config cache refresh so middleware picks up the change.
 	if h.configCache != nil {
 		stores := &config.RuntimeStores{RuntimeConfig: h.store}
-		if err := h.configCache.Refresh(context.Background(), stores); err != nil {
+		if err := h.configCache.Refresh(r.Context(), stores); err != nil {
 			slog.Warn("config cache refresh after feature toggle failed", "error", err)
 		}
 	}

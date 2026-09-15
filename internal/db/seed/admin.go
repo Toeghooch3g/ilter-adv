@@ -1,6 +1,7 @@
 package seed
 
 import (
+	"context"
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
@@ -17,13 +18,13 @@ import (
 // it does nothing and returns created=false so re-running `ilter init` never
 // rotates credentials or duplicates the account.
 func EnsureAdminAccount(store *dbpkg.SQLiteStore) (email, password, apiKeyToken string, created bool, err error) {
-	if _, checkErr := store.GetGroupByName("admin"); checkErr == nil {
+	if _, checkErr := store.GetGroupByName(context.Background(), "admin"); checkErr == nil {
 		return "", "", "", false, nil
 	} else if !errors.Is(checkErr, sql.ErrNoRows) {
 		return "", "", "", false, fmt.Errorf("check admin group: %w", checkErr)
 	}
 
-	group, err := store.CreateGroup(auth.CreateGroupRequest{
+	group, err := store.CreateGroup(context.Background(), auth.CreateGroupRequest{
 		Name:        "admin",
 		Description: "Administrators",
 	})
@@ -37,7 +38,7 @@ func EnsureAdminAccount(store *dbpkg.SQLiteStore) (email, password, apiKeyToken 
 	}
 
 	email = "admin@localhost"
-	user, err := store.CreateUser(auth.CreateUserRequest{
+	user, err := store.CreateUser(context.Background(), auth.CreateUserRequest{
 		Name:     "admin",
 		Email:    email,
 		Password: password,
@@ -47,13 +48,13 @@ func EnsureAdminAccount(store *dbpkg.SQLiteStore) (email, password, apiKeyToken 
 		return "", "", "", false, fmt.Errorf("create admin user: %w", err)
 	}
 
-	if addErr := store.AddUserToGroup(user.ID, group.ID, "admin"); addErr != nil {
+	if addErr := store.AddUserToGroup(context.Background(), user.ID, group.ID, "admin"); addErr != nil {
 		return "", "", "", false, fmt.Errorf("add admin user to group: %w", addErr)
 	}
 
 	groupID, userID := group.ID, user.ID
 	_, apiKeyToken, err = store.CreateAPIKey(
-		"admin", &groupID, &userID,
+		context.Background(), "admin", &groupID, &userID,
 		0, 0, // unlimited budget
 		0, 0, // unlimited rate limit
 		nil, nil, nil,

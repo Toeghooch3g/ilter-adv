@@ -15,7 +15,7 @@ func LoadPatternsFromDB(db *sql.DB) error {
 	if err != nil {
 		return fmt.Errorf("query pii_patterns: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var patterns []Pattern
 	for rows.Next() {

@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"testing"
 
@@ -16,7 +17,7 @@ func TestCreateUser_Basic(t *testing.T) {
 	ts := setupTestStore(t)
 	defer ts.close()
 
-	user, err := ts.store.CreateUser(auth.CreateUserRequest{
+	user, err := ts.store.CreateUser(context.Background(), auth.CreateUserRequest{
 		Name:     "Alice",
 		Email:    "alice@example.com",
 		Password: "securepass",
@@ -39,7 +40,7 @@ func TestCreateUser_DefaultsStatus(t *testing.T) {
 	ts := setupTestStore(t)
 	defer ts.close()
 
-	user, err := ts.store.CreateUser(auth.CreateUserRequest{
+	user, err := ts.store.CreateUser(context.Background(), auth.CreateUserRequest{
 		Name:  "Bob",
 		Email: "bob@example.com",
 	})
@@ -51,7 +52,7 @@ func TestCreateUser_NoPassword(t *testing.T) {
 	ts := setupTestStore(t)
 	defer ts.close()
 
-	user, err := ts.store.CreateUser(auth.CreateUserRequest{
+	user, err := ts.store.CreateUser(context.Background(), auth.CreateUserRequest{
 		Name:   "NoPass",
 		Email:  "nopass@example.com",
 		Status: "active",
@@ -64,7 +65,7 @@ func TestCreateUser_ZeroBudget(t *testing.T) {
 	ts := setupTestStore(t)
 	defer ts.close()
 
-	user, err := ts.store.CreateUser(auth.CreateUserRequest{
+	user, err := ts.store.CreateUser(context.Background(), auth.CreateUserRequest{
 		Name:   "Zero",
 		Email:  "zero@example.com",
 		Budget: 0,
@@ -77,13 +78,13 @@ func TestCreateUser_DuplicateEmail(t *testing.T) {
 	ts := setupTestStore(t)
 	defer ts.close()
 
-	_, err := ts.store.CreateUser(auth.CreateUserRequest{
+	_, err := ts.store.CreateUser(context.Background(), auth.CreateUserRequest{
 		Name:  "Alice",
 		Email: "alice@example.com",
 	})
 	require.NoError(t, err)
 
-	_, err = ts.store.CreateUser(auth.CreateUserRequest{
+	_, err = ts.store.CreateUser(context.Background(), auth.CreateUserRequest{
 		Name:  "Alice2",
 		Email: "alice@example.com",
 	})
@@ -97,14 +98,14 @@ func TestGetUser_Found(t *testing.T) {
 	ts := setupTestStore(t)
 	defer ts.close()
 
-	created, err := ts.store.CreateUser(auth.CreateUserRequest{
+	created, err := ts.store.CreateUser(context.Background(), auth.CreateUserRequest{
 		Name:   "Alice",
 		Email:  "alice@example.com",
 		Budget: 50.0,
 	})
 	require.NoError(t, err)
 
-	got, err := ts.store.GetUser(created.ID)
+	got, err := ts.store.GetUser(context.Background(), created.ID)
 	require.NoError(t, err)
 	require.NotNil(t, got)
 	assert.Equal(t, created.ID, got.ID)
@@ -119,7 +120,7 @@ func TestGetUser_NotFound(t *testing.T) {
 	ts := setupTestStore(t)
 	defer ts.close()
 
-	got, err := ts.store.GetUser(99999)
+	got, err := ts.store.GetUser(context.Background(), 99999)
 	assert.Nil(t, got)
 	assert.ErrorIs(t, err, sql.ErrNoRows)
 }
@@ -130,7 +131,7 @@ func TestGetUserByEmail_Found(t *testing.T) {
 	ts := setupTestStore(t)
 	defer ts.close()
 
-	created, err := ts.store.CreateUser(auth.CreateUserRequest{
+	created, err := ts.store.CreateUser(context.Background(), auth.CreateUserRequest{
 		Name:  "Alice",
 		Email: "alice@example.com",
 	})
@@ -159,7 +160,7 @@ func TestListUsers_Empty(t *testing.T) {
 	ts := setupTestStore(t)
 	defer ts.close()
 
-	users, err := ts.store.ListUsers()
+	users, err := ts.store.ListUsers(context.Background())
 	require.NoError(t, err)
 	assert.Empty(t, users)
 }
@@ -168,14 +169,14 @@ func TestListUsers_Multiple(t *testing.T) {
 	ts := setupTestStore(t)
 	defer ts.close()
 
-	u1, err := ts.store.CreateUser(auth.CreateUserRequest{Name: "Alice", Email: "alice@example.com"})
+	u1, err := ts.store.CreateUser(context.Background(), auth.CreateUserRequest{Name: "Alice", Email: "alice@example.com"})
 	require.NoError(t, err)
-	u2, err := ts.store.CreateUser(auth.CreateUserRequest{Name: "Bob", Email: "bob@example.com"})
+	u2, err := ts.store.CreateUser(context.Background(), auth.CreateUserRequest{Name: "Bob", Email: "bob@example.com"})
 	require.NoError(t, err)
-	u3, err := ts.store.CreateUser(auth.CreateUserRequest{Name: "Charlie", Email: "charlie@example.com"})
+	u3, err := ts.store.CreateUser(context.Background(), auth.CreateUserRequest{Name: "Charlie", Email: "charlie@example.com"})
 	require.NoError(t, err)
 
-	users, err := ts.store.ListUsers()
+	users, err := ts.store.ListUsers(context.Background())
 	require.NoError(t, err)
 	require.Len(t, users, 3)
 	assert.Equal(t, u1.ID, users[0].ID)
@@ -189,7 +190,7 @@ func TestGetUserBudget_Found(t *testing.T) {
 	ts := setupTestStore(t)
 	defer ts.close()
 
-	created, err := ts.store.CreateUser(auth.CreateUserRequest{
+	created, err := ts.store.CreateUser(context.Background(), auth.CreateUserRequest{
 		Name:   "Alice",
 		Email:  "alice@example.com",
 		Budget: 250.50,
@@ -216,7 +217,7 @@ func TestGetUserBudget_ZeroBudget(t *testing.T) {
 	ts := setupTestStore(t)
 	defer ts.close()
 
-	created, err := ts.store.CreateUser(auth.CreateUserRequest{
+	created, err := ts.store.CreateUser(context.Background(), auth.CreateUserRequest{
 		Name:   "ZeroBudget",
 		Email:  "zero@example.com",
 		Budget: 0,
@@ -235,7 +236,7 @@ func TestUpdateUser_Partial(t *testing.T) {
 	ts := setupTestStore(t)
 	defer ts.close()
 
-	created, err := ts.store.CreateUser(auth.CreateUserRequest{
+	created, err := ts.store.CreateUser(context.Background(), auth.CreateUserRequest{
 		Name:   "Alice",
 		Email:  "alice@example.com",
 		Budget: 100.0,
@@ -245,7 +246,7 @@ func TestUpdateUser_Partial(t *testing.T) {
 	newName := "Alice Updated"
 	newBudget := 200.0
 	newDailyLimit := 50.0
-	updated, err := ts.store.UpdateUser(created.ID, auth.UpdateUserRequest{
+	updated, err := ts.store.UpdateUser(context.Background(), created.ID, auth.UpdateUserRequest{
 		Name:       &newName,
 		Budget:     &newBudget,
 		DailyLimit: &newDailyLimit,
@@ -263,7 +264,7 @@ func TestUpdateUser_Password(t *testing.T) {
 	ts := setupTestStore(t)
 	defer ts.close()
 
-	created, err := ts.store.CreateUser(auth.CreateUserRequest{
+	created, err := ts.store.CreateUser(context.Background(), auth.CreateUserRequest{
 		Name:     "Alice",
 		Email:    "alice@example.com",
 		Password: "oldpass",
@@ -272,7 +273,7 @@ func TestUpdateUser_Password(t *testing.T) {
 	assert.True(t, VerifyPassword("oldpass", created.PasswordHash))
 
 	newPass := "newpass123"
-	updated, err := ts.store.UpdateUser(created.ID, auth.UpdateUserRequest{
+	updated, err := ts.store.UpdateUser(context.Background(), created.ID, auth.UpdateUserRequest{
 		Password: &newPass,
 	})
 	require.NoError(t, err)
@@ -284,13 +285,13 @@ func TestUpdateUser_NoChanges(t *testing.T) {
 	ts := setupTestStore(t)
 	defer ts.close()
 
-	created, err := ts.store.CreateUser(auth.CreateUserRequest{
+	created, err := ts.store.CreateUser(context.Background(), auth.CreateUserRequest{
 		Name:  "Alice",
 		Email: "alice@example.com",
 	})
 	require.NoError(t, err)
 
-	updated, err := ts.store.UpdateUser(created.ID, auth.UpdateUserRequest{})
+	updated, err := ts.store.UpdateUser(context.Background(), created.ID, auth.UpdateUserRequest{})
 	require.NoError(t, err)
 	require.NotNil(t, updated)
 	assert.Equal(t, created.ID, updated.ID)
@@ -302,7 +303,7 @@ func TestUpdateUser_NotFound(t *testing.T) {
 	defer ts.close()
 
 	newName := "Ghost"
-	updated, err := ts.store.UpdateUser(99999, auth.UpdateUserRequest{
+	updated, err := ts.store.UpdateUser(context.Background(), 99999, auth.UpdateUserRequest{
 		Name: &newName,
 	})
 	assert.Nil(t, updated)
@@ -313,7 +314,7 @@ func TestUpdateUser_ClearPassword(t *testing.T) {
 	ts := setupTestStore(t)
 	defer ts.close()
 
-	created, err := ts.store.CreateUser(auth.CreateUserRequest{
+	created, err := ts.store.CreateUser(context.Background(), auth.CreateUserRequest{
 		Name:     "Alice",
 		Email:    "alice@example.com",
 		Password: "oldpass",
@@ -322,7 +323,7 @@ func TestUpdateUser_ClearPassword(t *testing.T) {
 	assert.NotEmpty(t, created.PasswordHash)
 
 	empty := ""
-	updated, err := ts.store.UpdateUser(created.ID, auth.UpdateUserRequest{
+	updated, err := ts.store.UpdateUser(context.Background(), created.ID, auth.UpdateUserRequest{
 		Password: &empty,
 	})
 	require.NoError(t, err)
@@ -335,16 +336,16 @@ func TestDeleteUser_Exists(t *testing.T) {
 	ts := setupTestStore(t)
 	defer ts.close()
 
-	created, err := ts.store.CreateUser(auth.CreateUserRequest{
+	created, err := ts.store.CreateUser(context.Background(), auth.CreateUserRequest{
 		Name:  "Alice",
 		Email: "alice@example.com",
 	})
 	require.NoError(t, err)
 
-	err = ts.store.DeleteUser(created.ID)
+	err = ts.store.DeleteUser(context.Background(), created.ID)
 	require.NoError(t, err)
 
-	got, err := ts.store.GetUser(created.ID)
+	got, err := ts.store.GetUser(context.Background(), created.ID)
 	assert.Nil(t, got)
 	assert.ErrorIs(t, err, sql.ErrNoRows)
 }
@@ -353,6 +354,6 @@ func TestDeleteUser_NotFound(t *testing.T) {
 	ts := setupTestStore(t)
 	defer ts.close()
 
-	err := ts.store.DeleteUser(99999)
+	err := ts.store.DeleteUser(context.Background(), 99999)
 	assert.ErrorIs(t, err, sql.ErrNoRows)
 }

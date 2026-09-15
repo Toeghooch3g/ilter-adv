@@ -50,7 +50,7 @@ func NewToolProvider(specs []config.OpenAPISpecConfig) (*ToolProvider, error) {
 		}
 		spMap[sc.Name] = i
 
-		doc, err := LoadSpec(sc)
+		doc, err := LoadSpec(context.Background(), sc)
 		if err != nil {
 			return nil, fmt.Errorf("openapi: loading spec %q: %w", sc.Name, err)
 		}
@@ -79,19 +79,19 @@ func NewToolProvider(specs []config.OpenAPISpecConfig) (*ToolProvider, error) {
 
 // Reload rebuilds the operation index from the given specs.
 // Safe for concurrent use with GetAuthorizedTools/Execute.
-func (p *ToolProvider) Reload(specs []config.OpenAPISpecConfig) error {
+func (p *ToolProvider) Reload(ctx context.Context, specs []config.OpenAPISpecConfig) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	loader := openapi3.NewLoader()
-	loader.Context = context.Background()
+	loader.Context = ctx
 	loader.IsExternalRefsAllowed = false
 	allOps := make([]Operation, 0)
 	opMap := make(map[string]*Operation)
 	spMap := make(map[string]int, len(specs))
 
 	for i := range specs {
-		doc, err := LoadSpec(&specs[i])
+		doc, err := LoadSpec(ctx, &specs[i])
 		if err != nil {
 			openapiLog.Warn("reload skipping spec", "name", specs[i].Name, "error", err)
 			continue
@@ -356,53 +356,68 @@ func (p *ToolProvider) resolveOperation(opID string) (*Operation, bool) {
 	return nil, false
 }
 
-func (p *ToolProvider) handleDescribe(call model.ToolCall) *model.Message {
-	var rawArgs struct {
-		OperationIDs any `json:"operation_ids"`
-	}
-	if err := json.Unmarshal([]byte(call.Function.Arguments), &rawArgs); err != nil {
-		return toolMsg(call.ID, call.Function.Name, fmt.Sprintf("Error: parsing arguments: %v", err))
-	}
+// trimOperationID strips surrounding whitespace and quote-like characters
+// an LLM sometimes wraps operation IDs in.
+func trimOperationID(s string) string {
+	return strings.Trim(strings.TrimSpace(s), "\"'` \t\r\n")
+}
 
+// parseOperationIDsFromList extracts trimmed, non-empty operation IDs from
+// a []any content-block-style list.
+func parseOperationIDsFromList(items []any) []string {
 	var opIDs []string
-	switch v := rawArgs.OperationIDs.(type) {
+	for _, item := range items {
+		if s, ok := item.(string); ok && s != "" {
+			if s = trimOperationID(s); s != "" {
+				opIDs = append(opIDs, s)
+			}
+		}
+	}
+	return opIDs
+}
+
+// parseOperationIDsFromString extracts trimmed, non-empty operation IDs
+// from a string argument, which may be a stringified JSON array or a
+// single bare (possibly quoted) operation ID.
+func parseOperationIDsFromString(v string) []string {
+	v = strings.TrimSpace(v)
+	if strings.HasPrefix(v, "[") && strings.HasSuffix(v, "]") {
+		var parsed []string
+		if err := json.Unmarshal([]byte(v), &parsed); err != nil {
+			return nil
+		}
+		var opIDs []string
+		for _, item := range parsed {
+			if item = trimOperationID(item); item != "" {
+				opIDs = append(opIDs, item)
+			}
+		}
+		return opIDs
+	}
+	if v = trimOperationID(v); v != "" {
+		return []string{v}
+	}
+	return nil
+}
+
+// parseOperationIDsArg extracts a list of trimmed, non-empty operation IDs
+// from the openapi_describe tool's operation_ids argument, which may
+// arrive as a JSON array, a single string, or a stringified JSON array.
+func parseOperationIDsArg(raw any) []string {
+	switch v := raw.(type) {
 	case []any:
-		for _, item := range v {
-			if s, ok := item.(string); ok && s != "" {
-				s = strings.Trim(strings.TrimSpace(s), "\"'` \t\r\n")
-				if s != "" {
-					opIDs = append(opIDs, s)
-				}
-			}
-		}
+		return parseOperationIDsFromList(v)
 	case string:
-		v = strings.TrimSpace(v)
-		if strings.HasPrefix(v, "[") && strings.HasSuffix(v, "]") {
-			var parsed []string
-			if err := json.Unmarshal([]byte(v), &parsed); err == nil {
-				for _, item := range parsed {
-					item = strings.Trim(strings.TrimSpace(item), "\"'` \t\r\n")
-					if item != "" {
-						opIDs = append(opIDs, item)
-					}
-				}
-			}
-		} else if v != "" {
-			v = strings.Trim(v, "\"'` \t\r\n")
-			if v != "" {
-				opIDs = []string{v}
-			}
-		}
+		return parseOperationIDsFromString(v)
+	default:
+		return nil
 	}
+}
 
-	if len(opIDs) == 0 {
-		return toolMsg(call.ID, call.Function.Name, "Error: missing required parameter 'operation_ids'")
-	}
-
-	p.mu.RLock()
-	opMap := p.ops
-	p.mu.RUnlock()
-
+// resolveOperationIDs resolves each raw operation ID to its canonical form
+// via resolveOperation, falling back to the raw ID when it can't be
+// resolved (Describe will report it as not-found).
+func (p *ToolProvider) resolveOperationIDs(opIDs []string) []string {
 	resolvedIDs := make([]string, 0, len(opIDs))
 	for _, id := range opIDs {
 		if resolved, ok := p.resolveOperation(id); ok {
@@ -411,6 +426,27 @@ func (p *ToolProvider) handleDescribe(call model.ToolCall) *model.Message {
 			resolvedIDs = append(resolvedIDs, id)
 		}
 	}
+	return resolvedIDs
+}
+
+func (p *ToolProvider) handleDescribe(call model.ToolCall) *model.Message {
+	var rawArgs struct {
+		OperationIDs any `json:"operation_ids"`
+	}
+	if err := json.Unmarshal([]byte(call.Function.Arguments), &rawArgs); err != nil {
+		return toolMsg(call.ID, call.Function.Name, fmt.Sprintf("Error: parsing arguments: %v", err))
+	}
+
+	opIDs := parseOperationIDsArg(rawArgs.OperationIDs)
+	if len(opIDs) == 0 {
+		return toolMsg(call.ID, call.Function.Name, "Error: missing required parameter 'operation_ids'")
+	}
+
+	p.mu.RLock()
+	opMap := p.ops
+	p.mu.RUnlock()
+
+	resolvedIDs := p.resolveOperationIDs(opIDs)
 
 	results, err := Describe(opMap, resolvedIDs)
 	if err != nil {

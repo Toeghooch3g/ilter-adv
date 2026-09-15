@@ -291,7 +291,7 @@ func TestOllamaProvider_TransformResponse_Native(t *testing.T) {
 	httpReq, _ := http.NewRequestWithContext(context.Background(), "POST", bodyServer.URL, nil)
 	realResp, err := http.DefaultClient.Do(httpReq)
 	require.NoError(t, err)
-	defer realResp.Body.Close()
+	defer func() { _ = realResp.Body.Close() }()
 
 	chatResp, err := p.TransformResponse(context.Background(), realResp)
 	require.NoError(t, err)
@@ -351,7 +351,7 @@ func TestOllamaProvider_TransformResponse_OpenAICompat(t *testing.T) {
 	httpReq, _ := http.NewRequestWithContext(context.Background(), "POST", bodyServer.URL, nil)
 	resp, err := http.DefaultClient.Do(httpReq)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	chatResp, err := p.TransformResponse(context.Background(), resp)
 	require.NoError(t, err)
@@ -397,7 +397,7 @@ func TestOllamaProvider_TransformResponse_NativeError(t *testing.T) {
 	httpReq, _ := http.NewRequestWithContext(context.Background(), "POST", errServer.URL, nil)
 	resp, err := http.DefaultClient.Do(httpReq)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	chatResp, err := p.TransformResponse(context.Background(), resp)
 	assert.Error(t, err)

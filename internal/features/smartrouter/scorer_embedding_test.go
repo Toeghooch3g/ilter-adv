@@ -22,10 +22,12 @@ func (m *mockVectorStore) LoadReferenceVectors(_ context.Context) (map[string][]
 	return m.vectors, nil
 }
 
-func newTestScorer(dims int) *EmbeddingScorer {
+const testScorerDims = 4
+
+func newTestScorer() *EmbeddingScorer {
 	s, err := NewEmbeddingScorer(&config.EmbeddingScorerConfig{
 		Model:               "test-model",
-		Dimensions:          dims,
+		Dimensions:          testScorerDims,
 		ReferenceCount:      3,
 		SimilarityThreshold: 0.5,
 	})
@@ -33,13 +35,12 @@ func newTestScorer(dims int) *EmbeddingScorer {
 		panic(err)
 	}
 	s.SetEmbedder(func(_ context.Context, _ string) ([]float32, error) {
-		return make([]float32, dims), nil
+		return make([]float32, testScorerDims), nil
 	})
 	return s
 }
 
 func TestEmbeddingScorer_StoreVectorsUsed(t *testing.T) {
-	dims := 4
 	store := &mockVectorStore{
 		vectors: map[string][]float32{
 			"economy":  {0.9, 0.1, 0.0, 0.0},
@@ -47,7 +48,7 @@ func TestEmbeddingScorer_StoreVectorsUsed(t *testing.T) {
 			"premium":  {0.0, 0.1, 0.9, 0.0},
 		},
 	}
-	s := newTestScorer(dims)
+	s := newTestScorer()
 	s.SetStore(store)
 
 	msg := []model.Message{{Content: "hello world"}}
@@ -63,7 +64,7 @@ func TestEmbeddingScorer_StoreVectorsUsed(t *testing.T) {
 }
 
 func TestEmbeddingScorer_NilStoreFallsBack(t *testing.T) {
-	s := newTestScorer(4)
+	s := newTestScorer()
 	// No store set — should use makeReference
 
 	msg := []model.Message{{Content: "hello world"}}
@@ -78,7 +79,7 @@ func TestEmbeddingScorer_EmptyStoreFallsBack(t *testing.T) {
 	store := &mockVectorStore{
 		vectors: map[string][]float32{}, // empty map
 	}
-	s := newTestScorer(4)
+	s := newTestScorer()
 	s.SetStore(store)
 
 	msg := []model.Message{{Content: "hello world"}}
@@ -93,7 +94,7 @@ func TestEmbeddingScorer_StoreErrorFallsBack(t *testing.T) {
 	store := &mockVectorStore{
 		err: errors.New("connection refused"),
 	}
-	s := newTestScorer(4)
+	s := newTestScorer()
 	s.SetStore(store)
 
 	msg := []model.Message{{Content: "hello world"}}
@@ -111,7 +112,7 @@ func TestEmbeddingScorer_PartialStoreFallsBack(t *testing.T) {
 			"economy": {0.9, 0.0, 0.0, 0.0},
 		},
 	}
-	s := newTestScorer(4)
+	s := newTestScorer()
 	s.SetStore(store)
 
 	msg := []model.Message{{Content: "hello world"}}
@@ -131,7 +132,7 @@ func TestEmbeddingScorer_StoreWithDifferentDimensions(t *testing.T) {
 			"premium":  {0, 0, 0.9, 0, 0, 0, 0, 0},
 		},
 	}
-	s := newTestScorer(4)
+	s := newTestScorer()
 	s.SetStore(store)
 
 	msg := []model.Message{{Content: "hello world"}}
@@ -145,7 +146,7 @@ func TestEmbeddingScorer_StoreWithDifferentDimensions(t *testing.T) {
 }
 
 func TestLoadReferences_NilStoreReturnsNil(t *testing.T) {
-	s := newTestScorer(4)
+	s := newTestScorer()
 	refs := s.loadReferences(context.Background())
 	if refs != nil {
 		t.Errorf("expected nil, got %v", refs)
@@ -157,7 +158,7 @@ func TestLoadReferences_StoreReturnsData(t *testing.T) {
 		"economy": {0.1, 0},
 	}
 	store := &mockVectorStore{vectors: expected}
-	s := newTestScorer(4)
+	s := newTestScorer()
 	s.SetStore(store)
 
 	refs := s.loadReferences(context.Background())

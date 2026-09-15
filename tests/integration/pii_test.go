@@ -237,7 +237,10 @@ func TestPIIE2E_ReversibleMode(t *testing.T) {
 				if err := json.Unmarshal(body, &parsed); err != nil {
 					t.Fatalf("Failed to parse masked body: %v", err)
 				}
-				content := parsed.Messages[0].Content.(string)
+				content, ok := parsed.Messages[0].Content.(string)
+				if !ok {
+					t.Fatal("expected message content to be a string")
+				}
 
 				// Find the placeholder
 				for word := range strings.FieldsSeq(content) {
@@ -367,10 +370,8 @@ func TestPIIE2E_BlockMode(t *testing.T) {
 				if code != "pii_blocked" {
 					t.Errorf("expected error code 'pii_blocked', got %q", code)
 				}
-			} else {
-				if rr.Code != http.StatusOK {
-					t.Fatalf("expected 200 for non-PII content, got %d: %s", rr.Code, rr.Body.String())
-				}
+			} else if rr.Code != http.StatusOK {
+				t.Fatalf("expected 200 for non-PII content, got %d: %s", rr.Code, rr.Body.String())
 			}
 		})
 	}
@@ -425,7 +426,10 @@ func TestPIIE2E_ReversibleResponseUnmask(t *testing.T) {
 				if err := json.Unmarshal(body, &parsed); err != nil {
 					t.Fatalf("Failed to parse masked body: %v", err)
 				}
-				content := parsed.Messages[0].Content.(string)
+				content, ok := parsed.Messages[0].Content.(string)
+				if !ok {
+					t.Fatal("expected message content to be a string")
+				}
 
 				for word := range strings.FieldsSeq(content) {
 					if strings.HasPrefix(word, "PII:") {
@@ -527,7 +531,10 @@ func (p *mockCombinationsProvider) Client() *http.Client {
 			var parsedReq model.ChatCompletionRequest
 			_ = json.Unmarshal(bodyBytes, &parsedReq)
 
-			content := parsedReq.Messages[0].Content.(string)
+			content, ok := parsedReq.Messages[0].Content.(string)
+			if !ok {
+				return nil, fmt.Errorf("expected message content to be a string, got %T", parsedReq.Messages[0].Content)
+			}
 
 			// Find the placeholder in the content (starts with "PII:")
 			placeholder := ""
@@ -710,7 +717,7 @@ func TestPIIUnmaskCombinations(t *testing.T) {
 			if err != nil {
 				t.Fatalf("HTTP request failed: %v", err)
 			}
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 
 			if resp.StatusCode != http.StatusOK {
 				respBody, _ := io.ReadAll(resp.Body)
@@ -731,7 +738,10 @@ func TestPIIUnmaskCombinations(t *testing.T) {
 			// Verify masking happened at provider level
 			var maskedReq model.ChatCompletionRequest
 			_ = json.Unmarshal(prov.lastReqBody, &maskedReq)
-			maskedPrompt := maskedReq.Messages[0].Content.(string)
+			maskedPrompt, ok := maskedReq.Messages[0].Content.(string)
+			if !ok {
+				t.Fatal("expected message content to be a string")
+			}
 			if strings.Contains(maskedPrompt, tt.originalValue) {
 				t.Errorf("PII was not masked in request to provider: %s", maskedPrompt)
 			}

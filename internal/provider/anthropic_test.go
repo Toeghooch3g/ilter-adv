@@ -16,7 +16,7 @@ import (
 )
 
 func TestAnthropicProvider_TransformRequest_TranslatesOpenAIImageURLBlock(t *testing.T) {
-	cfg := config.ProviderConfig{
+	cfg := config.ProviderConfig{ //nolint:gosec // test fixture API key, not a real credential
 		Name:    "test-anthropic",
 		Type:    "anthropic",
 		BaseURL: "https://api.anthropic.com/v1",
@@ -44,16 +44,26 @@ func TestAnthropicProvider_TransformRequest_TranslatesOpenAIImageURLBlock(t *tes
 	err = json.NewDecoder(httpReq.Body).Decode(&body)
 	require.NoError(t, err)
 
-	blocks := body["messages"].([]any)[0].(map[string]any)["content"].([]any)
-	imgBlock := blocks[1].(map[string]any)
+	messages, ok := body["messages"].([]any)
+	require.True(t, ok)
+	msg0, ok := messages[0].(map[string]any)
+	require.True(t, ok)
+	blocks, ok := msg0["content"].([]any)
+	require.True(t, ok)
+	imgBlock, ok := blocks[1].(map[string]any)
+	require.True(t, ok)
 	assert.Equal(t, "image", imgBlock["type"])
-	source := imgBlock["source"].(map[string]any)
+	source, ok := imgBlock["source"].(map[string]any)
+	require.True(t, ok)
 	assert.Equal(t, "base64", source["type"])
 	assert.Equal(t, "image/png", source["media_type"])
 	assert.Equal(t, "QUJD", source["data"])
 
 	// Original request must be untouched (shared across load-balancer retries).
-	origBlock := req.Messages[0].Content.([]any)[1].(map[string]any)
+	origContent, ok := req.Messages[0].Content.([]any)
+	require.True(t, ok)
+	origBlock, ok := origContent[1].(map[string]any)
+	require.True(t, ok)
 	assert.Equal(t, "image_url", origBlock["type"])
 }
 

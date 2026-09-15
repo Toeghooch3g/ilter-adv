@@ -1,6 +1,7 @@
 package audit
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"os"
@@ -18,12 +19,12 @@ func setupTestDB(t *testing.T) *sql.DB {
 	t.Helper()
 	tmpDir, err := os.MkdirTemp("", "ilter-audit-test-*")
 	require.NoError(t, err)
-	t.Cleanup(func() { os.RemoveAll(tmpDir) })
+	t.Cleanup(func() { _ = os.RemoveAll(tmpDir) })
 
 	dbPath := filepath.Join(tmpDir, "audit.db")
 	db, err := sql.Open("sqlite", dbPath+"?_pragma=journal_mode(WAL)")
 	require.NoError(t, err)
-	t.Cleanup(func() { db.Close() })
+	t.Cleanup(func() { _ = db.Close() })
 
 	_, err = db.Exec(`
 		CREATE TABLE IF NOT EXISTS config_audit_log (
@@ -46,7 +47,7 @@ func TestSQLiteConfigAuditor_LogCreate(t *testing.T) {
 	db := setupTestDB(t)
 	auditor := NewSQLiteConfigAuditor(db)
 
-	err := auditor.LogCreate("api_key", "key_abc", map[string]any{
+	err := auditor.LogCreate(context.Background(), "api_key", "key_abc", map[string]any{
 		"name":    "test-key",
 		"api_key": "sk-1234567890abcdef",
 	}, "admin@example.com")
@@ -80,6 +81,7 @@ func TestSQLiteConfigAuditor_LogUpdate(t *testing.T) {
 	auditor := NewSQLiteConfigAuditor(db)
 
 	err := auditor.LogUpdate(
+		context.Background(),
 		"provider_config", "openai",
 		map[string]any{
 			"base_url": "https://old.api.com",
@@ -122,7 +124,7 @@ func TestSQLiteConfigAuditor_LogDelete(t *testing.T) {
 	db := setupTestDB(t)
 	auditor := NewSQLiteConfigAuditor(db)
 
-	err := auditor.LogDelete("mcp_server", "server_xyz", map[string]any{
+	err := auditor.LogDelete(context.Background(), "mcp_server", "server_xyz", map[string]any{
 		"name":     "old-server",
 		"auth_key": "supersecret",
 	}, "admin@example.com")
@@ -154,6 +156,7 @@ func TestSecretMasking_MultiplePatterns(t *testing.T) {
 	auditor := NewSQLiteConfigAuditor(db)
 
 	err := auditor.LogCreate(
+		context.Background(),
 		"config", "test",
 		map[string]any{
 			"name":           "test-item",
@@ -195,7 +198,7 @@ func TestNullValues(t *testing.T) {
 	auditor := NewSQLiteConfigAuditor(db)
 
 	// nil values map should be stored as "null"
-	err := auditor.LogCreate("provider", "test", nil, "")
+	err := auditor.LogCreate(context.Background(), "provider", "test", nil, "")
 	require.NoError(t, err)
 
 	var newVals string
@@ -208,10 +211,10 @@ func TestMultipleEntries(t *testing.T) {
 	db := setupTestDB(t)
 	auditor := NewSQLiteConfigAuditor(db)
 
-	require.NoError(t, auditor.LogCreate("api_key", "key_1", map[string]any{"name": "key1"}, "user1"))
-	require.NoError(t, auditor.LogCreate("api_key", "key_2", map[string]any{"name": "key2"}, "user2"))
-	require.NoError(t, auditor.LogUpdate("api_key", "key_1", map[string]any{"name": "key1"}, map[string]any{"name": "key1-updated"}, "user1"))
-	require.NoError(t, auditor.LogDelete("api_key", "key_2", map[string]any{"name": "key2"}, "user2"))
+	require.NoError(t, auditor.LogCreate(context.Background(), "api_key", "key_1", map[string]any{"name": "key1"}, "user1"))
+	require.NoError(t, auditor.LogCreate(context.Background(), "api_key", "key_2", map[string]any{"name": "key2"}, "user2"))
+	require.NoError(t, auditor.LogUpdate(context.Background(), "api_key", "key_1", map[string]any{"name": "key1"}, map[string]any{"name": "key1-updated"}, "user1"))
+	require.NoError(t, auditor.LogDelete(context.Background(), "api_key", "key_2", map[string]any{"name": "key2"}, "user2"))
 
 	var total int
 	err := db.QueryRow("SELECT COUNT(*) FROM config_audit_log").Scan(&total)

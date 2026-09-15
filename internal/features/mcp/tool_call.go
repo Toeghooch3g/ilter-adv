@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"golang.org/x/sync/errgroup"
 
@@ -119,35 +120,31 @@ func formatToolResult(cr *CallToolResult) string {
 		return "ok"
 	}
 
-	var out string
+	var sb strings.Builder
 	for _, c := range cr.Content {
-		switch c.Type {
-		case "text":
-			if out != "" {
-				out += "\n"
-			}
-			out += c.Text
-		case "image":
-			if out != "" {
-				out += "\n"
-			}
-			out += fmt.Sprintf("[Image: %s]", c.MIMEType)
-		case "resource":
-			if out != "" {
-				out += "\n"
-			}
-			out += fmt.Sprintf("[Resource: %s]", c.URI)
-		default:
-			if out != "" {
-				out += "\n"
-			}
-			out += c.Text
+		if sb.Len() > 0 {
+			sb.WriteString("\n")
 		}
+		sb.WriteString(renderToolContentItem(c))
 	}
 
+	out := sb.String()
 	if out == "" {
 		out = "ok"
 	}
 
 	return out
+}
+
+// renderToolContentItem renders a single ToolContent item to its
+// tool-result-message text form.
+func renderToolContentItem(c ToolContent) string {
+	switch c.Type {
+	case "image":
+		return fmt.Sprintf("[Image: %s]", c.MIMEType)
+	case "resource":
+		return fmt.Sprintf("[Resource: %s]", c.URI)
+	default:
+		return c.Text
+	}
 }

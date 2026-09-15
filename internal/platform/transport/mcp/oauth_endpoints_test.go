@@ -2,6 +2,7 @@ package mcptransport
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -55,7 +56,7 @@ func TestOAuthEndpoints_AuthorizeAndToken(t *testing.T) {
 	database := dbtest.New(t)
 	database.DB.SetMaxOpenConns(1)
 
-	_, rawKey, err := database.CreateAPIKey("Test Key", nil, nil, 0, 0, 0, 0, nil, nil, nil)
+	_, rawKey, err := database.CreateAPIKey(context.Background(), "Test Key", nil, nil, 0, 0, 0, 0, nil, nil, nil)
 	require.NoError(t, err)
 
 	store := mcp.NewOAuthStore(database)
@@ -92,7 +93,8 @@ func TestOAuthEndpoints_AuthorizeAndToken(t *testing.T) {
 	var consentResp map[string]any
 	err = json.Unmarshal(w.Body.Bytes(), &consentResp)
 	require.NoError(t, err)
-	redirectURL := consentResp["redirect_uri"].(string)
+	redirectURL, ok := consentResp["redirect_uri"].(string)
+	require.True(t, ok)
 	assert.Contains(t, redirectURL, "http://localhost:9999/callback?code=")
 	uCallback, err := url.Parse(redirectURL)
 	require.NoError(t, err)
@@ -149,12 +151,9 @@ func pkceURLParams(t *testing.T) string {
 
 // performAuthorizeGet is a test helper that does a GET /authorize and returns
 // the request_id from the redirect Location.
-func performAuthorizeGet(t *testing.T, o *OAuthEndpoints, extraParams string) (reqID string) {
+func performAuthorizeGet(t *testing.T, o *OAuthEndpoints) (reqID string) {
 	t.Helper()
 	u := "/authorize?" + pkceURLParams(t)
-	if extraParams != "" {
-		u = "/authorize?" + extraParams
-	}
 	req := httptest.NewRequest("GET", u, nil)
 	w := httptest.NewRecorder()
 	o.Authorize(w, req)
@@ -320,12 +319,12 @@ func TestOAuthEndpoints_AuthorizeGet_Validation(t *testing.T) {
 
 func TestOAuthEndpoints_PKCEMismatch(t *testing.T) {
 	database := dbtest.New(t)
-	_, rawKey, err := database.CreateAPIKey("Test Key", nil, nil, 0, 0, 0, 0, nil, nil, nil)
+	_, rawKey, err := database.CreateAPIKey(context.Background(), "Test Key", nil, nil, 0, 0, 0, 0, nil, nil, nil)
 	require.NoError(t, err)
 
 	o, store := newTestEndpointsWithDB(database)
 
-	reqID := performAuthorizeGet(t, o, "")
+	reqID := performAuthorizeGet(t, o)
 	code := performConsentApproval(t, o, reqID, "use_existing", rawKey, "")
 
 	// Exchange with WRONG code_verifier
@@ -348,12 +347,12 @@ func TestOAuthEndpoints_PKCEMismatch(t *testing.T) {
 
 func TestOAuthEndpoints_CodeReplay(t *testing.T) {
 	database := dbtest.New(t)
-	_, rawKey, err := database.CreateAPIKey("Test Key", nil, nil, 0, 0, 0, 0, nil, nil, nil)
+	_, rawKey, err := database.CreateAPIKey(context.Background(), "Test Key", nil, nil, 0, 0, 0, 0, nil, nil, nil)
 	require.NoError(t, err)
 
 	o, _ := newTestEndpointsWithDB(database)
 
-	reqID := performAuthorizeGet(t, o, "")
+	reqID := performAuthorizeGet(t, o)
 	code := performConsentApproval(t, o, reqID, "use_existing", rawKey, "")
 
 	// First exchange should succeed.
@@ -516,12 +515,12 @@ func TestOAuthEndpoints_MissingPostFields(t *testing.T) {
 
 func TestOAuthEndpoints_TokenJSONBody(t *testing.T) {
 	database := dbtest.New(t)
-	_, rawKey, err := database.CreateAPIKey("Test Key", nil, nil, 0, 0, 0, 0, nil, nil, nil)
+	_, rawKey, err := database.CreateAPIKey(context.Background(), "Test Key", nil, nil, 0, 0, 0, 0, nil, nil, nil)
 	require.NoError(t, err)
 
 	o, _ := newTestEndpointsWithDB(database)
 
-	reqID := performAuthorizeGet(t, o, "")
+	reqID := performAuthorizeGet(t, o)
 	code := performConsentApproval(t, o, reqID, "use_existing", rawKey, "")
 
 	// Send JSON body instead of form-encoded.
@@ -583,12 +582,12 @@ func TestOAuthEndpoints_MethodNotAllowed(t *testing.T) {
 
 func TestOAuthEndpoints_TokenRedirectURIMismatch(t *testing.T) {
 	database := dbtest.New(t)
-	_, rawKey, err := database.CreateAPIKey("Test Key", nil, nil, 0, 0, 0, 0, nil, nil, nil)
+	_, rawKey, err := database.CreateAPIKey(context.Background(), "Test Key", nil, nil, 0, 0, 0, 0, nil, nil, nil)
 	require.NoError(t, err)
 
 	o, _ := newTestEndpointsWithDB(database)
 
-	reqID := performAuthorizeGet(t, o, "")
+	reqID := performAuthorizeGet(t, o)
 	code := performConsentApproval(t, o, reqID, "use_existing", rawKey, "")
 
 	// Exchange with mismatched redirect_uri.
@@ -687,12 +686,12 @@ func TestOAuthEndpoints_AuthorizePreflight(t *testing.T) {
 
 func TestOAuthEndpoints_PKCEBypassViaEmptyVerifier(t *testing.T) {
 	database := dbtest.New(t)
-	_, rawKey, err := database.CreateAPIKey("Test Key", nil, nil, 0, 0, 0, 0, nil, nil, nil)
+	_, rawKey, err := database.CreateAPIKey(context.Background(), "Test Key", nil, nil, 0, 0, 0, 0, nil, nil, nil)
 	require.NoError(t, err)
 
 	o, _ := newTestEndpointsWithDB(database)
 
-	reqID := performAuthorizeGet(t, o, "")
+	reqID := performAuthorizeGet(t, o)
 	code := performConsentApproval(t, o, reqID, "use_existing", rawKey, "")
 
 	// Call /token with code but WITHOUT code_verifier (form-encoded).
@@ -715,6 +714,7 @@ func TestOAuthEndpoints_KeyID_Clone(t *testing.T) {
 
 	// Create a source key with specific limits that the clone should inherit.
 	originalKey, rawKey, err := database.CreateAPIKey(
+		context.Background(),
 		"Source Key", nil, nil, 50, 0, 30, 0,
 		[]string{"gpt-4"}, nil, nil,
 	)
@@ -723,7 +723,7 @@ func TestOAuthEndpoints_KeyID_Clone(t *testing.T) {
 	o, _ := newTestEndpointsWithDB(database)
 
 	// 1. GET /authorize
-	reqID := performAuthorizeGet(t, o, "")
+	reqID := performAuthorizeGet(t, o)
 
 	// 2. POST /authorize with key_id (clone path)
 	code := performConsentApproval(t, o, reqID, "use_existing", "", originalKey.ID)
@@ -760,7 +760,7 @@ func TestOAuthEndpoints_KeyID_Nonexistent(t *testing.T) {
 
 	o, _ := newTestEndpointsWithDB(database)
 
-	reqID := performAuthorizeGet(t, o, "")
+	reqID := performAuthorizeGet(t, o)
 
 	body := map[string]any{
 		"request_id": reqID,
@@ -787,15 +787,15 @@ func TestOAuthEndpoints_KeyID_Disabled(t *testing.T) {
 	database := dbtest.New(t)
 
 	// Create a key, then disable it.
-	key, _, err := database.CreateAPIKey("To Disable", nil, nil, 0, 0, 0, 0, nil, nil, nil)
+	key, _, err := database.CreateAPIKey(context.Background(), "To Disable", nil, nil, 0, 0, 0, 0, nil, nil, nil)
 	require.NoError(t, err)
 
-	err = database.UpdateAPIKey(key.ID, auth.APIKey{Enabled: false}, false, false)
+	err = database.UpdateAPIKey(context.Background(), key.ID, auth.APIKey{Enabled: false}, false, false)
 	require.NoError(t, err)
 
 	o, _ := newTestEndpointsWithDB(database)
 
-	reqID := performAuthorizeGet(t, o, "")
+	reqID := performAuthorizeGet(t, o)
 
 	body := map[string]any{
 		"request_id": reqID,
@@ -820,12 +820,12 @@ func TestOAuthEndpoints_KeyID_Disabled(t *testing.T) {
 
 func TestOAuthEndpoints_KeyID_BackwardCompat(t *testing.T) {
 	database := dbtest.New(t)
-	_, rawKey, err := database.CreateAPIKey("Test Key", nil, nil, 0, 0, 0, 0, nil, nil, nil)
+	_, rawKey, err := database.CreateAPIKey(context.Background(), "Test Key", nil, nil, 0, 0, 0, 0, nil, nil, nil)
 	require.NoError(t, err)
 
 	o, _ := newTestEndpointsWithDB(database)
 
-	reqID := performAuthorizeGet(t, o, "")
+	reqID := performAuthorizeGet(t, o)
 	code := performConsentApproval(t, o, reqID, "use_existing", rawKey, "")
 
 	w := performTokenExchange(t, o, code, testVerifier)
@@ -849,7 +849,7 @@ func TestOAuthEndpoints_CreateNew_HappyPath(t *testing.T) {
 	o, _ := newTestEndpointsWithDB(database)
 
 	// 1. GET /authorize — initiate PKCE flow
-	reqID := performAuthorizeGet(t, o, "")
+	reqID := performAuthorizeGet(t, o)
 
 	// 2. POST /authorize with action=create_new — consent approval
 	code := performConsentApproval(t, o, reqID, "create_new", "", "")

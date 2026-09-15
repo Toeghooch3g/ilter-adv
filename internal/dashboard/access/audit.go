@@ -19,63 +19,88 @@ type configAuditEntry struct {
 	PerformedAt string  `json:"performed_at"`
 }
 
-// ListConfigAuditLog returns admin config-change history (API keys, users,
-// groups, MCP grants) recorded in config_audit_log.
-func (h *Handler) ListConfigAuditLog(w http.ResponseWriter, r *http.Request) {
-	page := 1
+// configAuditLogFilter holds the query-string filters accepted by
+// ListConfigAuditLog.
+type configAuditLogFilter struct {
+	entityType string
+	action     string
+	start      string
+	end        string
+}
+
+func parseAuditLogPageLimit(r *http.Request) (page, limit int) {
+	page = 1
 	if pStr := r.URL.Query().Get("page"); pStr != "" {
 		if p, err := strconv.Atoi(pStr); err == nil && p > 0 {
 			page = p
 		}
 	}
-	limit := 50
+	limit = 50
 	if lStr := r.URL.Query().Get("limit"); lStr != "" {
 		if l, err := strconv.Atoi(lStr); err == nil && l > 0 {
 			limit = l
 		}
 	}
-	offset := (page - 1) * limit
+	return page, limit
+}
 
-	entityType := r.URL.Query().Get("entity_type")
-	action := r.URL.Query().Get("action")
-	start := r.URL.Query().Get("start")
-	end := r.URL.Query().Get("end")
+func parseConfigAuditLogFilter(r *http.Request) configAuditLogFilter {
+	q := r.URL.Query()
+	return configAuditLogFilter{
+		entityType: q.Get("entity_type"),
+		action:     q.Get("action"),
+		start:      q.Get("start"),
+		end:        q.Get("end"),
+	}
+}
 
-	query := `SELECT id, entity_type, entity_id, action, old_values, new_values, performed_by, performed_at
+// buildConfigAuditLogQuery builds the data + count SQL (and their args) for
+// ListConfigAuditLog, applying f's filters identically to both queries.
+func buildConfigAuditLogQuery(f configAuditLogFilter) (query, countQuery string, args, countArgs []any) {
+	query = `SELECT id, entity_type, entity_id, action, old_values, new_values, performed_by, performed_at
 		FROM config_audit_log WHERE 1=1`
-	countQuery := `SELECT COUNT(*) FROM config_audit_log WHERE 1=1`
-	var args []any
-	var countArgs []any
+	countQuery = `SELECT COUNT(*) FROM config_audit_log WHERE 1=1`
 
-	if entityType != "" {
+	if f.entityType != "" {
 		query += " AND entity_type = ?"
 		countQuery += " AND entity_type = ?"
-		args = append(args, entityType)
-		countArgs = append(countArgs, entityType)
+		args = append(args, f.entityType)
+		countArgs = append(countArgs, f.entityType)
 	}
-	if action != "" {
+	if f.action != "" {
 		query += " AND action = ?"
 		countQuery += " AND action = ?"
-		args = append(args, action)
-		countArgs = append(countArgs, action)
+		args = append(args, f.action)
+		countArgs = append(countArgs, f.action)
 	}
 	// datetime(...) on both sides: performed_at is a bare "YYYY-MM-DD HH:MM:SS"
 	// string, while the frontend sends a JS Date.toISOString() value
 	// ("...T....000Z"). A raw string comparison between those two formats is
 	// lexicographically wrong (space < 'T') and silently drops same-day rows;
 	// wrapping both in datetime() normalizes them before comparing.
-	if start != "" {
+	if f.start != "" {
 		query += " AND datetime(performed_at) >= datetime(?)"
 		countQuery += " AND datetime(performed_at) >= datetime(?)"
-		args = append(args, start)
-		countArgs = append(countArgs, start)
+		args = append(args, f.start)
+		countArgs = append(countArgs, f.start)
 	}
-	if end != "" {
+	if f.end != "" {
 		query += " AND datetime(performed_at) <= datetime(?)"
 		countQuery += " AND datetime(performed_at) <= datetime(?)"
-		args = append(args, end)
-		countArgs = append(countArgs, end)
+		args = append(args, f.end)
+		countArgs = append(countArgs, f.end)
 	}
+	return query, countQuery, args, countArgs
+}
+
+// ListConfigAuditLog returns admin config-change history (API keys, users,
+// groups, MCP grants) recorded in config_audit_log.
+func (h *Handler) ListConfigAuditLog(w http.ResponseWriter, r *http.Request) {
+	page, limit := parseAuditLogPageLimit(r)
+	offset := (page - 1) * limit
+
+	filter := parseConfigAuditLogFilter(r)
+	query, countQuery, args, countArgs := buildConfigAuditLogQuery(filter)
 
 	db := h.store.DB
 
@@ -93,7 +118,7 @@ func (h *Handler) ListConfigAuditLog(w http.ResponseWriter, r *http.Request) {
 		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", "Failed to list audit log")
 		return
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	items := make([]configAuditEntry, 0)
 	for rows.Next() {

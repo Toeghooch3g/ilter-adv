@@ -24,7 +24,7 @@ func captureStdout(fn func()) string {
 
 	fn()
 
-	w.Close()
+	_ = w.Close()
 	var buf bytes.Buffer
 	_, _ = io.Copy(&buf, r)
 	os.Stdout = old
@@ -419,12 +419,12 @@ func TestResolveSecrets_FromConfig(t *testing.T) {
 
 func clearSecretsEnv(t *testing.T) {
 	t.Helper()
-	os.Unsetenv("ILTER_ADMIN_API_KEY")
-	os.Unsetenv("ILTER_DASHBOARD_TOKEN")
+	_ = os.Unsetenv("ILTER_ADMIN_API_KEY")
+	_ = os.Unsetenv("ILTER_DASHBOARD_TOKEN")
 	resetForTest()
 	t.Cleanup(func() {
-		os.Unsetenv("ILTER_ADMIN_API_KEY")
-		os.Unsetenv("ILTER_DASHBOARD_TOKEN")
+		_ = os.Unsetenv("ILTER_ADMIN_API_KEY")
+		_ = os.Unsetenv("ILTER_DASHBOARD_TOKEN")
 		resetForTest()
 	})
 }

@@ -26,7 +26,7 @@ func setupAuthTestStore(t *testing.T) *db.SQLiteStore {
 // seedAuthAPIKey creates an API key with the given name and returns the key ID and raw token.
 func seedAuthAPIKey(t *testing.T, store *db.SQLiteStore, name string) (string, string) {
 	t.Helper()
-	vk, rawToken, err := store.CreateAPIKey(name, nil, nil, 100.0, 0, 50, 0, nil, nil, nil)
+	vk, rawToken, err := store.CreateAPIKey(context.Background(), name, nil, nil, 100.0, 0, 50, 0, nil, nil, nil)
 	require.NoError(t, err)
 	require.NotEmpty(t, vk.ID)
 	return vk.ID, rawToken
@@ -59,21 +59,21 @@ func TestAuthMiddleware_KeyOwnedByUser(t *testing.T) {
 	store := setupAuthTestStore(t)
 
 	// Create a user
-	user, err := store.CreateUser(auth.CreateUserRequest{
+	user, err := store.CreateUser(context.Background(), auth.CreateUserRequest{
 		Name:  "Test User",
 		Email: "test@example.com",
 	})
 	require.NoError(t, err)
 
 	// Create a group
-	group, err := store.CreateGroup(auth.CreateGroupRequest{
+	group, err := store.CreateGroup(context.Background(), auth.CreateGroupRequest{
 		Name:        "Test Group",
 		Description: "A test group",
 	})
 	require.NoError(t, err)
 
 	// Add user to group
-	err = store.AddUserToGroup(user.ID, group.ID, "member")
+	err = store.AddUserToGroup(context.Background(), user.ID, group.ID, "member")
 	require.NoError(t, err)
 
 	// Create an API key
@@ -119,7 +119,7 @@ func TestAuthMiddleware_KeyOwnedByGroup(t *testing.T) {
 	store := setupAuthTestStore(t)
 
 	// Create a group
-	group, err := store.CreateGroup(auth.CreateGroupRequest{
+	group, err := store.CreateGroup(context.Background(), auth.CreateGroupRequest{
 		Name:        "Group-Owned",
 		Description: "A group that owns an API key",
 	})

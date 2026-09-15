@@ -23,12 +23,12 @@ func NewSQLiteConfigAuditor(db *sql.DB) *SQLiteConfigAuditor {
 	return &SQLiteConfigAuditor{queries: sqlc.New(db)}
 }
 
-func (a *SQLiteConfigAuditor) LogCreate(entityType, entityID string, newValues map[string]any, performedBy string) error {
+func (a *SQLiteConfigAuditor) LogCreate(ctx context.Context, entityType, entityID string, newValues map[string]any, performedBy string) error {
 	newJSON, err := maskAndMarshal(newValues)
 	if err != nil {
 		return fmt.Errorf("marshal new_values: %w", err)
 	}
-	err = a.queries.LogConfigCreate(context.Background(), sqlc.LogConfigCreateParams{
+	err = a.queries.LogConfigCreate(ctx, sqlc.LogConfigCreateParams{
 		EntityType:  entityType,
 		EntityID:    entityID,
 		NewValues:   &newJSON,
@@ -40,7 +40,7 @@ func (a *SQLiteConfigAuditor) LogCreate(entityType, entityID string, newValues m
 	return nil
 }
 
-func (a *SQLiteConfigAuditor) LogUpdate(entityType, entityID string, oldValues, newValues map[string]any, performedBy string) error {
+func (a *SQLiteConfigAuditor) LogUpdate(ctx context.Context, entityType, entityID string, oldValues, newValues map[string]any, performedBy string) error {
 	oldJSON, err := maskAndMarshal(oldValues)
 	if err != nil {
 		return fmt.Errorf("marshal old_values: %w", err)
@@ -49,7 +49,7 @@ func (a *SQLiteConfigAuditor) LogUpdate(entityType, entityID string, oldValues, 
 	if err != nil {
 		return fmt.Errorf("marshal new_values: %w", err)
 	}
-	err = a.queries.LogConfigUpdate(context.Background(), sqlc.LogConfigUpdateParams{
+	err = a.queries.LogConfigUpdate(ctx, sqlc.LogConfigUpdateParams{
 		EntityType:  entityType,
 		EntityID:    entityID,
 		OldValues:   &oldJSON,
@@ -62,12 +62,12 @@ func (a *SQLiteConfigAuditor) LogUpdate(entityType, entityID string, oldValues, 
 	return nil
 }
 
-func (a *SQLiteConfigAuditor) LogDelete(entityType, entityID string, oldValues map[string]any, performedBy string) error {
+func (a *SQLiteConfigAuditor) LogDelete(ctx context.Context, entityType, entityID string, oldValues map[string]any, performedBy string) error {
 	oldJSON, err := maskAndMarshal(oldValues)
 	if err != nil {
 		return fmt.Errorf("marshal old_values: %w", err)
 	}
-	err = a.queries.LogConfigDelete(context.Background(), sqlc.LogConfigDeleteParams{
+	err = a.queries.LogConfigDelete(ctx, sqlc.LogConfigDeleteParams{
 		EntityType:  entityType,
 		EntityID:    entityID,
 		OldValues:   &oldJSON,

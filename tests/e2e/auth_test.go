@@ -48,7 +48,7 @@ func TestAuthE2E_LoginEndpoint(t *testing.T) {
 	client := &http.Client{}
 	resp, err := client.Do(req)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// Endpoint may or may not exist depending on dashboard implementation.
 	assert.True(t, resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusBadRequest,

@@ -83,62 +83,96 @@ func tokenise(s string) []token {
 	i := 0
 	for i < len(s) {
 		ch := s[i]
-		if ch == ' ' || ch == '\t' {
+		switch {
+		case ch == ' ' || ch == '\t':
 			i++
-			continue
-		}
-		if ch >= '0' && ch <= '9' || ch == '.' {
-			j := i
-			for j < len(s) && (s[j] >= '0' && s[j] <= '9' || s[j] == '.') {
-				j++
+		case isDigitOrDot(ch):
+			tok, next, ok := scanNumberToken(s, i)
+			if ok {
+				toks = append(toks, tok)
 			}
-			n, err := strconv.ParseFloat(s[i:j], 64)
-			if err != nil {
-				i = j
-				continue
-			}
-			toks = append(toks, token{typ: tokNumber, num: n})
-			i = j
-			continue
-		}
-		if ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z' {
-			j := i
-			for j < len(s) && (s[j] >= 'a' && s[j] <= 'z' || s[j] >= 'A' && s[j] <= 'Z') {
-				j++
-			}
-			name := s[i:j]
-			switch name {
-			case "sqrt", "sin", "cos", "tan", "log", "ln", "abs", "round", "ceil", "floor":
-				toks = append(toks, token{typ: tokFunc, val: name})
-			default:
+			i = next
+		case isLetter(ch):
+			tok, next, ok := scanIdentToken(s, i)
+			if !ok {
 				return nil
 			}
-			i = j
-			continue
-		}
-		switch ch {
-		case '+':
-			toks = append(toks, token{typ: tokPlus})
-		case '-':
-			toks = append(toks, token{typ: tokMinus})
-		case '*':
-			if i+1 < len(s) && s[i+1] == '*' {
-				toks = append(toks, token{typ: tokPow})
-				i += 2
-				continue
+			toks = append(toks, tok)
+			i = next
+		default:
+			tok, next := scanSymbolToken(s, i)
+			if tok != nil {
+				toks = append(toks, *tok)
 			}
-			toks = append(toks, token{typ: tokStar})
-		case '/':
-			toks = append(toks, token{typ: tokSlash})
-		case '(':
-			toks = append(toks, token{typ: tokLParen})
-		case ')':
-			toks = append(toks, token{typ: tokRParen})
+			i = next
 		}
-		i++
 	}
 	toks = append(toks, token{typ: tokEOF})
 	return toks
+}
+
+func isDigitOrDot(ch byte) bool {
+	return (ch >= '0' && ch <= '9') || ch == '.'
+}
+
+func isLetter(ch byte) bool {
+	return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z')
+}
+
+// scanNumberToken parses a numeric literal starting at s[i]. ok is false if
+// the scanned digits don't parse as a float, in which case the caller
+// should still advance past them without emitting a token.
+func scanNumberToken(s string, i int) (tok token, next int, ok bool) {
+	j := i
+	for j < len(s) && isDigitOrDot(s[j]) {
+		j++
+	}
+	n, err := strconv.ParseFloat(s[i:j], 64)
+	if err != nil {
+		return token{}, j, false
+	}
+	return token{typ: tokNumber, num: n}, j, true
+}
+
+// scanIdentToken parses a function-name identifier starting at s[i]. ok is
+// false when the identifier isn't a recognized function name.
+func scanIdentToken(s string, i int) (tok token, next int, ok bool) {
+	j := i
+	for j < len(s) && isLetter(s[j]) {
+		j++
+	}
+	name := s[i:j]
+	switch name {
+	case "sqrt", "sin", "cos", "tan", "log", "ln", "abs", "round", "ceil", "floor":
+		return token{typ: tokFunc, val: name}, j, true
+	default:
+		return token{}, j, false
+	}
+}
+
+// scanSymbolToken parses a single operator/paren character at s[i] (or the
+// two-character "**" pow operator). It returns a nil tok for an
+// unrecognized character, which tokenise silently skips over.
+func scanSymbolToken(s string, i int) (tok *token, next int) {
+	switch s[i] {
+	case '+':
+		return &token{typ: tokPlus}, i + 1
+	case '-':
+		return &token{typ: tokMinus}, i + 1
+	case '*':
+		if i+1 < len(s) && s[i+1] == '*' {
+			return &token{typ: tokPow}, i + 2
+		}
+		return &token{typ: tokStar}, i + 1
+	case '/':
+		return &token{typ: tokSlash}, i + 1
+	case '(':
+		return &token{typ: tokLParen}, i + 1
+	case ')':
+		return &token{typ: tokRParen}, i + 1
+	default:
+		return nil, i + 1
+	}
 }
 
 type mathParser struct {

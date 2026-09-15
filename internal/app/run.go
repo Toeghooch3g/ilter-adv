@@ -39,7 +39,7 @@ func (a *App) RunServe() error {
 	if err := a.initStore(); err != nil {
 		return err
 	}
-	defer a.store.Close()
+	defer func() { _ = a.store.Close() }()
 
 	if err := a.cfgCache.Refresh(context.Background(), &config.RuntimeStores{RuntimeConfig: a.store}); err != nil {
 		slog.Warn("failed to load runtime_config state", "error", err)

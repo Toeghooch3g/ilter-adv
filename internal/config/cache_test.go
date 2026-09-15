@@ -26,13 +26,13 @@ func setupTestDB(t *testing.T) (*sql.DB, func()) {
 	dsn := fmt.Sprintf("file:%s?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)", dbPath)
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
-		os.RemoveAll(tmpDir)
+		_ = os.RemoveAll(tmpDir)
 		t.Fatalf("open sqlite: %v", err)
 	}
 
 	cleanup := func() {
-		db.Close()
-		os.RemoveAll(tmpDir)
+		_ = db.Close()
+		_ = os.RemoveAll(tmpDir)
 	}
 	return db, cleanup
 }
@@ -102,11 +102,14 @@ func TestConfigCache_Refresh(t *testing.T) {
 
 	ctx := context.Background()
 
-	dbStore := stores.RuntimeConfig.(*dbpkg.SQLiteStore)
-	if err := dbStore.UpsertRuntimeConfig("feature_flag", "rate_limit", "true", "test"); err != nil {
+	dbStore, ok := stores.RuntimeConfig.(*dbpkg.SQLiteStore)
+	if !ok {
+		t.Fatal("expected RuntimeConfig store to be *dbpkg.SQLiteStore")
+	}
+	if err := dbStore.UpsertRuntimeConfig(ctx, "feature_flag", "rate_limit", "true", "test"); err != nil {
 		t.Fatalf("seed feature flag: %v", err)
 	}
-	if err := dbStore.UpsertRuntimeConfig("feature_flag", "semantic_cache", "false", "test"); err != nil {
+	if err := dbStore.UpsertRuntimeConfig(ctx, "feature_flag", "semantic_cache", "false", "test"); err != nil {
 		t.Fatalf("seed feature flag: %v", err)
 	}
 
@@ -136,8 +139,11 @@ func TestConfigCache_ConcurrentReads(t *testing.T) {
 	ctx := context.Background()
 
 	// Seed a runtime_config value for the refresh
-	dbStore := stores.RuntimeConfig.(*dbpkg.SQLiteStore)
-	if err := dbStore.UpsertRuntimeConfig("feature_flag", "rate_limit", "true", "test"); err != nil {
+	dbStore, ok := stores.RuntimeConfig.(*dbpkg.SQLiteStore)
+	if !ok {
+		t.Fatal("expected RuntimeConfig store to be *dbpkg.SQLiteStore")
+	}
+	if err := dbStore.UpsertRuntimeConfig(ctx, "feature_flag", "rate_limit", "true", "test"); err != nil {
 		t.Fatalf("seed feature flag: %v", err)
 	}
 

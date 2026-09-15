@@ -31,8 +31,7 @@ type RuntimeConfigEntry struct {
 // GetAll returns every row in the runtime_config table as a map of
 // "section:key" → value.  This includes entries managed by specialised
 // stores; callers can filter by section prefix as needed.
-func (s *SQLiteStore) GetAll() (map[string]string, error) {
-	ctx := context.Background()
+func (s *SQLiteStore) GetAll(ctx context.Context) (map[string]string, error) {
 	rows, err := s.queries.GetAllConfig(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("runtime_config: query all: %w", err)
@@ -46,8 +45,7 @@ func (s *SQLiteStore) GetAll() (map[string]string, error) {
 
 // GetBySection returns all entries for a given section as a map of
 // key → value.
-func (s *SQLiteStore) GetBySection(section string) (map[string]string, error) {
-	ctx := context.Background()
+func (s *SQLiteStore) GetBySection(ctx context.Context, section string) (map[string]string, error) {
 	rows, err := s.queries.GetConfigSection(ctx, section)
 	if err != nil {
 		return nil, fmt.Errorf("runtime_config: query section %q: %w", section, err)
@@ -61,8 +59,7 @@ func (s *SQLiteStore) GetBySection(section string) (map[string]string, error) {
 
 // GetRuntimeConfigEntry returns the value of a single runtime_config entry.
 // Returns sql.ErrNoRows when the key does not exist.
-func (s *SQLiteStore) GetRuntimeConfigEntry(section, key string) (*RuntimeConfigEntry, error) {
-	ctx := context.Background()
+func (s *SQLiteStore) GetRuntimeConfigEntry(ctx context.Context, section, key string) (*RuntimeConfigEntry, error) {
 	dbEntry, err := s.queries.GetConfig(ctx, sqlc.GetConfigParams{Section: section, Key: key})
 	if err != nil {
 		return nil, err
@@ -78,8 +75,7 @@ func (s *SQLiteStore) GetRuntimeConfigEntry(section, key string) (*RuntimeConfig
 
 // UpsertRuntimeConfig inserts or updates a runtime_config entry.  When the
 // entry already exists the version is bumped and updated_at refreshed.
-func (s *SQLiteStore) UpsertRuntimeConfig(section, key, value, updatedBy string) error {
-	ctx := context.Background()
+func (s *SQLiteStore) UpsertRuntimeConfig(ctx context.Context, section, key, value, updatedBy string) error {
 	err := s.queries.UpsertConfig(ctx, sqlc.UpsertConfigParams{
 		Section:   section,
 		Key:       key,
@@ -94,8 +90,7 @@ func (s *SQLiteStore) UpsertRuntimeConfig(section, key, value, updatedBy string)
 
 // DeleteRuntimeConfig removes a runtime_config entry.  It is not an error if
 // the entry does not exist.
-func (s *SQLiteStore) DeleteRuntimeConfig(section, key string) error {
-	ctx := context.Background()
+func (s *SQLiteStore) DeleteRuntimeConfig(ctx context.Context, section, key string) error {
 	err := s.queries.DeleteConfig(ctx, sqlc.DeleteConfigParams{Section: section, Key: key})
 	if err != nil {
 		return fmt.Errorf("runtime_config: delete %s/%s: %w", section, key, err)

@@ -13,13 +13,13 @@ const (
 	// Empty string means admin/no key.
 	KeyIDContextKey                  contextKey = "key_id"
 	APIKeyIDContextKey               contextKey = "api_key_id"
-	APIKeyBudgetContextKey           contextKey = "api_key_budget"
-	APIKeyDailyLimitContextKey       contextKey = "api_key_daily_limit"
-	APIKeyRateLimitContextKey        contextKey = "api_key_rate_limit"
+	APIKeyBudgetContextKey           contextKey = "api_key_budget"      //nolint:gosec // context key name, not a credential
+	APIKeyDailyLimitContextKey       contextKey = "api_key_daily_limit" //nolint:gosec // context key name, not a credential
+	APIKeyRateLimitContextKey        contextKey = "api_key_rate_limit"  //nolint:gosec // context key name, not a credential
 	RequestMetadataContextKey        contextKey = "request_metadata"
 	APIKeyAllowedModelsContextKey    contextKey = "api_key_allowed_models"
 	APIKeyAllowedProvidersContextKey contextKey = "api_key_allowed_providers"
-	APIKeyAuthDoneContextKey         contextKey = "api_key_auth_done"
+	APIKeyAuthDoneContextKey         contextKey = "api_key_auth_done" //nolint:gosec // context key name, not a credential
 	UserIDContextKey                 contextKey = "user_id"
 	UserBudgetContextKey             contextKey = "user_budget"
 	GroupIDsContextKey               contextKey = "group_ids"

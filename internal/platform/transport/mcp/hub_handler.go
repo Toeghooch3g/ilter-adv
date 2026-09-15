@@ -61,7 +61,7 @@ func (h *HubHandler) handleSSE(w http.ResponseWriter, r *http.Request) {
 
 	// Send the endpoint event so the client knows where to POST messages.
 	postURL := fmt.Sprintf("%s?sessionId=%s", r.URL.Path, session.ID)
-	_, _ = fmt.Fprintf(w, "event: endpoint\ndata: %s\n\n", postURL)
+	_, _ = fmt.Fprintf(w, "event: endpoint\ndata: %s\n\n", postURL) //nolint:gosec // SSE data frame, not HTML; r.URL.Path/session.ID can't carry CR/LF via net/http's request-line parsing
 	flusher.Flush()
 
 	if mcp.ActiveConnections != nil {
@@ -82,7 +82,7 @@ func (h *HubHandler) handleSSE(w http.ResponseWriter, r *http.Request) {
 	for {
 		select {
 		case <-ctx.Done():
-			h.cleanupSession(session)
+			h.cleanupSession(session) //nolint:contextcheck // ctx is already Done here; cleanup deliberately uses context.Background() instead, see cleanupSession
 			return
 
 		case <-ticker.C:
@@ -121,7 +121,7 @@ func (h *HubHandler) handleMessage(w http.ResponseWriter, r *http.Request) {
 	session.ClientIP = extractClientIP(r)
 
 	body, err := io.ReadAll(r.Body)
-	r.Body.Close()
+	_ = r.Body.Close()
 	if err != nil {
 		writeJSONRPCError(w, nil, mcp.ErrorCodeParse, "Failed to read request body")
 		return
@@ -154,7 +154,7 @@ func (h *HubHandler) handleMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := h.hub.Dispatch(&req, session)
+	resp := h.hub.Dispatch(&req, session) //nolint:contextcheck // Dispatch has no context.Context param (takes *Session instead); its metric recording is intentionally fire-and-forget, see Hub.finish
 
 	// Notifications (no ID) get a 202 Accepted with no body.
 	if req.ID == nil {
@@ -174,7 +174,10 @@ func (h *HubHandler) handleMessage(w http.ResponseWriter, r *http.Request) {
 func (h *HubHandler) cleanupSession(session *mcp.Session) {
 	h.sessions.Delete(session.ID)
 	if mcp.ActiveConnections != nil {
-		mcp.ActiveConnections.Record(context.Background(), int64(h.sessions.Count()))
+		// Background context is intentional: cleanupSession runs when the
+		// request's own context is already Done (see the ctx.Done() case
+		// above), so it cannot be reused here.
+		mcp.ActiveConnections.Record(context.Background(), int64(h.sessions.Count())) //nolint:contextcheck // request ctx is already canceled at this point
 	}
 
 	transportLog.Debug(

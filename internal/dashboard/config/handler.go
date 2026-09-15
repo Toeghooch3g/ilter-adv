@@ -1,6 +1,7 @@
 package dashconfig
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -121,13 +122,13 @@ type featureFlagEntry struct {
 	Enabled bool   `json:"enabled"`
 }
 
-func (h *ConfigAPIHandler) listFeatureFlags(w http.ResponseWriter, _ *http.Request) {
+func (h *ConfigAPIHandler) listFeatureFlags(w http.ResponseWriter, r *http.Request) {
 	if h.rcStore() == nil {
 		writeConfigList(w, "feature_flags", []any{})
 		return
 	}
 
-	entries, err := h.rcStore().GetBySection("feature_flag")
+	entries, err := h.rcStore().GetBySection(r.Context(), "feature_flag")
 	if err != nil {
 		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
@@ -144,13 +145,13 @@ func (h *ConfigAPIHandler) listFeatureFlags(w http.ResponseWriter, _ *http.Reque
 	writeConfigList(w, "feature_flags", flagEntries)
 }
 
-func (h *ConfigAPIHandler) getFeatureFlag(w http.ResponseWriter, _ *http.Request, name string) {
+func (h *ConfigAPIHandler) getFeatureFlag(w http.ResponseWriter, r *http.Request, name string) {
 	if h.rcStore() == nil {
 		model.WriteJSONError(w, http.StatusNotFound, "not_found", "feature flag store not available")
 		return
 	}
 
-	entry, err := h.rcStore().GetRuntimeConfigEntry("feature_flag", name)
+	entry, err := h.rcStore().GetRuntimeConfigEntry(r.Context(), "feature_flag", name)
 	if err != nil {
 		model.WriteJSONError(w, http.StatusNotFound, "not_found", err.Error())
 		return
@@ -184,7 +185,7 @@ func (h *ConfigAPIHandler) listRuntimeConfig(w http.ResponseWriter, r *http.Requ
 	var all map[string]string
 	var err error
 	if sectionFilter != "" {
-		entries, e := h.rcStore().GetBySection(sectionFilter)
+		entries, e := h.rcStore().GetBySection(r.Context(), sectionFilter)
 		if e != nil {
 			model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", e.Error())
 			return
@@ -194,7 +195,7 @@ func (h *ConfigAPIHandler) listRuntimeConfig(w http.ResponseWriter, r *http.Requ
 			all[sectionFilter+":"+k] = v
 		}
 	} else {
-		all, err = h.rcStore().GetAll()
+		all, err = h.rcStore().GetAll(r.Context())
 		if err != nil {
 			model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", err.Error())
 			return
@@ -214,7 +215,7 @@ func (h *ConfigAPIHandler) listRuntimeConfig(w http.ResponseWriter, r *http.Requ
 	writeConfigList(w, "runtime_config", entries)
 }
 
-func (h *ConfigAPIHandler) getRuntimeConfig(w http.ResponseWriter, _ *http.Request, key string) {
+func (h *ConfigAPIHandler) getRuntimeConfig(w http.ResponseWriter, r *http.Request, key string) {
 	if h.rcStore() == nil {
 		model.WriteJSONError(w, http.StatusNotFound, "not_found", "runtime_config store not available")
 		return
@@ -224,7 +225,7 @@ func (h *ConfigAPIHandler) getRuntimeConfig(w http.ResponseWriter, _ *http.Reque
 	section, subKey := splitCompositeKey(key)
 	if subKey == "" {
 		// Treat as section filter — list entries for this section.
-		entries, err := h.rcStore().GetBySection(section)
+		entries, err := h.rcStore().GetBySection(r.Context(), section)
 		if err != nil {
 			model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", err.Error())
 			return
@@ -237,7 +238,7 @@ func (h *ConfigAPIHandler) getRuntimeConfig(w http.ResponseWriter, _ *http.Reque
 		return
 	}
 
-	entry, err := h.rcStore().GetRuntimeConfigEntry(section, subKey)
+	entry, err := h.rcStore().GetRuntimeConfigEntry(r.Context(), section, subKey)
 	if err != nil {
 		model.WriteJSONError(w, http.StatusNotFound, "not_found", err.Error())
 		return
@@ -249,7 +250,7 @@ func (h *ConfigAPIHandler) getRuntimeConfig(w http.ResponseWriter, _ *http.Reque
 	})
 }
 
-func (h *ConfigAPIHandler) createRuntimeConfig(raw []byte) (string, error) {
+func (h *ConfigAPIHandler) createRuntimeConfig(ctx context.Context, raw []byte) (string, error) {
 	if h.rcStore() == nil {
 		return "", fmt.Errorf("runtime_config store not available")
 	}
@@ -269,13 +270,13 @@ func (h *ConfigAPIHandler) createRuntimeConfig(raw []byte) (string, error) {
 		return "", err
 	}
 
-	if err := h.rcStore().UpsertRuntimeConfig(entry.Section, entry.Key, entry.Value, "admin-api"); err != nil {
+	if err := h.rcStore().UpsertRuntimeConfig(ctx, entry.Section, entry.Key, entry.Value, "admin-api"); err != nil {
 		return "", err
 	}
 	return compositeKey(entry.Section, entry.Key), nil
 }
 
-func (h *ConfigAPIHandler) updateRuntimeConfig(composite string, raw []byte) error {
+func (h *ConfigAPIHandler) updateRuntimeConfig(ctx context.Context, composite string, raw []byte) error {
 	if h.rcStore() == nil {
 		return fmt.Errorf("runtime_config store not available")
 	}
@@ -297,13 +298,13 @@ func (h *ConfigAPIHandler) updateRuntimeConfig(composite string, raw []byte) err
 		return err
 	}
 
-	if err := h.rcStore().UpsertRuntimeConfig(section, key, body.Value, "admin-api"); err != nil {
+	if err := h.rcStore().UpsertRuntimeConfig(ctx, section, key, body.Value, "admin-api"); err != nil {
 		return err
 	}
 	return nil
 }
 
-func (h *ConfigAPIHandler) deleteRuntimeConfig(composite string) error {
+func (h *ConfigAPIHandler) deleteRuntimeConfig(ctx context.Context, composite string) error {
 	if h.rcStore() == nil {
 		return fmt.Errorf("runtime_config store not available")
 	}
@@ -311,10 +312,10 @@ func (h *ConfigAPIHandler) deleteRuntimeConfig(composite string) error {
 	if section == "" || key == "" {
 		return fmt.Errorf("runtime_config: invalid key %q, expected section:key", composite)
 	}
-	return h.rcStore().DeleteRuntimeConfig(section, key)
+	return h.rcStore().DeleteRuntimeConfig(ctx, section, key)
 }
 
-func (h *ConfigAPIHandler) getRuntimeConfigItem(composite string) (map[string]any, error) {
+func (h *ConfigAPIHandler) getRuntimeConfigItem(ctx context.Context, composite string) (map[string]any, error) {
 	if h.rcStore() == nil {
 		return nil, sql.ErrNoRows
 	}
@@ -322,7 +323,7 @@ func (h *ConfigAPIHandler) getRuntimeConfigItem(composite string) (map[string]an
 	if section == "" || key == "" {
 		return nil, fmt.Errorf("invalid runtime_config key %q", composite)
 	}
-	entry, err := h.rcStore().GetRuntimeConfigEntry(section, key)
+	entry, err := h.rcStore().GetRuntimeConfigEntry(ctx, section, key)
 	if err != nil {
 		return nil, err
 	}
@@ -354,6 +355,50 @@ func compositeKey(section, key string) string {
 // CRUD: POST /api/config/{section} — create entry
 // ─────────────────────────────────────────────────────────────────────
 
+// resolveAuditEntityType returns storeSection, or section if storeSection
+// is empty (a URL section with no store-specific name).
+func resolveAuditEntityType(storeSection, section string) string {
+	if storeSection == "" {
+		return section
+	}
+	return storeSection
+}
+
+// refreshConfigCache triggers a hot-reload of the config cache after a
+// write, logging (not failing) if the cache is unset or the refresh
+// errors — the write still landed in the store either way.
+func (h *ConfigAPIHandler) refreshConfigCache(ctx context.Context, op, section, key string) {
+	if h.configCache == nil {
+		slog.Warn("configCache nil after "+op+" — runtime config change not applied until restart", "section", section, "key", key)
+		return
+	}
+	if err := h.configCache.Refresh(ctx, h.stores); err != nil {
+		slog.Warn("config cache refresh after "+op+" failed", "error", err)
+	}
+}
+
+// parseConfigBodyMap decodes rawBody as JSON for audit logging, falling
+// back to a {"raw": ...} wrapper if it isn't valid JSON.
+func parseConfigBodyMap(rawBody []byte) map[string]any {
+	var bodyMap map[string]any
+	if err := json.Unmarshal(rawBody, &bodyMap); err != nil {
+		bodyMap = map[string]any{"raw": string(rawBody)}
+	}
+	return bodyMap
+}
+
+// auditConfigCreate logs a config entry creation, if an auditor is
+// configured.
+func (h *ConfigAPIHandler) auditConfigCreate(r *http.Request, storeSection, section, key string, bodyMap map[string]any, performedBy string) {
+	if h.auditor == nil {
+		return
+	}
+	entityType := resolveAuditEntityType(storeSection, section)
+	if err := h.auditor.LogCreate(r.Context(), entityType, key, bodyMap, performedBy); err != nil {
+		slog.Warn("audit log create failed", "section", entityType, "key", key, "error", err)
+	}
+}
+
 // Create handles POST /api/config/{section}. It validates the request body,
 // writes to the appropriate store, records an audit entry, and triggers a
 // config cache hot-reload.
@@ -379,14 +424,10 @@ func (h *ConfigAPIHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var bodyMap map[string]any
-	if err = json.Unmarshal(rawBody, &bodyMap); err != nil {
-		bodyMap = map[string]any{"raw": string(rawBody)}
-	}
-
+	bodyMap := parseConfigBodyMap(rawBody)
 	performedBy := reqmeta.GetKeyID(r.Context())
 
-	key, err := h.createInStore(section, rawBody)
+	key, err := h.createInStore(r.Context(), section, rawBody)
 	if err != nil {
 		if isDuplicateError(err) {
 			model.WriteJSONError(w, http.StatusConflict, "already_exists", err.Error())
@@ -397,23 +438,8 @@ func (h *ConfigAPIHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.auditor != nil {
-		entityType := storeSection
-		if entityType == "" {
-			entityType = section
-		}
-		if err := h.auditor.LogCreate(entityType, key, bodyMap, performedBy); err != nil {
-			slog.Warn("audit log create failed", "section", entityType, "key", key, "error", err)
-		}
-	}
-
-	if h.configCache != nil {
-		if err := h.configCache.Refresh(r.Context(), h.stores); err != nil {
-			slog.Warn("config cache refresh after create failed", "error", err)
-		}
-	} else {
-		slog.Warn("configCache nil after create — runtime config change not applied until restart", "section", section, "key", key)
-	}
+	h.auditConfigCreate(r, storeSection, section, key, bodyMap, performedBy)
+	h.refreshConfigCache(r.Context(), "create", section, key)
 
 	model.WriteJSON(w, http.StatusCreated, map[string]any{
 		"status": "created",
@@ -424,6 +450,55 @@ func (h *ConfigAPIHandler) Create(w http.ResponseWriter, r *http.Request) {
 // ─────────────────────────────────────────────────────────────────────
 // CRUD: PUT /api/config/{section}/{key} — update entry
 // ─────────────────────────────────────────────────────────────────────
+
+// checkUpdateVersion checks optimistic-concurrency version if h.db and the
+// request body both carry one, writing an error response and returning
+// true if the check fails or errors — the caller should return immediately
+// in that case.
+func (h *ConfigAPIHandler) checkUpdateVersion(w http.ResponseWriter, storeSection, section, key string, rawBody []byte) bool {
+	if h.db == nil {
+		return false
+	}
+	reqVersion := extractVersion(rawBody)
+	if reqVersion <= 0 {
+		return false
+	}
+	if err := h.checkVersion(storeSection, key, reqVersion); err != nil {
+		if strings.Contains(err.Error(), "version conflict") {
+			model.WriteJSONError(w, http.StatusConflict, "version_conflict", err.Error())
+			return true
+		}
+		slog.Error("version check failed", "section", section, "key", key, "error", err)
+		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return true
+	}
+	return false
+}
+
+// loadOldValuesForAudit fetches the pre-write item for audit diffing, if an
+// auditor is configured; returns nil on any lookup failure (best-effort).
+func (h *ConfigAPIHandler) loadOldValuesForAudit(r *http.Request, section, key string) map[string]any {
+	if h.auditor == nil {
+		return nil
+	}
+	oldEntry, err := h.getItem(r.Context(), section, key)
+	if err != nil {
+		return nil
+	}
+	return oldEntry
+}
+
+// auditConfigUpdate logs a config entry update, if an auditor is
+// configured.
+func (h *ConfigAPIHandler) auditConfigUpdate(r *http.Request, storeSection, section, key string, oldValues, newValues map[string]any, performedBy string) {
+	if h.auditor == nil {
+		return
+	}
+	entityType := resolveAuditEntityType(storeSection, section)
+	if err := h.auditor.LogUpdate(r.Context(), entityType, key, oldValues, newValues, performedBy); err != nil {
+		slog.Warn("audit log update failed", "section", entityType, "key", key, "error", err)
+	}
+}
 
 // Update handles PUT /api/config/{section}/{key}. It validates the request
 // body, checks optimistic concurrency (version field), writes to the store,
@@ -452,37 +527,15 @@ func (h *ConfigAPIHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.db != nil {
-		reqVersion := extractVersion(rawBody)
-		if reqVersion > 0 {
-			if err := h.checkVersion(storeSection, key, reqVersion); err != nil {
-				if strings.Contains(err.Error(), "version conflict") {
-					model.WriteJSONError(w, http.StatusConflict, "version_conflict", err.Error())
-					return
-				}
-				slog.Error("version check failed", "section", section, "key", key, "error", err)
-				model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", err.Error())
-				return
-			}
-		}
+	if h.checkUpdateVersion(w, storeSection, section, key, rawBody) {
+		return
 	}
 
-	var bodyMap map[string]any
-	if err := json.Unmarshal(rawBody, &bodyMap); err != nil {
-		bodyMap = map[string]any{"raw": string(rawBody)}
-	}
-
+	bodyMap := parseConfigBodyMap(rawBody)
 	performedBy := reqmeta.GetKeyID(r.Context())
+	oldValues := h.loadOldValuesForAudit(r, section, key)
 
-	var oldValues map[string]any
-	if h.auditor != nil {
-		oldEntry, err := h.getItem(section, key)
-		if err == nil {
-			oldValues = oldEntry
-		}
-	}
-
-	if err := h.updateInStore(section, key, rawBody); err != nil {
+	if err := h.updateInStore(r.Context(), section, key, rawBody); err != nil {
 		if isNotFound(err) {
 			model.WriteJSONError(w, http.StatusNotFound, "not_found", fmt.Sprintf("%s/%s not found", section, key))
 			return
@@ -492,23 +545,8 @@ func (h *ConfigAPIHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.auditor != nil {
-		entityType := storeSection
-		if entityType == "" {
-			entityType = section
-		}
-		if err := h.auditor.LogUpdate(entityType, key, oldValues, bodyMap, performedBy); err != nil {
-			slog.Warn("audit log update failed", "section", entityType, "key", key, "error", err)
-		}
-	}
-
-	if h.configCache != nil {
-		if err := h.configCache.Refresh(r.Context(), h.stores); err != nil {
-			slog.Warn("config cache refresh after update failed", "error", err)
-		}
-	} else {
-		slog.Warn("configCache nil after update — runtime config change not applied until restart", "section", section, "key", key)
-	}
+	h.auditConfigUpdate(r, storeSection, section, key, oldValues, bodyMap, performedBy)
+	h.refreshConfigCache(r.Context(), "update", section, key)
 
 	model.WriteJSON(w, http.StatusOK, map[string]any{
 		"status": "updated",
@@ -519,6 +557,18 @@ func (h *ConfigAPIHandler) Update(w http.ResponseWriter, r *http.Request) {
 // ─────────────────────────────────────────────────────────────────────
 // CRUD: DELETE /api/config/{section}/{key} — delete entry
 // ─────────────────────────────────────────────────────────────────────
+
+// auditConfigDelete logs a config entry deletion, if an auditor is
+// configured.
+func (h *ConfigAPIHandler) auditConfigDelete(r *http.Request, storeSection, section, key string, oldValues map[string]any, performedBy string) {
+	if h.auditor == nil {
+		return
+	}
+	entityType := resolveAuditEntityType(storeSection, section)
+	if err := h.auditor.LogDelete(r.Context(), entityType, key, oldValues, performedBy); err != nil {
+		slog.Warn("audit log delete failed", "section", entityType, "key", key, "error", err)
+	}
+}
 
 // Delete handles DELETE /api/config/{section}/{key}. It records an audit
 // entry, removes the record, and triggers a config cache hot-reload.
@@ -532,16 +582,9 @@ func (h *ConfigAPIHandler) Delete(w http.ResponseWriter, r *http.Request) {
 
 	storeSection := urlToStoreSection(section)
 	performedBy := reqmeta.GetKeyID(r.Context())
+	oldValues := h.loadOldValuesForAudit(r, section, key)
 
-	var oldValues map[string]any
-	if h.auditor != nil {
-		oldEntry, err := h.getItem(section, key)
-		if err == nil {
-			oldValues = oldEntry
-		}
-	}
-
-	if err := h.deleteFromStore(section, key); err != nil {
+	if err := h.deleteFromStore(r.Context(), section, key); err != nil {
 		if isNotFound(err) {
 			model.WriteJSONError(w, http.StatusNotFound, "not_found", fmt.Sprintf("%s/%s not found", section, key))
 			return
@@ -551,23 +594,8 @@ func (h *ConfigAPIHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.auditor != nil {
-		entityType := storeSection
-		if entityType == "" {
-			entityType = section
-		}
-		if err := h.auditor.LogDelete(entityType, key, oldValues, performedBy); err != nil {
-			slog.Warn("audit log delete failed", "section", entityType, "key", key, "error", err)
-		}
-	}
-
-	if h.configCache != nil {
-		if err := h.configCache.Refresh(r.Context(), h.stores); err != nil {
-			slog.Warn("config cache refresh after delete failed", "error", err)
-		}
-	} else {
-		slog.Warn("configCache nil after delete — runtime config change not applied until restart", "section", section, "key", key)
-	}
+	h.auditConfigDelete(r, storeSection, section, key, oldValues, performedBy)
+	h.refreshConfigCache(r.Context(), "delete", section, key)
 
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -577,43 +605,43 @@ func (h *ConfigAPIHandler) Delete(w http.ResponseWriter, r *http.Request) {
 // ─────────────────────────────────────────────────────────────────────
 
 // createInStore dispatches creation to the appropriate store by URL section name.
-func (h *ConfigAPIHandler) createInStore(section string, rawBody []byte) (string, error) {
+func (h *ConfigAPIHandler) createInStore(ctx context.Context, section string, rawBody []byte) (string, error) {
 	switch section {
 	case "runtime_config":
-		return h.createRuntimeConfig(rawBody)
+		return h.createRuntimeConfig(ctx, rawBody)
 	default:
-		return h.createRuntimeConfig(rawBody)
+		return h.createRuntimeConfig(ctx, rawBody)
 	}
 }
 
 // updateInStore dispatches updates to the appropriate store.
-func (h *ConfigAPIHandler) updateInStore(section, key string, rawBody []byte) error {
+func (h *ConfigAPIHandler) updateInStore(ctx context.Context, section, key string, rawBody []byte) error {
 	switch section {
 	case "runtime_config":
-		return h.updateRuntimeConfig(key, rawBody)
+		return h.updateRuntimeConfig(ctx, key, rawBody)
 	default:
-		return h.updateRuntimeConfig(key, rawBody)
+		return h.updateRuntimeConfig(ctx, key, rawBody)
 	}
 }
 
 // deleteFromStore dispatches deletion to the appropriate store.
-func (h *ConfigAPIHandler) deleteFromStore(section, key string) error {
+func (h *ConfigAPIHandler) deleteFromStore(ctx context.Context, section, key string) error {
 	switch section {
 	case "runtime_config":
-		return h.deleteRuntimeConfig(key)
+		return h.deleteRuntimeConfig(ctx, key)
 	default:
-		return h.deleteRuntimeConfig(key)
+		return h.deleteRuntimeConfig(ctx, key)
 	}
 }
 
 // getItem returns a single entry as a map for a given section and key.
 // Used by Update and Delete to capture old values for audit logging.
-func (h *ConfigAPIHandler) getItem(section, key string) (map[string]any, error) {
+func (h *ConfigAPIHandler) getItem(ctx context.Context, section, key string) (map[string]any, error) {
 	switch section {
 	case "runtime_config":
-		return h.getRuntimeConfigItem(key)
+		return h.getRuntimeConfigItem(ctx, key)
 	default:
-		return h.getRuntimeConfigItem(key)
+		return h.getRuntimeConfigItem(ctx, key)
 	}
 }
 

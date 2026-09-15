@@ -273,7 +273,7 @@ func (h *MCPHandler) CreateGrant(w http.ResponseWriter, r *http.Request) {
 			"tools":        req.Tools,
 			"effect":       req.Effect,
 		}
-		if err := h.configAuditor.LogCreate("mcp_grant", id, vals, reqmeta.GetKeyID(r.Context())); err != nil {
+		if err := h.configAuditor.LogCreate(r.Context(), "mcp_grant", id, vals, reqmeta.GetKeyID(r.Context())); err != nil {
 			slog.Error("failed to log audit create mcp_grant", "error", err)
 		}
 	}
@@ -310,7 +310,7 @@ func (h *MCPHandler) DeleteGrant(w http.ResponseWriter, r *http.Request) {
 			"tools":        oldTools,
 			"effect":       oldEffect,
 		}
-		if err := h.configAuditor.LogDelete("mcp_grant", grantID, vals, reqmeta.GetKeyID(r.Context())); err != nil {
+		if err := h.configAuditor.LogDelete(r.Context(), "mcp_grant", grantID, vals, reqmeta.GetKeyID(r.Context())); err != nil {
 			slog.Error("failed to log audit delete mcp_grant", "error", err)
 		}
 	}

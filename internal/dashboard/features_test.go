@@ -18,7 +18,7 @@ import (
 
 // setupFeatureServer creates a Server with a fresh SQLite store and a chi router
 // with feature flag routes registered (no auth middleware).
-func setupFeatureServer(t *testing.T) (*db.SQLiteStore, *Server, chi.Router) {
+func setupFeatureServer(t *testing.T) (*db.SQLiteStore, chi.Router) {
 	t.Helper()
 
 	store := dbtest.NewFile(t)
@@ -35,11 +35,11 @@ func setupFeatureServer(t *testing.T) (*db.SQLiteStore, *Server, chi.Router) {
 	r.Get("/features", srv.featuresHandler.HandleFeatures)
 	r.Post("/features/toggle", srv.featuresHandler.HandleToggleFeature)
 
-	return store, srv, r
+	return store, r
 }
 
 func TestFeatures_ListAll(t *testing.T) {
-	_, _, router := setupFeatureServer(t)
+	_, router := setupFeatureServer(t)
 
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, httptest.NewRequest("GET", "/features", nil))
@@ -53,7 +53,7 @@ func TestFeatures_ListAll(t *testing.T) {
 }
 
 func TestFeatures_ToggleGlobal(t *testing.T) {
-	store, _, router := setupFeatureServer(t)
+	store, router := setupFeatureServer(t)
 
 	// Toggle a known feature flag
 	toggleBody := map[string]any{

@@ -76,7 +76,9 @@ func (a *App) syncModelsToDB() {
 
 	for _, provider := range providers {
 		models := byProvider[provider]
-		if err := store.SaveDiscoveredModels(provider, models); err != nil {
+		// context.Background() is intentional: this runs at startup, before
+		// any request exists.
+		if err := store.SaveDiscoveredModels(context.Background(), provider, models); err != nil {
 			slog.Error("Failed to sync models to DB for provider", "provider", provider, "error", err)
 		} else {
 			slog.Debug("models synced", "provider", provider, "count", len(models))

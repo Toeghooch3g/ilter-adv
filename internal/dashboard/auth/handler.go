@@ -54,14 +54,14 @@ func (h *Handler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 	adminKey := h.cfg.Auth.AdminKey
 	valid := (dashToken != "" && req.Token == dashToken) ||
 		(adminKey != "" && req.Token == adminKey) ||
-		(h.store != nil && h.store.IsAdminAPIKey(req.Token))
+		(h.store != nil && h.store.IsAdminAPIKey(r.Context(), req.Token))
 
 	if !valid {
 		model.WriteJSONError(w, http.StatusUnauthorized, "authentication_error", "Invalid token")
 		return
 	}
 
-	http.SetCookie(w, &http.Cookie{
+	http.SetCookie(w, &http.Cookie{ //nolint:gosec // Secure is set dynamically via isSecure(r); gosec only recognizes literal true
 		Name:     "token",
 		Value:    req.Token,
 		Path:     "/",
@@ -120,7 +120,7 @@ func (h *Handler) HandleUserLogin(w http.ResponseWriter, r *http.Request) {
 
 	jwtSecret := h.cfg.Dashboard.UserAuthJWTSecret
 	if jwtSecret == "" {
-		jwtSecret = "user-auth-dev-secret"
+		jwtSecret = "user-auth-dev-secret" //nolint:gosec // dev-only fallback default when UserAuthJWTSecret is unconfigured
 	}
 
 	now := time.Now()
@@ -143,7 +143,7 @@ func (h *Handler) HandleUserLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	http.SetCookie(w, &http.Cookie{
+	http.SetCookie(w, &http.Cookie{ //nolint:gosec // Secure is set dynamically via isSecure(r); gosec only recognizes literal true
 		Name:     "user_token",
 		Value:    tokenString,
 		Path:     "/",

@@ -23,7 +23,7 @@ func devReachable() bool {
 			if err != nil {
 				return // devReachableResult stays false
 			}
-			conn.Close()
+			_ = conn.Close()
 		}
 		devReachableResult = true
 	})

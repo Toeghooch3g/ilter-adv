@@ -30,7 +30,7 @@ func setupTestDB(t *testing.T) (*sql.DB, func()) {
 	dsn := fmt.Sprintf("file:%s?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)", dbPath)
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
-		os.RemoveAll(tmpDir)
+		_ = os.RemoveAll(tmpDir)
 		t.Fatalf("open sqlite: %v", err)
 	}
 
@@ -49,8 +49,8 @@ func setupTestDB(t *testing.T) (*sql.DB, func()) {
 		)
 	`)
 	if err != nil {
-		db.Close()
-		os.RemoveAll(tmpDir)
+		_ = db.Close()
+		_ = os.RemoveAll(tmpDir)
 		t.Fatalf("create triggers table: %v", err)
 	}
 
@@ -63,32 +63,28 @@ func setupTestDB(t *testing.T) (*sql.DB, func()) {
 		)
 	`)
 	if err != nil {
-		db.Close()
-		os.RemoveAll(tmpDir)
+		_ = db.Close()
+		_ = os.RemoveAll(tmpDir)
 		t.Fatalf("create jobs table: %v", err)
 	}
 
 	cleanup := func() {
-		db.Close()
-		os.RemoveAll(tmpDir)
+		_ = db.Close()
+		_ = os.RemoveAll(tmpDir)
 	}
 	return db, cleanup
 }
 
-// insertTrigger inserts a trigger row for testing, upserting an enabled
-// parent job row first (ListEnabled() requires one — see setupTestDB).
-func insertTrigger(t *testing.T, db *sql.DB, id, jobID, kind string, enabled bool, config string) {
+// insertTrigger inserts an enabled trigger row for testing, upserting an
+// enabled parent job row first (ListEnabled() requires one — see setupTestDB).
+func insertTrigger(t *testing.T, db *sql.DB, id, jobID, kind, config string) {
 	t.Helper()
-	en := 0
-	if enabled {
-		en = 1
-	}
 	_, err := db.Exec(`INSERT OR IGNORE INTO jobs (id, enabled) VALUES (?, 1)`, jobID)
 	require.NoError(t, err, "insert job %s", jobID)
 	_, err = db.Exec(
 		`INSERT INTO triggers (id, job_id, kind, enabled, config, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))`,
-		id, jobID, kind, en, config,
+		 VALUES (?, ?, ?, 1, ?, datetime('now'), datetime('now'))`,
+		id, jobID, kind, config,
 	)
 	require.NoError(t, err, "insert trigger %s", id)
 }
@@ -120,7 +116,7 @@ func TestCronTrigger_RegisterAndFire(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
 
 	// Insert a cron trigger with a valid expression.
-	insertTrigger(t, db, "trig-1", "job-1", "cron", true, `{"expr":"0 * * * *","timezone":"UTC"}`)
+	insertTrigger(t, db, "trig-1", "job-1", "cron", `{"expr":"0 * * * *","timezone":"UTC"}`)
 
 	ct := NewCronTrigger(store, logger, jobs.NewLocalLock())
 
@@ -211,7 +207,7 @@ func TestCronTrigger_StartStop(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
 
 	// Insert a valid cron trigger.
-	insertTrigger(t, db, "trig-2", "job-2", "cron", true, `{"expr":"0 * * * *","timezone":"UTC"}`)
+	insertTrigger(t, db, "trig-2", "job-2", "cron", `{"expr":"0 * * * *","timezone":"UTC"}`)
 
 	ct := NewCronTrigger(store, logger, jobs.NewLocalLock())
 
@@ -249,8 +245,8 @@ func TestCronTrigger_StartSkipsNonCron(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
 
 	// Insert both a cron and a webhook trigger (both enabled).
-	insertTrigger(t, db, "trig-cron", "job-1", "cron", true, `{"expr":"0 * * * *","timezone":"UTC"}`)
-	insertTrigger(t, db, "trig-webhook", "job-2", "webhook", true, `{"provider":"generic"}`)
+	insertTrigger(t, db, "trig-cron", "job-1", "cron", `{"expr":"0 * * * *","timezone":"UTC"}`)
+	insertTrigger(t, db, "trig-webhook", "job-2", "webhook", `{"provider":"generic"}`)
 
 	ct := NewCronTrigger(store, logger, jobs.NewLocalLock())
 	ct.SetFireFunc(func(_ context.Context, _ Activation) error { return nil })
@@ -276,9 +272,9 @@ func TestCronTrigger_StartSkipsInvalidExpression(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
 
 	// Insert a trigger with an invalid cron expression.
-	insertTrigger(t, db, "trig-bad", "job-bad", "cron", true, `{"expr":"not-a-cron","timezone":"UTC"}`)
+	insertTrigger(t, db, "trig-bad", "job-bad", "cron", `{"expr":"not-a-cron","timezone":"UTC"}`)
 	// Insert a valid one too.
-	insertTrigger(t, db, "trig-good", "job-good", "cron", true, `{"expr":"0 * * * *","timezone":"UTC"}`)
+	insertTrigger(t, db, "trig-good", "job-good", "cron", `{"expr":"0 * * * *","timezone":"UTC"}`)
 
 	ct := NewCronTrigger(store, logger, jobs.NewLocalLock())
 	ct.SetFireFunc(func(_ context.Context, _ Activation) error { return nil })
@@ -303,7 +299,7 @@ func TestCronTrigger_StartSkipsEmptyExpression(t *testing.T) {
 	store := NewStore(db)
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
 
-	insertTrigger(t, db, "trig-empty", "job-empty", "cron", true, `{"expr":""}`)
+	insertTrigger(t, db, "trig-empty", "job-empty", "cron", `{"expr":""}`)
 
 	ct := NewCronTrigger(store, logger, jobs.NewLocalLock())
 	ct.SetFireFunc(func(_ context.Context, _ Activation) error { return nil })
@@ -325,7 +321,7 @@ func TestCronTrigger_Refresh(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
 
 	// Start with one trigger.
-	insertTrigger(t, db, "trig-1", "job-1", "cron", true, `{"expr":"0 * * * *","timezone":"UTC"}`)
+	insertTrigger(t, db, "trig-1", "job-1", "cron", `{"expr":"0 * * * *","timezone":"UTC"}`)
 
 	ct := NewCronTrigger(store, logger, jobs.NewLocalLock())
 	ct.SetFireFunc(func(_ context.Context, _ Activation) error { return nil })
@@ -338,7 +334,7 @@ func TestCronTrigger_Refresh(t *testing.T) {
 	ct.mu.RUnlock()
 
 	// Add a second trigger to the DB.
-	insertTrigger(t, db, "trig-2", "job-2", "cron", true, `{"expr":"*/30 * * * *","timezone":"UTC"}`)
+	insertTrigger(t, db, "trig-2", "job-2", "cron", `{"expr":"*/30 * * * *","timezone":"UTC"}`)
 
 	// Refresh — should pick up the new trigger.
 	err = ct.Refresh(context.Background())
@@ -361,8 +357,8 @@ func TestCronTrigger_RefreshRemovesDeleted(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
 
 	// Start with two triggers.
-	insertTrigger(t, db, "trig-1", "job-1", "cron", true, `{"expr":"0 * * * *","timezone":"UTC"}`)
-	insertTrigger(t, db, "trig-2", "job-2", "cron", true, `{"expr":"*/30 * * * *","timezone":"UTC"}`)
+	insertTrigger(t, db, "trig-1", "job-1", "cron", `{"expr":"0 * * * *","timezone":"UTC"}`)
+	insertTrigger(t, db, "trig-2", "job-2", "cron", `{"expr":"*/30 * * * *","timezone":"UTC"}`)
 
 	ct := NewCronTrigger(store, logger, jobs.NewLocalLock())
 	ct.SetFireFunc(func(_ context.Context, _ Activation) error { return nil })

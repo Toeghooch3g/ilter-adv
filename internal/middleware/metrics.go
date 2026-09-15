@@ -211,9 +211,10 @@ func ObservabilityHandler(next http.Handler) http.Handler {
 }
 
 // InitTracer initializes a global OpenTelemetry trace provider sending spans to the OTLP endpoint.
+// It returns (nil, nil) if endpoint is empty, meaning tracing is disabled.
 func InitTracer(ctx context.Context, endpoint string, samplingRatio float64) (*sdktrace.TracerProvider, error) {
 	if endpoint == "" {
-		return nil, nil
+		return nil, nil //nolint:nilnil // documented disabled-tracing contract, see doc comment above
 	}
 
 	exporter, err := otlptracehttp.New(

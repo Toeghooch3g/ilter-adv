@@ -182,51 +182,68 @@ func (g *Gateway) Dispatch(req *JSONRPCRequest, rctx *RequestContext) *JSONRPCRe
 // tail shared by every Dispatch return path (server/discover, initialize,
 // unsupported-method, and the main method switch).
 func (g *Gateway) finishDispatch(req *JSONRPCRequest, resp *JSONRPCResponse, rctx *RequestContext, start time.Time, paramsMap *map[string]any) *JSONRPCResponse {
-	if resp != nil {
-		duration := time.Since(start)
+	if resp == nil {
+		return resp
+	}
+	duration := time.Since(start)
 
-		if MCPRequestsTotal != nil {
-			MCPRequestsTotal.Add(context.Background(), 1)
-		}
-		if MCPRequestDuration != nil {
-			MCPRequestDuration.Record(context.Background(), duration.Seconds()*1000)
-		}
+	g.recordDispatchMetrics(duration)
 
-		// tools/call is audited with tool-level detail further down the call
-		// chain (Executor.logAudit for MCP server tools, the openapi_ branch
-		// of handleToolsCall for OpenAPI meta-tools) — logging it here too
-		// would double-insert every tool call into mcp_audit_log.
-		if req.Method != MethodToolsCall {
-			success := resp.Error == nil
-			errorMsg := ""
-			if resp.Error != nil {
-				errorMsg = resp.Error.Message
-			}
-			paramsStr := ""
-			if len(req.Params) > 0 {
-				if err := json.Unmarshal(req.Params, paramsMap); err != nil {
-					slog.Warn("failed to unmarshal MCP tool params", "error", err)
-				}
-			}
-			if b, err := json.Marshal(*paramsMap); err == nil {
-				paramsStr = string(b)
-			}
-			g.logAudit(AuditEntry{
-				APIKeyID:   rctx.KeyID,
-				Tool:       req.Method,
-				ServerID:   "",
-				Method:     req.Method,
-				Params:     paramsStr,
-				DurationMs: float64(duration.Microseconds()) / 1000.0,
-				StatusCode: 200,
-				Success:    success,
-				ErrorMsg:   errorMsg,
-				ClientIP:   rctx.ClientIP,
-			})
-		}
+	// tools/call is audited with tool-level detail further down the call
+	// chain (Executor.logAudit for MCP server tools, the openapi_ branch
+	// of handleToolsCall for OpenAPI meta-tools) — logging it here too
+	// would double-insert every tool call into mcp_audit_log.
+	if req.Method != MethodToolsCall {
+		g.auditDispatchResult(req, resp, rctx, duration, paramsMap)
 	}
 
 	return resp
+}
+
+// recordDispatchMetrics records the fire-and-forget request-count/duration
+// metrics shared by every Dispatch return path.
+func (g *Gateway) recordDispatchMetrics(duration time.Duration) {
+	// Background context is intentional: Dispatch has no context.Context
+	// (it takes a *RequestContext instead), so there is nothing
+	// request-scoped to inherit here — these are fire-and-forget metric
+	// recordings.
+	if MCPRequestsTotal != nil {
+		MCPRequestsTotal.Add(context.Background(), 1) //nolint:contextcheck // Dispatch has no context.Context to inherit
+	}
+	if MCPRequestDuration != nil {
+		MCPRequestDuration.Record(context.Background(), duration.Seconds()*1000) //nolint:contextcheck // Dispatch has no context.Context to inherit
+	}
+}
+
+// auditDispatchResult writes a non-tools/call request's outcome to the MCP
+// audit log.
+func (g *Gateway) auditDispatchResult(req *JSONRPCRequest, resp *JSONRPCResponse, rctx *RequestContext, duration time.Duration, paramsMap *map[string]any) {
+	success := resp.Error == nil
+	errorMsg := ""
+	if resp.Error != nil {
+		errorMsg = resp.Error.Message
+	}
+	paramsStr := ""
+	if len(req.Params) > 0 {
+		if err := json.Unmarshal(req.Params, paramsMap); err != nil {
+			slog.Warn("failed to unmarshal MCP tool params", "error", err)
+		}
+	}
+	if b, err := json.Marshal(*paramsMap); err == nil {
+		paramsStr = string(b)
+	}
+	g.logAudit(AuditEntry{
+		APIKeyID:   rctx.KeyID,
+		Tool:       req.Method,
+		ServerID:   "",
+		Method:     req.Method,
+		Params:     paramsStr,
+		DurationMs: float64(duration.Microseconds()) / 1000.0,
+		StatusCode: 200,
+		Success:    success,
+		ErrorMsg:   errorMsg,
+		ClientIP:   rctx.ClientIP,
+	})
 }
 
 func (g *Gateway) logAudit(entry AuditEntry) {
@@ -332,73 +349,12 @@ func (g *Gateway) handleToolsList(req *JSONRPCRequest, rctx *RequestContext, ver
 
 	// 1. MCP Server Tools (if mcp feature is enabled)
 	if (g.cfgCache == nil || config.IsEnabled(g.cfgCache, "mcp")) && g.registry != nil {
-		allTools := g.registry.ListTools()
-
-		toolNames := make([]string, 0, len(allTools))
-		for _, ti := range allTools {
-			toolNames = append(toolNames, ti.Tool.Name)
-		}
-
-		authorized := g.authorizer.GetAuthorizedTools(rctx.KeyPrefix, nil, rctx.KeyID, toolNames)
-
-		authSet := make(map[string]bool, len(authorized))
-		for _, name := range authorized {
-			authSet[name] = true
-		}
-
-		var authorizedTools []ToolInfo
-		for _, ti := range allTools {
-			if authSet[ti.Tool.Name] {
-				authorizedTools = append(authorizedTools, ti)
-			}
-		}
-
-		type void struct{}
-		var voidVal void
-		nameServers := make(map[string]map[string]void)
-		for _, ti := range allTools {
-			if nameServers[ti.Tool.Name] == nil {
-				nameServers[ti.Tool.Name] = make(map[string]void)
-			}
-			nameServers[ti.Tool.Name][ti.ServerID] = voidVal
-		}
-
-		type namedEntry struct {
-			name string
-			ti   ToolInfo
-		}
-		entries := make([]namedEntry, 0, len(authorizedTools))
-		emittedCount := make(map[string]int, len(authorizedTools))
-		for _, ti := range authorizedTools {
-			name := ti.Tool.Name
-			if len(nameServers[name]) > 1 {
-				name = SanitizeToolName(ti.ServerID, ti.Tool.Name)
-			}
-			entries = append(entries, namedEntry{name: name, ti: ti})
-			emittedCount[name]++
-		}
-
-		for _, e := range entries {
-			t := e.ti.Tool
-			t.Name = e.name
-			if emittedCount[e.name] > 1 {
-				t.Name = SanitizeToolName(e.ti.ServerID, e.ti.Tool.Name)
-			}
-			tools = append(tools, t)
-		}
+		tools = append(tools, g.collectMCPServerTools(rctx)...)
 	}
 
 	// 2. OpenAPI Meta-Tools (if openapi feature is enabled)
 	if (g.cfgCache == nil || config.IsEnabled(g.cfgCache, "openapi")) && g.openapiProvider != nil {
-		openAPITools := g.openapiProvider.GetAuthorizedTools(rctx.KeyID, nil)
-		for _, ot := range openAPITools {
-			rawParams, _ := json.Marshal(ot.Function.Parameters)
-			tools = append(tools, ToolDefinition{
-				Name:        ot.Function.Name,
-				Description: ot.Function.Description,
-				InputSchema: json.RawMessage(rawParams),
-			})
-		}
+		tools = append(tools, g.collectOpenAPITools(rctx)...)
 	}
 
 	toolsJSON, err := json.Marshal(tools)
@@ -412,55 +368,165 @@ func (g *Gateway) handleToolsList(req *JSONRPCRequest, rctx *RequestContext, ver
 	return NewSuccessResponse(req.ID, resultJSON)
 }
 
+// namedToolEntry pairs a (possibly disambiguated) tool name with the
+// ToolInfo it was derived from.
+type namedToolEntry struct {
+	name string
+	ti   ToolInfo
+}
+
+// toolNameServerSets maps each tool name to the set of server IDs offering
+// it, so callers can detect and disambiguate cross-server name collisions.
+func toolNameServerSets(allTools []ToolInfo) map[string]map[string]struct{} {
+	nameServers := make(map[string]map[string]struct{})
+	for _, ti := range allTools {
+		if nameServers[ti.Tool.Name] == nil {
+			nameServers[ti.Tool.Name] = make(map[string]struct{})
+		}
+		nameServers[ti.Tool.Name][ti.ServerID] = struct{}{}
+	}
+	return nameServers
+}
+
+// disambiguateToolNames renames tools whose name is offered by more than one
+// server (via SanitizeToolName), returning the resulting entries plus how
+// many times each final name was emitted.
+func disambiguateToolNames(authorizedTools []ToolInfo, nameServers map[string]map[string]struct{}) ([]namedToolEntry, map[string]int) {
+	entries := make([]namedToolEntry, 0, len(authorizedTools))
+	emittedCount := make(map[string]int, len(authorizedTools))
+	for _, ti := range authorizedTools {
+		name := ti.Tool.Name
+		if len(nameServers[name]) > 1 {
+			name = SanitizeToolName(ti.ServerID, ti.Tool.Name)
+		}
+		entries = append(entries, namedToolEntry{name: name, ti: ti})
+		emittedCount[name]++
+	}
+	return entries, emittedCount
+}
+
+// collectMCPServerTools returns the authorized MCP server tools for rctx,
+// disambiguating same-named tools offered by different servers.
+func (g *Gateway) collectMCPServerTools(rctx *RequestContext) []ToolDefinition {
+	allTools := g.registry.ListTools()
+
+	toolNames := make([]string, 0, len(allTools))
+	for _, ti := range allTools {
+		toolNames = append(toolNames, ti.Tool.Name)
+	}
+
+	authorized := g.authorizer.GetAuthorizedTools(rctx.KeyPrefix, nil, rctx.KeyID, toolNames)
+	authSet := make(map[string]bool, len(authorized))
+	for _, name := range authorized {
+		authSet[name] = true
+	}
+
+	var authorizedTools []ToolInfo
+	for _, ti := range allTools {
+		if authSet[ti.Tool.Name] {
+			authorizedTools = append(authorizedTools, ti)
+		}
+	}
+
+	nameServers := toolNameServerSets(allTools)
+	entries, emittedCount := disambiguateToolNames(authorizedTools, nameServers)
+
+	tools := make([]ToolDefinition, 0, len(entries))
+	for _, e := range entries {
+		t := e.ti.Tool
+		t.Name = e.name
+		if emittedCount[e.name] > 1 {
+			t.Name = SanitizeToolName(e.ti.ServerID, e.ti.Tool.Name)
+		}
+		tools = append(tools, t)
+	}
+	return tools
+}
+
+// collectOpenAPITools returns the authorized OpenAPI meta-tools for rctx,
+// rendered as ToolDefinitions.
+func (g *Gateway) collectOpenAPITools(rctx *RequestContext) []ToolDefinition {
+	openAPITools := g.openapiProvider.GetAuthorizedTools(rctx.KeyID, nil)
+	tools := make([]ToolDefinition, 0, len(openAPITools))
+	for _, ot := range openAPITools {
+		rawParams, _ := json.Marshal(ot.Function.Parameters)
+		tools = append(tools, ToolDefinition{
+			Name:        ot.Function.Name,
+			Description: ot.Function.Description,
+			InputSchema: json.RawMessage(rawParams),
+		})
+	}
+	return tools
+}
+
 // describeOpenAPICall extracts a human-meaningful, audit-log-friendly label
 // for an OpenAPI meta-tool call from its raw JSON-RPC arguments: the target
 // operation_id for openapi_call, the queried operation_ids for
 // openapi_describe, or the search intent for openapi_search. Falls back to
 // the bare meta-tool name if the arguments don't parse as expected.
 func describeOpenAPICall(toolName string, args json.RawMessage) string {
-	const maxLabelLen = 80
-	truncate := func(s string) string {
-		if len(s) > maxLabelLen {
-			return s[:maxLabelLen-3] + "..."
-		}
-		return s
-	}
-
 	switch toolName {
 	case "openapi_call":
-		var a struct {
-			OperationID string `json:"operation_id"`
-		}
-		if json.Unmarshal(args, &a) == nil && a.OperationID != "" {
-			return a.OperationID
-		}
+		return describeOpenAPICallOperation(toolName, args)
 	case "openapi_describe":
-		var a struct {
-			OperationIDs any `json:"operation_ids"`
-		}
-		if json.Unmarshal(args, &a) == nil {
-			var ids []string
-			switch v := a.OperationIDs.(type) {
-			case string:
-				ids = []string{v}
-			case []any:
-				for _, x := range v {
-					if s, ok := x.(string); ok {
-						ids = append(ids, s)
-					}
-				}
-			}
-			if len(ids) > 0 {
-				return truncate("describe: " + strings.Join(ids, ", "))
-			}
-		}
+		return describeOpenAPIDescribeOperations(toolName, args)
 	case "openapi_search":
-		var a struct {
-			Intent string `json:"intent"`
+		return describeOpenAPISearchIntent(toolName, args)
+	}
+	return toolName
+}
+
+const openAPILabelMaxLen = 80
+
+// truncateOpenAPILabel shortens s to openAPILabelMaxLen, if needed, for an
+// audit-log-friendly label.
+func truncateOpenAPILabel(s string) string {
+	if len(s) > openAPILabelMaxLen {
+		return s[:openAPILabelMaxLen-3] + "..."
+	}
+	return s
+}
+
+func describeOpenAPICallOperation(toolName string, args json.RawMessage) string {
+	var a struct {
+		OperationID string `json:"operation_id"`
+	}
+	if json.Unmarshal(args, &a) == nil && a.OperationID != "" {
+		return a.OperationID
+	}
+	return toolName
+}
+
+func describeOpenAPIDescribeOperations(toolName string, args json.RawMessage) string {
+	var a struct {
+		OperationIDs any `json:"operation_ids"`
+	}
+	if json.Unmarshal(args, &a) != nil {
+		return toolName
+	}
+	var ids []string
+	switch v := a.OperationIDs.(type) {
+	case string:
+		ids = []string{v}
+	case []any:
+		for _, x := range v {
+			if s, ok := x.(string); ok {
+				ids = append(ids, s)
+			}
 		}
-		if json.Unmarshal(args, &a) == nil && a.Intent != "" {
-			return truncate("search: " + a.Intent)
-		}
+	}
+	if len(ids) > 0 {
+		return truncateOpenAPILabel("describe: " + strings.Join(ids, ", "))
+	}
+	return toolName
+}
+
+func describeOpenAPISearchIntent(toolName string, args json.RawMessage) string {
+	var a struct {
+		Intent string `json:"intent"`
+	}
+	if json.Unmarshal(args, &a) == nil && a.Intent != "" {
+		return truncateOpenAPILabel("search: " + a.Intent)
 	}
 	return toolName
 }
@@ -475,65 +541,7 @@ func (g *Gateway) handleToolsCall(req *JSONRPCRequest, rctx *RequestContext, ver
 
 	// Handle OpenAPI meta-tools (openapi_search, openapi_describe, openapi_call)
 	if strings.HasPrefix(params.Name, "openapi_") {
-		start := time.Now()
-		// Audit under the actual operation (e.g. "Petstore_getPetById") rather
-		// than the generic meta-tool name — every openapi_call row would
-		// otherwise say "openapi_call" and be indistinguishable from every
-		// other one. ServerID stays the "openapi" sentinel so the Logs page
-		// can still tell these apart from real MCP server tool calls.
-		toolLabel := describeOpenAPICall(params.Name, params.Arguments)
-		logOpenAPICall := func(statusCode int, success bool, errMsg string) {
-			g.logAudit(AuditEntry{
-				APIKeyID:   rctx.KeyID,
-				Tool:       toolLabel,
-				ServerID:   "openapi",
-				Method:     MethodToolsCall,
-				Params:     string(params.Arguments),
-				DurationMs: float64(time.Since(start).Microseconds()) / 1000.0,
-				StatusCode: statusCode,
-				Success:    success,
-				ErrorMsg:   errMsg,
-				ClientIP:   rctx.ClientIP,
-			})
-		}
-
-		if g.cfgCache != nil && !config.IsEnabled(g.cfgCache, "openapi") {
-			logOpenAPICall(404, false, "openapi feature disabled")
-			return NewErrorResponse(req.ID, version.ErrorCode(protocol.ErrToolNotFound), "Tool not found: "+params.Name)
-		}
-		if g.openapiProvider == nil {
-			logOpenAPICall(404, false, "openapi provider not configured")
-			return NewErrorResponse(req.ID, version.ErrorCode(protocol.ErrToolNotFound), "Tool not found: "+params.Name)
-		}
-		toolCall := model.ToolCall{
-			ID:   "mcp-call-" + uuid.NewString(),
-			Type: "function",
-			Function: model.ToolCallFunctionData{
-				Name:      params.Name,
-				Arguments: string(params.Arguments),
-			},
-		}
-		msgs, errFlags := g.openapiProvider.Execute(context.Background(), rctx.KeyID, rctx.KeyPrefix, []model.ToolCall{toolCall})
-		if len(msgs) > 1 {
-			contentStr, _ := msgs[1].Content.(string)
-			isErr := len(errFlags) > 0 && errFlags[0]
-			errMsg := ""
-			if isErr {
-				errMsg = contentStr
-			}
-			logOpenAPICall(200, !isErr, errMsg)
-			contentJSON, err := json.Marshal([]ToolContent{{Type: "text", Text: contentStr}})
-			if err != nil {
-				return NewErrorResponse(req.ID, version.ErrorCode(protocol.ErrToolExecution), "failed to encode tool result")
-			}
-			resultJSON, err := version.WrapCallToolResult(contentJSON, isErr)
-			if err != nil {
-				return NewErrorResponse(req.ID, version.ErrorCode(protocol.ErrToolExecution), "failed to build tools/call result")
-			}
-			return NewSuccessResponse(req.ID, resultJSON)
-		}
-		logOpenAPICall(500, false, "OpenAPI tool execution returned no response")
-		return NewErrorResponse(req.ID, version.ErrorCode(protocol.ErrToolExecution), "OpenAPI tool execution returned no response")
+		return g.handleOpenAPIToolCall(req, rctx, version, params)
 	}
 
 	// Handle MCP Server tools
@@ -541,15 +549,8 @@ func (g *Gateway) handleToolsCall(req *JSONRPCRequest, rctx *RequestContext, ver
 		return NewErrorResponse(req.ID, version.ErrorCode(protocol.ErrToolNotFound), "Tool not found: "+params.Name)
 	}
 
-	if g.authorizer != nil {
-		tool, server, err := g.registry.ResolveTool(params.Name)
-		if err != nil || tool == nil {
-			return NewErrorResponse(req.ID, version.ErrorCode(protocol.ErrToolNotFound), "Tool not found: "+params.Name)
-		}
-		result := g.authorizer.CheckAccess(rctx.KeyPrefix, nil, rctx.KeyID, server.ID, tool.Name)
-		if !result.Allowed {
-			return NewErrorResponse(req.ID, version.ErrorCode(protocol.ErrToolNotFound), "Tool not found")
-		}
+	if resp := g.checkMCPToolAccess(req, rctx, version, params); resp != nil {
+		return resp
 	}
 
 	if g.executor == nil {
@@ -575,6 +576,30 @@ func (g *Gateway) handleToolsCall(req *JSONRPCRequest, rctx *RequestContext, ver
 		return g.executeToolWithPromotion(req, rctx, version, execParams)
 	}
 
+	return g.executeToolSync(req, version, execParams)
+}
+
+// checkMCPToolAccess resolves params.Name against the registry and checks
+// the caller's authorization for it, returning a "not found" error response
+// if either check fails, or nil when the call may proceed.
+func (g *Gateway) checkMCPToolAccess(req *JSONRPCRequest, rctx *RequestContext, version protocol.Version, params CallToolParams) *JSONRPCResponse {
+	if g.authorizer == nil {
+		return nil
+	}
+	tool, server, err := g.registry.ResolveTool(params.Name)
+	if err != nil || tool == nil {
+		return NewErrorResponse(req.ID, version.ErrorCode(protocol.ErrToolNotFound), "Tool not found: "+params.Name)
+	}
+	result := g.authorizer.CheckAccess(rctx.KeyPrefix, nil, rctx.KeyID, server.ID, tool.Name)
+	if !result.Allowed {
+		return NewErrorResponse(req.ID, version.ErrorCode(protocol.ErrToolNotFound), "Tool not found")
+	}
+	return nil
+}
+
+// executeToolSync runs execParams synchronously via the Executor — the path
+// used whenever 2026-07-28 task promotion doesn't apply.
+func (g *Gateway) executeToolSync(req *JSONRPCRequest, version protocol.Version, execParams *ExecuteToolParams) *JSONRPCResponse {
 	result := g.executor.ExecuteTool(context.Background(), execParams)
 	if result == nil {
 		return NewErrorResponse(req.ID, version.ErrorCode(protocol.ErrToolExecution), "Tool execution failed")
@@ -589,6 +614,70 @@ func (g *Gateway) handleToolsCall(req *JSONRPCRequest, rctx *RequestContext, ver
 		return NewErrorResponse(req.ID, version.ErrorCode(protocol.ErrToolExecution), "failed to build tools/call result")
 	}
 	return NewSuccessResponse(req.ID, resultJSON)
+}
+
+// handleOpenAPIToolCall handles tools/call for the openapi_search,
+// openapi_describe, and openapi_call meta-tools. It audits under the actual
+// target operation (e.g. "Petstore_getPetById") rather than the generic
+// meta-tool name — every openapi_call row would otherwise say "openapi_call"
+// and be indistinguishable from every other one. ServerID stays the
+// "openapi" sentinel so the Logs page can still tell these apart from real
+// MCP server tool calls.
+func (g *Gateway) handleOpenAPIToolCall(req *JSONRPCRequest, rctx *RequestContext, version protocol.Version, params CallToolParams) *JSONRPCResponse {
+	start := time.Now()
+	toolLabel := describeOpenAPICall(params.Name, params.Arguments)
+	logOpenAPICall := func(statusCode int, success bool, errMsg string) {
+		g.logAudit(AuditEntry{
+			APIKeyID:   rctx.KeyID,
+			Tool:       toolLabel,
+			ServerID:   "openapi",
+			Method:     MethodToolsCall,
+			Params:     string(params.Arguments),
+			DurationMs: float64(time.Since(start).Microseconds()) / 1000.0,
+			StatusCode: statusCode,
+			Success:    success,
+			ErrorMsg:   errMsg,
+			ClientIP:   rctx.ClientIP,
+		})
+	}
+
+	if g.cfgCache != nil && !config.IsEnabled(g.cfgCache, "openapi") {
+		logOpenAPICall(404, false, "openapi feature disabled")
+		return NewErrorResponse(req.ID, version.ErrorCode(protocol.ErrToolNotFound), "Tool not found: "+params.Name)
+	}
+	if g.openapiProvider == nil {
+		logOpenAPICall(404, false, "openapi provider not configured")
+		return NewErrorResponse(req.ID, version.ErrorCode(protocol.ErrToolNotFound), "Tool not found: "+params.Name)
+	}
+	toolCall := model.ToolCall{
+		ID:   "mcp-call-" + uuid.NewString(),
+		Type: "function",
+		Function: model.ToolCallFunctionData{
+			Name:      params.Name,
+			Arguments: string(params.Arguments),
+		},
+	}
+	msgs, errFlags := g.openapiProvider.Execute(context.Background(), rctx.KeyID, rctx.KeyPrefix, []model.ToolCall{toolCall})
+	if len(msgs) > 1 {
+		contentStr, _ := msgs[1].Content.(string)
+		isErr := len(errFlags) > 0 && errFlags[0]
+		errMsg := ""
+		if isErr {
+			errMsg = contentStr
+		}
+		logOpenAPICall(200, !isErr, errMsg)
+		contentJSON, err := json.Marshal([]ToolContent{{Type: "text", Text: contentStr}})
+		if err != nil {
+			return NewErrorResponse(req.ID, version.ErrorCode(protocol.ErrToolExecution), "failed to encode tool result")
+		}
+		resultJSON, err := version.WrapCallToolResult(contentJSON, isErr)
+		if err != nil {
+			return NewErrorResponse(req.ID, version.ErrorCode(protocol.ErrToolExecution), "failed to build tools/call result")
+		}
+		return NewSuccessResponse(req.ID, resultJSON)
+	}
+	logOpenAPICall(500, false, "OpenAPI tool execution returned no response")
+	return NewErrorResponse(req.ID, version.ErrorCode(protocol.ErrToolExecution), "OpenAPI tool execution returned no response")
 }
 
 // defaultTaskPromotionThreshold is how long a 2026-07-28 tools/call is

@@ -2,6 +2,7 @@ package mcptransport
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -45,7 +46,8 @@ func runFullAuthorizeFlow(t *testing.T, o *OAuthEndpoints, _ *mcp.OAuthStore, ra
 
 	var consentResp map[string]any
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &consentResp))
-	redirectURL := consentResp["redirect_uri"].(string)
+	redirectURL, ok := consentResp["redirect_uri"].(string)
+	require.True(t, ok)
 	uCallback, err := url.Parse(redirectURL)
 	require.NoError(t, err)
 	code := uCallback.Query().Get("code")
@@ -69,7 +71,7 @@ func runFullAuthorizeFlow(t *testing.T, o *OAuthEndpoints, _ *mcp.OAuthStore, ra
 func TestOAuthEndpoints_NoHint_DefaultsTo2025_NoIss(t *testing.T) {
 	database := dbtest.New(t)
 	database.DB.SetMaxOpenConns(1)
-	_, rawKey, err := database.CreateAPIKey("Test Key", nil, nil, 0, 0, 0, 0, nil, nil, nil)
+	_, rawKey, err := database.CreateAPIKey(context.Background(), "Test Key", nil, nil, 0, 0, 0, 0, nil, nil, nil)
 	require.NoError(t, err)
 
 	store := mcp.NewOAuthStore(database)
@@ -84,7 +86,7 @@ func TestOAuthEndpoints_NoHint_DefaultsTo2025_NoIss(t *testing.T) {
 func TestOAuthEndpoints_2026Hint_IncludesIss(t *testing.T) {
 	database := dbtest.New(t)
 	database.DB.SetMaxOpenConns(1)
-	_, rawKey, err := database.CreateAPIKey("Test Key", nil, nil, 0, 0, 0, 0, nil, nil, nil)
+	_, rawKey, err := database.CreateAPIKey(context.Background(), "Test Key", nil, nil, 0, 0, 0, 0, nil, nil, nil)
 	require.NoError(t, err)
 
 	store := mcp.NewOAuthStore(database)

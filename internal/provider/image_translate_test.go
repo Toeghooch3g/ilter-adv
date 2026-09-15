@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/ilter-ai/ilter/internal/model"
 )
@@ -17,7 +18,8 @@ func TestTranslateContentToAnthropic_ImageURLBase64(t *testing.T) {
 		},
 	}
 
-	out := translateContentToAnthropic(content).([]any)
+	out, ok := translateContentToAnthropic(content).([]any)
+	require.True(t, ok)
 	assert.Equal(t, map[string]any{"type": "text", "text": "what is this?"}, out[0])
 	assert.Equal(t, map[string]any{
 		"type": "image",
@@ -37,7 +39,8 @@ func TestTranslateContentToAnthropic_ImageURLRemote(t *testing.T) {
 		},
 	}
 
-	out := translateContentToAnthropic(content).([]any)
+	out, ok := translateContentToAnthropic(content).([]any)
+	require.True(t, ok)
 	assert.Equal(t, map[string]any{
 		"type":   "image",
 		"source": map[string]any{"type": "url", "url": "https://example.com/cat.png"},
@@ -54,7 +57,8 @@ func TestTranslateContentToAnthropic_AlreadyAnthropicShapeUnchanged(t *testing.T
 		"type":   "image",
 		"source": map[string]any{"type": "base64", "media_type": "image/jpeg", "data": "xyz"},
 	}
-	out := translateContentToAnthropic([]any{block}).([]any)
+	out, ok := translateContentToAnthropic([]any{block}).([]any)
+	require.True(t, ok)
 	assert.Equal(t, block, out[0])
 }
 
@@ -71,7 +75,8 @@ func TestTranslateContentToOpenAI_ImageBase64(t *testing.T) {
 		},
 	}
 
-	out := translateContentToOpenAI(content).([]any)
+	out, ok := translateContentToOpenAI(content).([]any)
+	require.True(t, ok)
 	assert.Equal(t, map[string]any{"type": "text", "text": "describe this"}, out[0])
 	assert.Equal(t, map[string]any{
 		"type":      "image_url",
@@ -87,7 +92,8 @@ func TestTranslateContentToOpenAI_ImageURLSource(t *testing.T) {
 		},
 	}
 
-	out := translateContentToOpenAI(content).([]any)
+	out, ok := translateContentToOpenAI(content).([]any)
+	require.True(t, ok)
 	assert.Equal(t, map[string]any{
 		"type":      "image_url",
 		"image_url": map[string]any{"url": "https://example.com/dog.png"},
@@ -99,7 +105,8 @@ func TestTranslateContentToOpenAI_AlreadyOpenAIShapeUnchanged(t *testing.T) {
 		"type":      "image_url",
 		"image_url": map[string]any{"url": "https://example.com/dog.png"},
 	}
-	out := translateContentToOpenAI([]any{block}).([]any)
+	out, ok := translateContentToOpenAI([]any{block}).([]any)
+	require.True(t, ok)
 	assert.Equal(t, block, out[0])
 }
 
@@ -114,9 +121,15 @@ func TestTranslateMessagesToOpenAI_DoesNotMutateOriginal(t *testing.T) {
 
 	// Original slice/blocks must be untouched: it may be reused by the load
 	// balancer for a retry against a different (Anthropic) provider.
-	origBlock := original[0].Content.([]any)[0].(map[string]any)
+	origContent, ok := original[0].Content.([]any)
+	require.True(t, ok)
+	origBlock, ok := origContent[0].(map[string]any)
+	require.True(t, ok)
 	assert.Equal(t, "image", origBlock["type"])
 
-	translatedBlock := translated[0].Content.([]any)[0].(map[string]any)
+	translatedContent, ok := translated[0].Content.([]any)
+	require.True(t, ok)
+	translatedBlock, ok := translatedContent[0].(map[string]any)
+	require.True(t, ok)
 	assert.Equal(t, "image_url", translatedBlock["type"])
 }

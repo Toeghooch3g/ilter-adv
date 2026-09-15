@@ -61,97 +61,180 @@ func (c *SemanticCacheMiddleware) Mode() string {
 	return string(c.cache.Mode())
 }
 
+// buildEmbedText builds the full transcript (used as a fallback) and the
+// text to embed for semantic lookup: the last user message's string
+// content, or the full transcript if there is none.
+func buildEmbedText(messages []model.Message) (fullPrompt, embedText string) {
+	var b strings.Builder
+	for _, m := range messages {
+		b.WriteString(string(m.Role))
+		b.WriteString(": ")
+		fmt.Fprintf(&b, "%v\n", m.Content)
+	}
+	fullPrompt = b.String()
+
+	// Use only the last user message for semantic embedding, so long conversation
+	// histories don't exceed embedding model context limits.
+	for _, v := range slices.Backward(messages) {
+		if v.Role == "user" {
+			if s, ok := v.Content.(string); ok && s != "" {
+				embedText = s
+			}
+			break
+		}
+	}
+	if embedText == "" {
+		embedText = fullPrompt
+	}
+	return fullPrompt, embedText
+}
+
+// serveCachedResponse writes cachedResp (or its streaming form) to w and
+// returns true if it did so. It returns false — leaving w untouched — when
+// the cached entry turns out to carry stale tool_calls, so the caller can
+// fall through to the real provider instead.
+func (c *SemanticCacheMiddleware) serveCachedResponse(w http.ResponseWriter, meta *reqmeta.RequestLoggingMetadata, req *model.ChatCompletionRequest, cachedResp string) bool {
+	// Defense-in-depth: if the cached response contains tool_calls, fall
+	// through to the real provider. Tool-call responses should never be
+	// cached, but stale entries produce broken UI (no tool card markers).
+	if cachedResponseHasToolCalls(cachedResp) {
+		return false
+	}
+	if meta != nil {
+		meta.SetCacheHit(true)
+	}
+	w.Header().Set("X-Cache-Hit", "true")
+	w.Header().Set("X-Ilter-Cost", "0")
+	w.Header().Set("X-Ilter-Model-Actual", "ilter/semantic_cache")
+
+	if req.Stream {
+		serveStreamingCacheHit(w, cachedResp)
+		return true
+	}
+
+	var cachedRespModel model.ChatCompletionResponse
+	if err := json.Unmarshal([]byte(cachedResp), &cachedRespModel); err == nil {
+		cachedRespModel.Model = "ilter/semantic_cache"
+		if data, err := json.Marshal(cachedRespModel); err == nil {
+			cachedResp = string(data)
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if _, err := w.Write([]byte(cachedResp)); err != nil {
+		slog.Debug("cache write error", "error", err)
+	}
+	return true
+}
+
+// responseHasPIIOrToolCalls reports whether cachedBody's first choice
+// contains PII (per c.piiMw) or tool calls — either disqualifies the
+// response from being cached.
+func (c *SemanticCacheMiddleware) responseHasPIIOrToolCalls(cachedBody string) (piiDetected, hasToolCalls bool) {
+	var resp model.ChatCompletionResponse
+	if err := json.Unmarshal([]byte(cachedBody), &resp); err != nil || len(resp.Choices) == 0 {
+		return false, false
+	}
+	hasToolCalls = len(resp.Choices[0].Message.ToolCalls) > 0 || strings.Contains(resp.Choices[0].Message.Content, "<tool_calls>")
+	if c.piiMw != nil {
+		piiDetected = len(c.piiMw.DetectPII(resp.Choices[0].Message.Content)) > 0
+	}
+	return piiDetected, hasToolCalls
+}
+
+// maybeCacheResponse stores cachedBody under embedText unless it contains
+// PII or tool_calls — either disqualifies a response from being cached.
+func (c *SemanticCacheMiddleware) maybeCacheResponse(embedText, cachedBody string) {
+	piiDetected, hasToolCalls := c.responseHasPIIOrToolCalls(cachedBody)
+	if piiDetected {
+		slog.Debug("semantic cache skipped: response contains PII")
+	}
+	if hasToolCalls {
+		slog.Debug("semantic cache skipped: response contains tool_calls")
+	}
+	if piiDetected || hasToolCalls {
+		return
+	}
+	// Use background context — request context may be canceled after handler returns
+	// (e.g. streaming handlers), which would cause embedding to fail and VSS entry
+	// to be silently skipped.
+	if err := c.cache.SetFull(context.Background(), "search_document: "+embedText, embedText, cachedBody); err != nil { //nolint:contextcheck // intentional: see comment above, this write must outlive the request
+		slog.Error("Failed to store semantic cache entry", "error", err)
+	}
+}
+
+// handleCacheableResponse processes the real provider's response after the
+// handler chain runs: unmasks it, converts SSE to a plain response if
+// streaming, and caches it unless disqualified.
+//
+// Skip caching if the response contains tool_calls — caching a tool call
+// response breaks the MCP inject middleware's tool call loop: on follow-up
+// requests the cache returns the stale tool_calls response, causing the
+// inject loop to re-execute tools infinitely.
+func (c *SemanticCacheMiddleware) handleCacheableResponse(ctx context.Context, rec *ResponseRecorder, req *model.ChatCompletionRequest, embedText string) {
+	if rec.Status() != http.StatusOK {
+		return
+	}
+	cachedBody := UnmaskResponse(ctx, rec.BodyString())
+	if req.Stream {
+		cachedBody = sseToResponse(cachedBody)
+	}
+	c.maybeCacheResponse(embedText, cachedBody) //nolint:contextcheck // intentional: maybeCacheResponse deliberately uses context.Background() for the cache write, see its comment
+}
+
+// cachingEnabled reports whether r is even a candidate for semantic
+// caching: the feature is on (config or runtime override) and it's a POST.
+func (c *SemanticCacheMiddleware) cachingEnabled(r *http.Request) bool {
+	enabled := c.cfg.Enabled
+	if c.cfgCache != nil {
+		enabled = IsEnabled(c.cfgCache, "semantic_cache")
+	}
+	return enabled && !c.runtimeDisabled.Load() && c.cache != nil && r.Method == "POST"
+}
+
+// prepareCacheableRequest reads r's body, restores it for downstream
+// handlers, and reports whether the request is a candidate for semantic
+// caching (successfully parsed, temperature <= 0.9, and no active tools).
+func prepareCacheableRequest(r *http.Request) (req model.ChatCompletionRequest, ok bool) {
+	bodyBytes, err := io.ReadAll(r.Body)
+	if err != nil {
+		return req, false
+	}
+	r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+
+	if err := json.Unmarshal(bodyBytes, &req); err != nil {
+		return req, false
+	}
+	if req.Temperature != nil && *req.Temperature > 0.9 {
+		return req, false
+	}
+	if len(req.Tools) > 0 || hasToolRoleMessage(req.Messages) {
+		return req, false
+	}
+	return req, true
+}
+
 func (c *SemanticCacheMiddleware) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		enabled := c.cfg.Enabled
-		if c.cfgCache != nil {
-			enabled = IsEnabled(c.cfgCache, "semantic_cache")
-		}
-		if !enabled || c.runtimeDisabled.Load() || c.cache == nil || r.Method != "POST" {
+		if !c.cachingEnabled(r) {
 			next.ServeHTTP(w, r)
 			return
 		}
 
-		bodyBytes, err := io.ReadAll(r.Body)
-		if err != nil {
-			next.ServeHTTP(w, r)
-			return
-		}
-		r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
-
-		var req model.ChatCompletionRequest
-		if errUnmarshal := json.Unmarshal(bodyBytes, &req); errUnmarshal != nil {
+		req, ok := prepareCacheableRequest(r)
+		if !ok {
 			next.ServeHTTP(w, r)
 			return
 		}
 
-		if req.Temperature != nil && *req.Temperature > 0.9 {
-			next.ServeHTTP(w, r)
-			return
-		}
-
-		if hasActiveTools := len(req.Tools) > 0 || hasToolRoleMessage(req.Messages); hasActiveTools {
-			next.ServeHTTP(w, r)
-			return
-		}
-
-		var b strings.Builder
-		for _, m := range req.Messages {
-			b.WriteString(string(m.Role))
-			b.WriteString(": ")
-			fmt.Fprintf(&b, "%v\n", m.Content)
-		}
-		fullPrompt := b.String()
-
-		// Use only the last user message for semantic embedding, so long conversation
-		// histories don't exceed embedding model context limits.
-		var embedText string
-		for _, v := range slices.Backward(req.Messages) {
-			if v.Role == "user" {
-				if s, ok := v.Content.(string); ok && s != "" {
-					embedText = s
-				}
-				break
-			}
-		}
-		if embedText == "" {
-			embedText = fullPrompt
-		}
+		_, embedText := buildEmbedText(req.Messages)
 
 		meta := reqmeta.GetRequestMetadata(r.Context())
 
 		if cachedResp, score, hit := c.cache.GetFull(r.Context(), "search_query: "+embedText, embedText); hit {
 			slog.Debug("semantic cache hit", "score", fmt.Sprintf("%.4f", score), "threshold", c.cfg.SimilarityThreshold)
-
-			// Defense-in-depth: if the cached response contains tool_calls, fall
-			// through to the real provider. Tool-call responses should never be
-			// cached, but stale entries produce broken UI (no tool card markers).
-			if !cachedResponseHasToolCalls(cachedResp) {
-				if meta != nil {
-					meta.SetCacheHit(true)
-				}
-				w.Header().Set("X-Cache-Hit", "true")
-				w.Header().Set("X-Ilter-Cost", "0")
-				w.Header().Set("X-Ilter-Model-Actual", "ilter/semantic_cache")
-
-				if req.Stream {
-					serveStreamingCacheHit(w, cachedResp)
-					return
-				}
-
-				var cachedRespModel model.ChatCompletionResponse
-				if err := json.Unmarshal([]byte(cachedResp), &cachedRespModel); err == nil {
-					cachedRespModel.Model = "ilter/semantic_cache"
-					if data, err := json.Marshal(cachedRespModel); err == nil {
-						cachedResp = string(data)
-					}
-				}
-
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusOK)
-				if _, err := w.Write([]byte(cachedResp)); err != nil {
-					slog.Debug("cache write error", "error", err)
-				}
+			if c.serveCachedResponse(w, meta, &req, cachedResp) {
 				return
 			}
 			slog.Warn("semantic cache: stale entry with tool_calls, falling through", "embed", embedText)
@@ -165,43 +248,7 @@ func (c *SemanticCacheMiddleware) Handler(next http.Handler) http.Handler {
 		rec := NewResponseRecorder(w)
 		next.ServeHTTP(rec, r)
 
-		if rec.Status() == http.StatusOK {
-			cachedBody := UnmaskResponse(r.Context(), rec.BodyString())
-
-			if req.Stream {
-				cachedBody = sseToResponse(cachedBody)
-			}
-
-			// Skip caching if the response contains tool_calls — caching a tool call
-			// response breaks the MCP inject middleware's tool call loop: on follow-up
-			// requests the cache returns the stale tool_calls response, causing the
-			// inject loop to re-execute tools infinitely.
-			var (
-				piiDetected  bool
-				hasToolCalls bool
-			)
-			var resp model.ChatCompletionResponse
-			if err := json.Unmarshal([]byte(cachedBody), &resp); err == nil && len(resp.Choices) > 0 {
-				hasToolCalls = len(resp.Choices[0].Message.ToolCalls) > 0 || strings.Contains(resp.Choices[0].Message.Content, "<tool_calls>")
-				if c.piiMw != nil {
-					piiDetected = len(c.piiMw.DetectPII(resp.Choices[0].Message.Content)) > 0
-				}
-			}
-			if piiDetected {
-				slog.Debug("semantic cache skipped: response contains PII")
-			}
-			if hasToolCalls {
-				slog.Debug("semantic cache skipped: response contains tool_calls")
-			}
-			if !piiDetected && !hasToolCalls {
-				// Use background context — request context may be canceled after handler returns
-				// (e.g. streaming handlers), which would cause embedding to fail and VSS entry
-				// to be silently skipped.
-				if err := c.cache.SetFull(context.Background(), "search_document: "+embedText, embedText, cachedBody); err != nil {
-					slog.Error("Failed to store semantic cache entry", "error", err)
-				}
-			}
-		}
+		c.handleCacheableResponse(r.Context(), rec, &req, embedText)
 	})
 }
 
@@ -246,16 +293,16 @@ func serveStreamingCacheHit(w http.ResponseWriter, cachedResp string) {
 		Choices: []model.ChunkChoice{{Index: 0, Delta: model.Delta{Role: "assistant", ReasoningContent: reasoning}}},
 	}
 	data, _ := json.Marshal(chunk)
-	fmt.Fprintf(w, "data: %s\n\n", data)
+	_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
 	flusher.Flush()
 
 	chunk.Choices[0].Delta = model.Delta{Content: content, ReasoningContent: reasoning}
 	chunk.Choices[0].FinishReason = &finish
 	data, _ = json.Marshal(chunk)
-	fmt.Fprintf(w, "data: %s\n\n", data)
+	_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
 	flusher.Flush()
 
-	fmt.Fprintf(w, "data: [DONE]\n\n")
+	_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
 	flusher.Flush()
 }
 

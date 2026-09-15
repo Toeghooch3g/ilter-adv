@@ -66,7 +66,7 @@ func (am *AuthMiddleware) loadUserContext(ctx context.Context, userID int) conte
 		ctx = context.WithValue(ctx, reqmeta.UserBudgetContextKey, userBudget)
 	}
 
-	groups, gErr := am.store.GetUserGroups(userID)
+	groups, gErr := am.store.GetUserGroups(ctx, userID)
 	if gErr != nil || len(groups) == 0 {
 		return ctx
 	}
@@ -93,7 +93,7 @@ func (am *AuthMiddleware) resolveBillingKey(ctx context.Context, r *http.Request
 		return ctx, nil
 	}
 
-	vk, err := am.store.GetAPIKey(keyID)
+	vk, err := am.store.GetAPIKey(ctx, keyID)
 	if err != nil {
 		return ctx, fmt.Errorf("invalid billing key %q: %w", keyID, err)
 	}
@@ -131,7 +131,7 @@ func (am *AuthMiddleware) Handler(next http.Handler) http.Handler {
 			return
 		}
 
-		vk, err := am.store.GetActiveKeyByHash(token)
+		vk, err := am.store.GetActiveKeyByHash(r.Context(), token)
 		if err != nil {
 			am.authError(w, r, http.StatusUnauthorized, "authentication_error", "Invalid API key")
 			return

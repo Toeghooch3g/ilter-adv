@@ -139,7 +139,7 @@ func (a *App) initMCP() {
 	}
 
 	toolEventWriter := func(w io.Writer, eventType string, data json.RawMessage) {
-		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", eventType, string(data))
+		_, _ = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", eventType, string(data))
 		if flusher, ok := w.(http.Flusher); ok {
 			flusher.Flush()
 		}

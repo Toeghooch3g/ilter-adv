@@ -111,7 +111,9 @@ func (r *JobRunner) Enqueue(ctx context.Context, req ExecutionRequest) (string, 
 		}
 	}
 
-	r.wg.Go(func() {
+	// Background context is intentional: job execution must outlive the
+	// request that triggered Enqueue, running to completion independently.
+	r.wg.Go(func() { //nolint:contextcheck // detached background execution, not request-scoped
 		// Claim the run atomically — conditional UPDATE ensures only one
 		// executor (us or the reconciler) claims this run.
 		claimed, err := r.store.ClaimPendingRun(context.Background(), runID, r.cfg.MaxAttempts)
@@ -225,6 +227,63 @@ func renderTemplate(src string, ctx map[string]any) (string, error) {
 	return buf.String(), nil
 }
 
+// reservedVarNameRe matches variable names that would shadow the step/prev
+// template keys ("step0", "step1", ..., or "prev").
+var reservedVarNameRe = regexp.MustCompile(`^step\d+$`)
+
+// validateReservedVarNames rejects job variables whose name shadows a
+// step/prev template key.
+func validateReservedVarNames(vars map[string]any) error {
+	for k := range vars {
+		if k == "prev" || reservedVarNameRe.MatchString(k) {
+			return fmt.Errorf("job variable %q is reserved (shadows step or prev key)", k)
+		}
+	}
+	return nil
+}
+
+// validateMCPStep validates one "mcp"-type step: its tool name and
+// template-rendered arguments (rendered against dummy prior-step output so
+// template errors surface at validation time, not at job run time).
+func validateMCPStep(i int, s Step, dummyText []string, dummyRaw []json.RawMessage, dummyVars map[string]any) error {
+	if s.Tool == "" {
+		return fmt.Errorf("step %d: MCP tool name is required", i)
+	}
+	ctx := buildTemplateCtx(dummyText[:i], dummyRaw[:i], dummyVars)
+	out, err := renderTemplate(string(s.Arguments), ctx)
+	if err != nil {
+		return fmt.Errorf("step %d template: %w", i, err)
+	}
+	if !json.Valid([]byte(out)) {
+		return fmt.Errorf("step %d: arguments render to invalid JSON (missing `| json`?): %s", i, out)
+	}
+	return nil
+}
+
+// validateLLMStep validates one "llm"-type step's required fields.
+func validateLLMStep(i int, s Step) error {
+	if s.PromptID == nil {
+		return fmt.Errorf("step %d: prompt_id is required for LLM steps", i)
+	}
+	if s.Model == "" {
+		return fmt.Errorf("step %d: model is required for LLM steps", i)
+	}
+	return nil
+}
+
+// validateStep dispatches to the per-type validator for step i, or rejects
+// an unknown step type.
+func validateStep(i int, s Step, dummyText []string, dummyRaw []json.RawMessage, dummyVars map[string]any) error {
+	switch s.Type {
+	case "mcp":
+		return validateMCPStep(i, s, dummyText, dummyRaw, dummyVars)
+	case "llm":
+		return validateLLMStep(i, s)
+	default:
+		return fmt.Errorf("step %d: unknown step type %q (must be \"mcp\" or \"llm\")", i, s.Type)
+	}
+}
+
 func ValidateSteps(raw string, varsConfig VariablesConfig) error {
 	var steps []Step
 	if err := json.Unmarshal([]byte(raw), &steps); err != nil {
@@ -243,36 +302,12 @@ func ValidateSteps(raw string, varsConfig VariablesConfig) error {
 	if dummyVars == nil {
 		dummyVars = map[string]any{}
 	}
-	// Reject reserved variable names that shadow step/prev keys.
-	stepKeyRe := regexp.MustCompile(`^step\d+$`)
-	for k := range dummyVars {
-		if k == "prev" || stepKeyRe.MatchString(k) {
-			return fmt.Errorf("job variable %q is reserved (shadows step or prev key)", k)
-		}
+	if err := validateReservedVarNames(dummyVars); err != nil {
+		return err
 	}
 	for i, s := range steps {
-		switch s.Type {
-		case "mcp":
-			if s.Tool == "" {
-				return fmt.Errorf("step %d: MCP tool name is required", i)
-			}
-			ctx := buildTemplateCtx(dummyText[:i], dummyRaw[:i], dummyVars)
-			out, err := renderTemplate(string(s.Arguments), ctx)
-			if err != nil {
-				return fmt.Errorf("step %d template: %w", i, err)
-			}
-			if !json.Valid([]byte(out)) {
-				return fmt.Errorf("step %d: arguments render to invalid JSON (missing `| json`?): %s", i, out)
-			}
-		case "llm":
-			if s.PromptID == nil {
-				return fmt.Errorf("step %d: prompt_id is required for LLM steps", i)
-			}
-			if s.Model == "" {
-				return fmt.Errorf("step %d: model is required for LLM steps", i)
-			}
-		default:
-			return fmt.Errorf("step %d: unknown step type %q (must be \"mcp\" or \"llm\")", i, s.Type)
+		if err := validateStep(i, s, dummyText, dummyRaw, dummyVars); err != nil {
+			return err
 		}
 	}
 	return nil

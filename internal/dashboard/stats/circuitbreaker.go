@@ -8,6 +8,7 @@ import (
 	"github.com/ilter-ai/ilter/internal/platform/reqmeta"
 
 	"github.com/ilter-ai/ilter/internal/features/circuitbreaker"
+	"github.com/ilter-ai/ilter/internal/provider"
 )
 
 type circuitBreakerStats struct {
@@ -34,6 +35,51 @@ type CircuitBreakerSummaryResponse struct {
 	Circuits []circuitStatus     `json:"circuits"`
 }
 
+// buildCircuitStatus builds prov's circuit-breaker status row, or ok=false
+// if it has no HTTP transport to report on.
+func buildCircuitStatus(prov provider.Provider) (cs circuitStatus, ok bool) {
+	client := prov.Client()
+	if client == nil || client.Transport == nil {
+		return cs, false
+	}
+
+	cs = circuitStatus{
+		Provider: prov.Name(),
+		State:    circuitbreaker.State(client.Transport),
+	}
+
+	if counts := circuitbreaker.Counts(client.Transport); counts != nil {
+		cs.Requests = int(counts.Requests)
+		cs.Successes = int(counts.TotalSuccesses)
+		cs.Failures = int(counts.TotalFailures)
+		cs.ConsecutiveSuccesses = int(counts.ConsecutiveSuccesses)
+		cs.ConsecutiveFailures = int(counts.ConsecutiveFailures)
+	}
+
+	// Providers with ≤1 request have only seen a health-check ping, not real traffic.
+	if cs.Requests <= 1 {
+		cs.State = "idle"
+		cs.Requests = 0
+		cs.Successes = 0
+		cs.ConsecutiveSuccesses = 0
+	}
+
+	return cs, true
+}
+
+// tallyCircuitState increments summary's per-state counters for cs.
+func tallyCircuitState(summary *circuitBreakerStats, cs circuitStatus) {
+	summary.TotalFailures += cs.Failures
+	switch cs.State {
+	case "closed":
+		summary.ClosedCount++
+	case "open":
+		summary.OpenCount++
+	case "half-open":
+		summary.HalfOpenCount++
+	}
+}
+
 func (h *Handler) HandleCircuitBreakerSummary(w http.ResponseWriter, _ *http.Request) {
 	providers := h.reg.List()
 
@@ -41,44 +87,12 @@ func (h *Handler) HandleCircuitBreakerSummary(w http.ResponseWriter, _ *http.Req
 	resp.Circuits = make([]circuitStatus, 0, len(providers))
 
 	for _, prov := range providers {
-		client := prov.Client()
-		if client == nil || client.Transport == nil {
+		cs, ok := buildCircuitStatus(prov)
+		if !ok {
 			continue
 		}
-
-		state := circuitbreaker.State(client.Transport)
-		cs := circuitStatus{
-			Provider: prov.Name(),
-			State:    state,
-		}
-
-		if counts := circuitbreaker.Counts(client.Transport); counts != nil {
-			cs.Requests = int(counts.Requests)
-			cs.Successes = int(counts.TotalSuccesses)
-			cs.Failures = int(counts.TotalFailures)
-			cs.ConsecutiveSuccesses = int(counts.ConsecutiveSuccesses)
-			cs.ConsecutiveFailures = int(counts.ConsecutiveFailures)
-		}
-
-		// Providers with ≤1 request have only seen a health-check ping, not real traffic.
-		if cs.Requests <= 1 {
-			cs.State = "idle"
-			cs.Requests = 0
-			cs.Successes = 0
-			cs.ConsecutiveSuccesses = 0
-		}
-
 		resp.Circuits = append(resp.Circuits, cs)
-		resp.Summary.TotalFailures += cs.Failures
-
-		switch cs.State {
-		case "closed":
-			resp.Summary.ClosedCount++
-		case "open":
-			resp.Summary.OpenCount++
-		case "half-open":
-			resp.Summary.HalfOpenCount++
-		}
+		tallyCircuitState(&resp.Summary, cs)
 	}
 
 	resp.Summary.TotalCircuits = len(resp.Circuits)
@@ -130,7 +144,7 @@ func (h *Handler) HandleCircuitBreakerToggle(w http.ResponseWriter, r *http.Requ
 		if req.Reason != "" {
 			vals["reason"] = req.Reason
 		}
-		_ = h.configAuditor.LogCreate("circuit_breaker", "global", vals, actor)
+		_ = h.configAuditor.LogCreate(r.Context(), "circuit_breaker", "global", vals, actor)
 	}
 
 	model.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -153,7 +167,7 @@ func (h *Handler) HandleCircuitBreakerReset(w http.ResponseWriter, r *http.Reque
 		if req.Reason != "" {
 			vals["reason"] = req.Reason
 		}
-		_ = h.configAuditor.LogCreate("circuit_breaker", "global", vals, actor)
+		_ = h.configAuditor.LogCreate(r.Context(), "circuit_breaker", "global", vals, actor)
 	}
 
 	model.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -176,7 +190,7 @@ func (h *Handler) HandleCircuitBreakerForceOpen(w http.ResponseWriter, r *http.R
 		if req.Reason != "" {
 			vals["reason"] = req.Reason
 		}
-		_ = h.configAuditor.LogCreate("circuit_breaker", "global", vals, actor)
+		_ = h.configAuditor.LogCreate(r.Context(), "circuit_breaker", "global", vals, actor)
 	}
 
 	model.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})

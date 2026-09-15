@@ -24,7 +24,7 @@ func setupBudgetTestStore(t *testing.T) *db.SQLiteStore {
 }
 
 func createTestUser(t *testing.T, store *db.SQLiteStore) auth.User {
-	user, err := store.CreateUser(auth.CreateUserRequest{
+	user, err := store.CreateUser(context.Background(), auth.CreateUserRequest{
 		Name:   "Test User",
 		Email:  "test@example.com",
 		Budget: 100.0,
@@ -34,7 +34,7 @@ func createTestUser(t *testing.T, store *db.SQLiteStore) auth.User {
 }
 
 func createTestGroup(t *testing.T, store *db.SQLiteStore) auth.Group {
-	group, err := store.CreateGroup(auth.CreateGroupRequest{
+	group, err := store.CreateGroup(context.Background(), auth.CreateGroupRequest{
 		Name:   "Test Group",
 		Budget: 200.0,
 	})

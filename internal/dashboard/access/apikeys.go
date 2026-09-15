@@ -1,6 +1,7 @@
 package access
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -50,9 +51,9 @@ func (h *Handler) ListAPIKeys(w http.ResponseWriter, r *http.Request) {
 			model.WriteJSONError(w, http.StatusBadRequest, "invalid_request_error", "Invalid group_id")
 			return
 		}
-		keys, err = h.store.ListAPIKeys(gid)
+		keys, err = h.store.ListAPIKeys(r.Context(), gid)
 	} else {
-		keys, err = h.store.ListAPIKeys()
+		keys, err = h.store.ListAPIKeys(r.Context())
 	}
 	if err != nil {
 		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", "Failed to list virtual keys")
@@ -97,8 +98,53 @@ func (h *Handler) ListAPIKeys(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// checkAPIKeyOwnerExists verifies groupID/userID (if set) reference real
+// rows, returning a non-empty error code + message for the first failing
+// check, or ("", "") if both are fine (or unset).
+func (h *Handler) checkAPIKeyOwnerExists(ctx context.Context, groupID, userID *int) (errCode, errMsg string) {
+	if groupID != nil {
+		if _, err := h.store.GetGroup(ctx, *groupID); err != nil {
+			return "not_found", "Group not found"
+		}
+	}
+	if userID != nil {
+		if _, err := h.store.GetUser(ctx, *userID); err != nil {
+			return "not_found", "User not found"
+		}
+	}
+	return "", ""
+}
+
+// auditAPIKeyCreate logs an api_key creation, if an auditor is configured.
+func (h *Handler) auditAPIKeyCreate(r *http.Request, vk *auth.APIKey, rawToken string) {
+	if h.auditor == nil {
+		return
+	}
+	vals := map[string]any{
+		"name":              vk.Name,
+		"rate_limit_rpm":    vk.RateLimitRPM,
+		"rate_limit_tpm":    vk.RateLimitTPM,
+		"allowed_models":    vk.AllowedModels,
+		"allowed_providers": vk.AllowedProviders,
+		"enabled":           vk.Enabled,
+		"api_key":           rawToken,
+	}
+	if vk.GroupID != nil {
+		vals["group_id"] = *vk.GroupID
+	}
+	if vk.UserID != nil {
+		vals["user_id"] = *vk.UserID
+	}
+	if vk.Tags != nil {
+		vals["tags"] = vk.Tags
+	}
+	if err := h.auditor.LogCreate(r.Context(), "api_key", vk.ID, vals, reqmeta.GetKeyID(r.Context())); err != nil {
+		slog.Error("failed to log audit create api_key", "error", err)
+	}
+}
+
 func (h *Handler) CreateAPIKey(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 	var req CreateAPIKeyRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		model.WriteJSONError(w, http.StatusBadRequest, "invalid_request_error", "Invalid request body")
@@ -110,24 +156,13 @@ func (h *Handler) CreateAPIKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.GroupID != nil {
-		_, err := h.store.GetGroup(*req.GroupID)
-		if err != nil {
-			model.WriteJSONError(w, http.StatusNotFound, "not_found", "Group not found")
-			return
-		}
-	}
-
-	if req.UserID != nil {
-		_, err := h.store.GetUser(*req.UserID)
-		if err != nil {
-			model.WriteJSONError(w, http.StatusNotFound, "not_found", "User not found")
-			return
-		}
+	if errCode, errMsg := h.checkAPIKeyOwnerExists(r.Context(), req.GroupID, req.UserID); errCode != "" {
+		model.WriteJSONError(w, http.StatusNotFound, errCode, errMsg)
+		return
 	}
 
 	vk, rawToken, err := h.store.CreateAPIKey(
-		req.Name, req.GroupID, req.UserID,
+		r.Context(), req.Name, req.GroupID, req.UserID,
 		0, 0,
 		req.RateLimitRPM, req.RateLimitTPM,
 		req.AllowedModels, req.AllowedProviders,
@@ -143,29 +178,7 @@ func (h *Handler) CreateAPIKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.auditor != nil {
-		vals := map[string]any{
-			"name":              vk.Name,
-			"rate_limit_rpm":    vk.RateLimitRPM,
-			"rate_limit_tpm":    vk.RateLimitTPM,
-			"allowed_models":    vk.AllowedModels,
-			"allowed_providers": vk.AllowedProviders,
-			"enabled":           vk.Enabled,
-			"api_key":           rawToken,
-		}
-		if vk.GroupID != nil {
-			vals["group_id"] = *vk.GroupID
-		}
-		if vk.UserID != nil {
-			vals["user_id"] = *vk.UserID
-		}
-		if vk.Tags != nil {
-			vals["tags"] = vk.Tags
-		}
-		if err := h.auditor.LogCreate("api_key", vk.ID, vals, reqmeta.GetKeyID(r.Context())); err != nil {
-			slog.Error("failed to log audit create api_key", "error", err)
-		}
-	}
+	h.auditAPIKeyCreate(r, vk, rawToken)
 
 	model.WriteJSON(w, http.StatusOK, map[string]any{
 		"id":       vk.ID,
@@ -178,7 +191,7 @@ func (h *Handler) CreateAPIKey(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) GetAPIKey(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	vk, err := h.store.GetAPIKey(id)
+	vk, err := h.store.GetAPIKey(r.Context(), id)
 	if err != nil {
 		model.WriteJSONError(w, http.StatusNotFound, "not_found", "Virtual key not found")
 		return
@@ -205,62 +218,67 @@ func (h *Handler) GetAPIKey(w http.ResponseWriter, r *http.Request) {
 	model.WriteJSON(w, http.StatusOK, resp)
 }
 
-func (h *Handler) UpdateAPIKey(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
-	defer r.Body.Close()
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		model.WriteJSONError(w, http.StatusBadRequest, "invalid_request_error", "Invalid request body")
-		return
+// parseUpdateAPIKeyRequest decodes body into an UpdateAPIKeyRequest and
+// determines which optional fields were explicitly sent, since a plain
+// *int can't distinguish "field omitted" (leave unchanged) from "field
+// explicitly null" (clear it).
+func parseUpdateAPIKeyRequest(body []byte) (req UpdateAPIKeyRequest, groupIDSent, userIDSent bool, err error) {
+	if err := json.Unmarshal(body, &req); err != nil {
+		return req, false, false, err
 	}
 
-	var req UpdateAPIKeyRequest
-	if umErr := json.Unmarshal(body, &req); umErr != nil {
-		model.WriteJSONError(w, http.StatusBadRequest, "invalid_request_error", "Invalid request body")
-		return
-	}
-
-	// A plain *int can't distinguish "field omitted" (leave unchanged) from
-	// "field explicitly null" (clear it), so check key presence separately.
 	var rawFields map[string]json.RawMessage
 	if uErr := json.Unmarshal(body, &rawFields); uErr != nil {
 		slog.Error("failed to unmarshal raw fields for field presence detection", "error", uErr)
 	}
-	_, groupIDSent := rawFields["group_id"]
-	_, userIDSent := rawFields["user_id"]
+	_, groupIDSent = rawFields["group_id"]
+	_, userIDSent = rawFields["user_id"]
+	return req, groupIDSent, userIDSent, nil
+}
 
-	existing, err := h.store.GetAPIKey(id)
-	if err != nil {
-		model.WriteJSONError(w, http.StatusNotFound, "not_found", "Virtual key not found")
-		return
+// applyAPIKeyGroupUpdate sets existing.GroupID to groupID after validating
+// it references a real group (or clears it when groupID is nil).
+func (h *Handler) applyAPIKeyGroupUpdate(ctx context.Context, existing *auth.APIKey, groupID *int) (errCode, errMsg string) {
+	if groupID == nil {
+		existing.GroupID = nil
+		return "", ""
 	}
-	existingOld := *existing
+	if _, err := h.store.GetGroup(ctx, *groupID); err != nil {
+		return "not_found", "Group not found"
+	}
+	existing.GroupID = groupID
+	return "", ""
+}
 
+// applyAPIKeyUserUpdate sets existing.UserID to userID after validating it
+// references a real user (or clears it when userID is nil).
+func (h *Handler) applyAPIKeyUserUpdate(ctx context.Context, existing *auth.APIKey, userID *int) (errCode, errMsg string) {
+	if userID == nil {
+		existing.UserID = nil
+		return "", ""
+	}
+	if _, err := h.store.GetUser(ctx, *userID); err != nil {
+		return "not_found", "User not found"
+	}
+	existing.UserID = userID
+	return "", ""
+}
+
+// applyAPIKeyUpdate mutates existing in place with req's set fields,
+// validating that a newly-set group_id/user_id references a real row.
+// Returns a non-empty error code + message if that validation fails.
+func (h *Handler) applyAPIKeyUpdate(ctx context.Context, existing *auth.APIKey, req UpdateAPIKeyRequest, groupIDSent, userIDSent bool) (errCode, errMsg string) {
 	if req.Name != nil {
 		existing.Name = *req.Name
 	}
 	if groupIDSent {
-		if req.GroupID != nil {
-			_, err := h.store.GetGroup(*req.GroupID)
-			if err != nil {
-				model.WriteJSONError(w, http.StatusNotFound, "not_found", "Group not found")
-				return
-			}
-			existing.GroupID = req.GroupID
-		} else {
-			existing.GroupID = nil
+		if errCode, errMsg := h.applyAPIKeyGroupUpdate(ctx, existing, req.GroupID); errCode != "" {
+			return errCode, errMsg
 		}
 	}
 	if userIDSent {
-		if req.UserID != nil {
-			_, err := h.store.GetUser(*req.UserID)
-			if err != nil {
-				model.WriteJSONError(w, http.StatusNotFound, "not_found", "User not found")
-				return
-			}
-			existing.UserID = req.UserID
-		} else {
-			existing.UserID = nil
+		if errCode, errMsg := h.applyAPIKeyUserUpdate(ctx, existing, req.UserID); errCode != "" {
+			return errCode, errMsg
 		}
 	}
 	if req.Tags != nil {
@@ -281,48 +299,69 @@ func (h *Handler) UpdateAPIKey(w http.ResponseWriter, r *http.Request) {
 	if req.Enabled != nil {
 		existing.Enabled = *req.Enabled
 	}
+	return "", ""
+}
 
-	oldVals := map[string]any{
-		"name":              existingOld.Name,
-		"rate_limit_rpm":    existingOld.RateLimitRPM,
-		"rate_limit_tpm":    existingOld.RateLimitTPM,
-		"allowed_models":    existingOld.AllowedModels,
-		"allowed_providers": existingOld.AllowedProviders,
-		"enabled":           existingOld.Enabled,
-		"tags":              existingOld.Tags,
+// apiKeyAuditVals renders vk's audited fields as a map, for before/after
+// diffing in the audit log.
+func apiKeyAuditVals(vk *auth.APIKey) map[string]any {
+	vals := map[string]any{
+		"name":              vk.Name,
+		"rate_limit_rpm":    vk.RateLimitRPM,
+		"rate_limit_tpm":    vk.RateLimitTPM,
+		"allowed_models":    vk.AllowedModels,
+		"allowed_providers": vk.AllowedProviders,
+		"enabled":           vk.Enabled,
+		"tags":              vk.Tags,
 	}
-	if existingOld.GroupID != nil {
-		oldVals["group_id"] = *existingOld.GroupID
+	if vk.GroupID != nil {
+		vals["group_id"] = *vk.GroupID
 	}
-	if existingOld.UserID != nil {
-		oldVals["user_id"] = *existingOld.UserID
+	if vk.UserID != nil {
+		vals["user_id"] = *vk.UserID
+	}
+	return vals
+}
+
+func (h *Handler) UpdateAPIKey(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	defer func() { _ = r.Body.Close() }()
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		model.WriteJSONError(w, http.StatusBadRequest, "invalid_request_error", "Invalid request body")
+		return
 	}
 
-	newVals := map[string]any{
-		"name":              existing.Name,
-		"rate_limit_rpm":    existing.RateLimitRPM,
-		"rate_limit_tpm":    existing.RateLimitTPM,
-		"allowed_models":    existing.AllowedModels,
-		"allowed_providers": existing.AllowedProviders,
-		"enabled":           existing.Enabled,
-		"tags":              existing.Tags,
+	req, groupIDSent, userIDSent, err := parseUpdateAPIKeyRequest(body)
+	if err != nil {
+		model.WriteJSONError(w, http.StatusBadRequest, "invalid_request_error", "Invalid request body")
+		return
 	}
-	if existing.GroupID != nil {
-		newVals["group_id"] = *existing.GroupID
+
+	existing, err := h.store.GetAPIKey(r.Context(), id)
+	if err != nil {
+		model.WriteJSONError(w, http.StatusNotFound, "not_found", "Virtual key not found")
+		return
 	}
-	if existing.UserID != nil {
-		newVals["user_id"] = *existing.UserID
+	existingOld := *existing
+
+	if errCode, errMsg := h.applyAPIKeyUpdate(r.Context(), existing, req, groupIDSent, userIDSent); errCode != "" {
+		model.WriteJSONError(w, http.StatusNotFound, errCode, errMsg)
+		return
 	}
+
+	oldVals := apiKeyAuditVals(&existingOld)
+	newVals := apiKeyAuditVals(existing)
 
 	clearGroupID := groupIDSent && req.GroupID == nil
 	clearUserID := userIDSent && req.UserID == nil
-	if err := h.store.UpdateAPIKey(id, *existing, clearGroupID, clearUserID); err != nil {
+	if err := h.store.UpdateAPIKey(r.Context(), id, *existing, clearGroupID, clearUserID); err != nil {
 		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", "Failed to update virtual key")
 		return
 	}
 
 	if h.auditor != nil {
-		if err := h.auditor.LogUpdate("api_key", id, oldVals, newVals, reqmeta.GetKeyID(r.Context())); err != nil {
+		if err := h.auditor.LogUpdate(r.Context(), "api_key", id, oldVals, newVals, reqmeta.GetKeyID(r.Context())); err != nil {
 			slog.Error("failed to log audit update api_key", "error", err)
 		}
 	}
@@ -336,9 +375,9 @@ func (h *Handler) UpdateAPIKey(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) DeleteAPIKey(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 
-	vk, fetchErr := h.store.GetAPIKey(id)
+	vk, fetchErr := h.store.GetAPIKey(r.Context(), id)
 
-	if err := h.store.DeleteAPIKey(id); err != nil {
+	if err := h.store.DeleteAPIKey(r.Context(), id); err != nil {
 		model.WriteJSONError(w, http.StatusNotFound, "not_found", "Virtual key not found")
 		return
 	}
@@ -359,7 +398,7 @@ func (h *Handler) DeleteAPIKey(w http.ResponseWriter, r *http.Request) {
 		if vk.UserID != nil {
 			vals["user_id"] = *vk.UserID
 		}
-		if err := h.auditor.LogDelete("api_key", id, vals, reqmeta.GetKeyID(r.Context())); err != nil {
+		if err := h.auditor.LogDelete(r.Context(), "api_key", id, vals, reqmeta.GetKeyID(r.Context())); err != nil {
 			slog.Error("failed to log audit delete api_key", "error", err)
 		}
 	}
@@ -379,7 +418,7 @@ func (h *Handler) GetAPIKeyUsage(w http.ResponseWriter, r *http.Request) {
 		toDate = today
 	}
 
-	usage, err := h.store.GetKeyUsage(id, fromDate, toDate)
+	usage, err := h.store.GetKeyUsage(r.Context(), id, fromDate, toDate)
 	if err != nil {
 		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", "Failed to get usage")
 		return
@@ -416,8 +455,8 @@ func (h *Handler) GetAPIKeyUsage(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (h *Handler) GetAPIKeysSummary(w http.ResponseWriter, _ *http.Request) {
-	summary, err := h.store.GetAPIKeySummary()
+func (h *Handler) GetAPIKeysSummary(w http.ResponseWriter, r *http.Request) {
+	summary, err := h.store.GetAPIKeySummary(r.Context())
 	if err != nil {
 		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", "Failed to get summary")
 		return
