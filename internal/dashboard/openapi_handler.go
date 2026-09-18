@@ -573,13 +573,12 @@ func (h *OpenAPIHandler) ValidateSpec(w http.ResponseWriter, r *http.Request) {
 	opsCount, _, err := h.validateSpecByID(r.Context(), id, true)
 	if err != nil {
 		errMsg := err.Error()
-		if strings.Contains(errMsg, "not found") {
+		switch {
+		case strings.Contains(errMsg, "not found"):
 			model.WriteJSONError(w, http.StatusNotFound, "not_found", errMsg)
-		} else if strings.Contains(errMsg, "Failed to load") {
+		case strings.Contains(errMsg, "Failed to load"), strings.Contains(errMsg, "Spec validation failed"):
 			model.WriteJSON(w, http.StatusOK, map[string]any{"status": "error", "error": errMsg})
-		} else if strings.Contains(errMsg, "Spec validation failed") {
-			model.WriteJSON(w, http.StatusOK, map[string]any{"status": "error", "error": errMsg})
-		} else {
+		default:
 			model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", errMsg)
 		}
 		return

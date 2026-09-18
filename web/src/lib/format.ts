@@ -110,6 +110,9 @@ const FEATURE_LABELS: Record<string, string> = {
   guardrails: 'Guardrails',
   mcp: 'MCP Gateway',
   openapi: 'OpenAPI Tools',
+  request_log: 'Request Logging',
+  chat: 'Chat Playground',
+  jobs: 'Scheduled Jobs',
 }
 
 /** Human-readable label for a feature_key (e.g. "loop_detection" → "Loop Detection"). */

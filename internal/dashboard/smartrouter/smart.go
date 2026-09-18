@@ -35,10 +35,11 @@ type Recommendation struct {
 }
 
 type updateProviderRequest struct {
-	Name    string   `json:"name"`
-	BaseURL string   `json:"base_url"`
-	APIKey  *string  `json:"api_key"`  // nil = keep current, "" = clear, "sk-..." = set
-	APIKeys []string `json:"api_keys"` // optional list of multi-keys
+	Name        string   `json:"name"`
+	BaseURL     string   `json:"base_url"`
+	APIKey      *string  `json:"api_key"`      // nil = keep current, "" = clear, "sk-..." = set
+	APIKeys     []string `json:"api_keys"`     // optional list of multi-keys
+	ServiceTier *string  `json:"service_tier"` // nil = keep current, "" = clear, else set
 }
 
 // qualityImpactForScore labels how risky it is to downgrade to an economy/
@@ -58,7 +59,7 @@ func qualityImpactForScore(score float64) string {
 // mName/mInfo if it's a cheaper economy/free-tier alternative to
 // currentModel with a positive estimated saving, or ok=false otherwise.
 func buildOptimizeRecommendation(mName string, mInfo catalog.ModelInfo, currentModel string, inputTokens, outputTokens int, currentCostEstimate, score float64) (rec Recommendation, ok bool) {
-	if (mInfo.Tier != "economy" && mInfo.Tier != "free") || mName == currentModel {
+	if (mInfo.Category != "economy" && mInfo.Category != "free") || mName == currentModel {
 		return rec, false
 	}
 	estCost := float64(inputTokens)*mInfo.CostPerInputToken + float64(outputTokens)*mInfo.CostPerOutputToken
@@ -173,6 +174,9 @@ func updateProviderConfigEntry(providers []config.ProviderConfig, req updateProv
 		if req.BaseURL != "" {
 			p.BaseURL = req.BaseURL
 		}
+		if req.ServiceTier != nil {
+			p.ServiceTier = *req.ServiceTier
+		}
 		if req.APIKey != nil || len(cleanedAPIKeys) > 0 {
 			p.APIKey = apiKeyToSave
 		}
@@ -221,12 +225,117 @@ func (h *Handler) HandleUpdateProvider(w http.ResponseWriter, r *http.Request) {
 		model.WriteJSONError(w, http.StatusBadRequest, "invalid_request_error", "Provider name is required")
 		return
 	}
+	if req.ServiceTier != nil {
+		switch *req.ServiceTier {
+		case "", "default", "priority", "flex":
+		default:
+			model.WriteJSONError(w, http.StatusBadRequest, "invalid_request_error", "invalid service_tier: must be one of default, priority, flex")
+			return
+		}
+	}
 
 	apiKeyToSave, cleanedAPIKeys := resolveUpdateProviderKeys(req)
 
 	h.applyProviderKeysAtRuntime(req.Name, req.BaseURL, apiKeyToSave, cleanedAPIKeys)
 	updateProviderConfigEntry(h.cfg.Providers, req, apiKeyToSave, cleanedAPIKeys)
+
+	// Persist the edit back to the runtime_config "provider" section so it
+	// survives a restart and the app's provider reload watcher applies it
+	// consistently to the registry + routes on the next cache refresh.
+	h.persistProviderUpdate(r.Context(), req.Name, req.BaseURL, req.APIKey, req.ServiceTier)
 	h.syncProviderModelsAsync(req.Name) //nolint:contextcheck // detached background sync, not request-scoped (must outlive this HTTP request)
 
 	model.WriteJSON(w, http.StatusOK, map[string]any{"status": "ok"})
+}
+
+// persistProviderUpdate writes a provider edit back to the runtime_config
+// "provider" section and refreshes the config cache so the change survives a
+// restart and the app's provider reload watcher applies it consistently to the
+// live registry + routes. A nil apiKey means "keep the current key"; an empty
+// string clears it; otherwise the new key is set.
+//
+// An env-seeded provider (ILTER_PROVIDER_<NAME>_API_KEY) has no runtime_config
+// row yet; the first configure materializes one from the live ProviderConfig so
+// the edit persists across restarts (DB row wins once present).
+func (h *Handler) persistProviderUpdate(ctx context.Context, name, baseURL string, apiKey, serviceTier *string) {
+	entry, err := h.store.GetRuntimeConfigEntry(ctx, "provider", name)
+	if err != nil {
+		// No persisted row: env-seeded provider being configured for the first
+		// time. Materialize a row from the live config so the edit persists.
+		var src *config.ProviderConfig
+		for i := range h.cfg.Providers {
+			if h.cfg.Providers[i].Name == name {
+				src = &h.cfg.Providers[i]
+				break
+			}
+		}
+		if src == nil {
+			slog.Debug("no persisted provider to update", "provider", name, "error", err)
+			return
+		}
+		reg := model.ProviderRegistration{
+			Name:         name,
+			Provider:     src.Type,
+			BaseURL:      src.BaseURL,
+			APISecretKey: src.APIKey,
+			ServiceTier:  src.ServiceTier,
+			IsActive:     true,
+		}
+		if baseURL != "" {
+			reg.BaseURL = baseURL
+		}
+		if apiKey != nil {
+			reg.APISecretKey = *apiKey
+		}
+		if serviceTier != nil {
+			reg.ServiceTier = *serviceTier
+		}
+		if err := reg.Validate(); err != nil {
+			slog.Warn("failed to validate provider for persistence", "provider", name, "error", err)
+			return
+		}
+		data, err := json.Marshal(reg)
+		if err != nil {
+			slog.Warn("failed to marshal provider for persistence", "provider", name, "error", err)
+			return
+		}
+		if err := h.store.UpsertRuntimeConfig(ctx, "provider", name, string(data), "admin-api"); err != nil {
+			slog.Warn("failed to persist provider update", "provider", name, "error", err)
+			return
+		}
+		if h.configCache != nil {
+			if err := h.configCache.Refresh(ctx, &config.RuntimeStores{RuntimeConfig: h.store}); err != nil {
+				slog.Warn("Failed to refresh config cache after provider update", "error", err)
+			}
+		}
+		return
+	}
+	var reg model.ProviderRegistration
+	if err := json.Unmarshal([]byte(entry.Value), &reg); err != nil {
+		slog.Warn("failed to parse provider for persistence", "provider", name, "error", err)
+		return
+	}
+	if baseURL != "" {
+		reg.BaseURL = baseURL
+	}
+	if apiKey != nil {
+		reg.APISecretKey = *apiKey
+	}
+	if serviceTier != nil {
+		reg.ServiceTier = *serviceTier
+	}
+	data, err := json.Marshal(reg)
+	if err != nil {
+		slog.Warn("failed to marshal provider for persistence", "provider", name, "error", err)
+		return
+	}
+	if err := h.store.UpsertRuntimeConfig(ctx, "provider", name, string(data), "admin-api"); err != nil {
+		slog.Warn("failed to persist provider update", "provider", name, "error", err)
+		return
+	}
+	if h.configCache != nil {
+		if err := h.configCache.Refresh(ctx, &config.RuntimeStores{RuntimeConfig: h.store}); err != nil {
+			slog.Warn("Failed to refresh config cache after provider update", "error", err)
+		}
+	}
 }

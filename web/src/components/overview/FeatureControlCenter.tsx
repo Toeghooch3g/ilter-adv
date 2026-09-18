@@ -1,13 +1,13 @@
 import type { FeatureFlag } from '../../lib/api'
 import { featureLabel } from '../../lib/format'
+import { Badge } from '../ui/badge'
 import { AlertTriangle } from '../ui/icons'
 
 interface FeatureControlCenterProps {
   features: FeatureFlag[]
-  onToggle: (featureKey: string) => void
 }
 
-export function FeatureControlCenter({ features, onToggle }: FeatureControlCenterProps) {
+export function FeatureControlCenter({ features }: FeatureControlCenterProps) {
   if (!features || features.length === 0) return null
 
   return (
@@ -35,21 +35,9 @@ export function FeatureControlCenter({ features, onToggle }: FeatureControlCente
                   </div>
                 </div>
               )}
-              <button
-                type="button"
-                role="switch"
-                aria-checked={feature.enabled}
-                onClick={() => onToggle(feature.feature_key)}
-                className={`relative ml-3 inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:ring-offset-2 ${
-                  feature.enabled ? 'bg-brand-600' : 'bg-surface-300'
-                }`}
-              >
-                <span
-                  className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ${
-                    feature.enabled ? 'translate-x-5' : 'translate-x-0'
-                  }`}
-                />
-              </button>
+              <Badge variant={feature.enabled ? 'success' : 'default'}>
+                {feature.enabled ? 'Enabled' : 'Disabled'}
+              </Badge>
             </div>
           </div>
         ))}

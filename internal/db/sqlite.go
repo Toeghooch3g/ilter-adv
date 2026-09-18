@@ -104,21 +104,34 @@ func (s *SQLiteStore) Close() error {
 // The key_id is the API key ID (e.g. "abc123" or "legacy_5").
 //
 //nolint:revive // argument-limit: pre-existing signature, called from internal/proxy outside this batch's scope
-func (s *SQLiteStore) RecordDailyUsage(ctx context.Context, keyID string, date, model, provider string, promptTokens, completionTokens, cacheHits int, cost float64) error {
+func (s *SQLiteStore) RecordDailyUsage(ctx context.Context, keyID string, date, model, provider string, promptTokens, completionTokens, cacheHits, cachedTokens, cacheCreationTokens int, cost float64) error {
 	totalTokens := int64(promptTokens + completionTokens)
 	prompt := int64(promptTokens)
 	completion := int64(completionTokens)
 	hits := int64(cacheHits)
 
 	return s.queries.RecordDailyUsage(ctx, sqlc.RecordDailyUsageParams{
-		KeyID:            &keyID,
-		Date:             &date,
-		Model:            &model,
-		Provider:         &provider,
-		Tokens:           &totalTokens,
-		Cost:             &cost,
-		PromptTokens:     &prompt,
-		CompletionTokens: &completion,
-		CacheHits:        &hits,
+		KeyID:               &keyID,
+		Date:                &date,
+		Model:               &model,
+		Provider:            &provider,
+		Tokens:              &totalTokens,
+		Cost:                &cost,
+		PromptTokens:        &prompt,
+		CompletionTokens:    &completion,
+		CachedTokens:        int64(cachedTokens),
+		CacheCreationTokens: int64(cacheCreationTokens),
+		CacheHits:           &hits,
 	})
+}
+
+// RecordMCPToolUsage records one MCP tool call in usage_daily under
+// model "<serverID>:<toolName>" and provider "mcp" with zero tokens. Tool
+// calls have no token counts; cost is the billed tool-pricing cost. The
+// UNIQUE(key_id, date, model, provider) upsert aggregates repeated calls to
+// the same tool on the same day.
+func (s *SQLiteStore) RecordMCPToolUsage(ctx context.Context, keyID, serverID, toolName string, cost float64) error {
+	today := time.Now().UTC().Format("2006-01-02")
+	model := serverID + ":" + toolName
+	return s.RecordDailyUsage(ctx, keyID, today, model, "mcp", 0, 0, 0, 0, 0, cost)
 }

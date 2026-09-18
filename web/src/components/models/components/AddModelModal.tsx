@@ -5,13 +5,13 @@ interface AddModelModalProps {
   name: string
   provider: string
   modelId: string
-  tier: Model['tier']
+  category: Model['category']
   costIn: number
   costOut: number
   onNameChange: (val: string) => void
   onProviderChange: (val: string) => void
   onModelIdChange: (val: string) => void
-  onTierChange: (val: Model['tier']) => void
+  onCategoryChange: (val: Model['category']) => void
   onCostInChange: (val: number) => void
   onCostOutChange: (val: number) => void
   onSave: () => void
@@ -22,13 +22,13 @@ export function AddModelModal({
   name,
   provider,
   modelId,
-  tier,
+  category,
   costIn,
   costOut,
   onNameChange,
   onProviderChange,
   onModelIdChange,
-  onTierChange,
+  onCategoryChange,
   onCostInChange,
   onCostOutChange,
   onSave,
@@ -74,10 +74,10 @@ export function AddModelModal({
             />
           </div>
           <div>
-            <label className="block text-xs font-medium text-surface-500 mb-1">Tier</label>
+            <label className="block text-xs font-medium text-surface-500 mb-1">Category</label>
             <select
-              value={tier}
-              onChange={(e) => onTierChange(e.target.value as Model['tier'])}
+              value={category}
+              onChange={(e) => onCategoryChange(e.target.value as Model['category'])}
               className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
             >
               <option value="free">Free</option>
@@ -88,20 +88,20 @@ export function AddModelModal({
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block text-xs font-medium text-surface-500 mb-1">Cost per 1K input ($)</label>
+              <label className="block text-xs font-medium text-surface-500 mb-1">Cost per 1M input ($)</label>
               <input
                 type="number"
-                step="0.0001"
+                step="0.000001"
                 value={costIn}
                 onChange={(e) => onCostInChange(Number(e.target.value))}
                 className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
               />
             </div>
             <div>
-              <label className="block text-xs font-medium text-surface-500 mb-1">Cost per 1K output ($)</label>
+              <label className="block text-xs font-medium text-surface-500 mb-1">Cost per 1M output ($)</label>
               <input
                 type="number"
-                step="0.0001"
+                step="0.000001"
                 value={costOut}
                 onChange={(e) => onCostOutChange(Number(e.target.value))}
                 className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"

@@ -6,7 +6,7 @@ export interface MultiSelectOption {
   value: string
   label: string
   provider?: string
-  tier?: string
+  category?: string
 }
 
 interface MultiSelectProps {
@@ -22,6 +22,7 @@ const providerMeta: Record<string, { label: string; dot: string }> = {
   openai: { label: 'OpenAI', dot: 'bg-green-500' },
   anthropic: { label: 'Anthropic', dot: 'bg-purple-500' },
   deepseek: { label: 'DeepSeek', dot: 'bg-blue-500' },
+  deepinfra: { label: 'DeepInfra', dot: 'bg-indigo-500' },
   gemini: { label: 'Gemini', dot: 'bg-yellow-500' },
   openrouter: { label: 'OpenRouter', dot: 'bg-orange-500' },
   opencode: { label: 'OpenCode', dot: 'bg-teal-500' },
@@ -29,13 +30,13 @@ const providerMeta: Record<string, { label: string; dot: string }> = {
   qwen: { label: 'Qwen', dot: 'bg-cyan-500' },
 }
 
-const tierLabel: Record<string, string> = {
+const categoryLabel: Record<string, string> = {
   free: 'Free',
   economy: 'Eco',
   standard: 'Std',
   premium: 'Prem',
 }
-const tierColors: Record<string, string> = {
+const categoryColors: Record<string, string> = {
   free: 'bg-gray-100 text-gray-700',
   economy: 'bg-green-100 text-green-700',
   standard: 'bg-blue-100 text-blue-700',
@@ -207,11 +208,11 @@ export function MultiSelect({
                         className="rounded border-surface-300 text-brand-600 focus:ring-brand-500 shrink-0"
                       />
                       <span className="truncate flex-1">{opt.label}</span>
-                      {opt.tier && (
+                      {opt.category && (
                         <span
-                          className={`inline-flex items-center rounded px-1 py-0.5 text-[10px] font-semibold uppercase leading-none shrink-0 ${tierColors[opt.tier] || 'bg-surface-100 text-surface-500'}`}
+                          className={`inline-flex items-center rounded px-1 py-0.5 text-[10px] font-semibold uppercase leading-none shrink-0 ${categoryColors[opt.category] || 'bg-surface-100 text-surface-500'}`}
                         >
-                          {tierLabel[opt.tier] || opt.tier}
+                          {categoryLabel[opt.category] || opt.category}
                         </span>
                       )}
                       {selected.has(opt.value) && <Check size={14} className="text-brand-600 shrink-0" />}

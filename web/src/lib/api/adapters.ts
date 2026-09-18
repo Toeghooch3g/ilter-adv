@@ -86,9 +86,11 @@ interface GoModelResponseItem {
   active: boolean
   configured: boolean
   display_name?: string
-  tier?: string
+  category?: string
   cost_per_input_token?: number
   cost_per_output_token?: number
+  cost_per_cached_input_token?: number
+  cost_per_cache_write_token?: number
 }
 
 interface GoGuardrailEventItem {
@@ -206,9 +208,14 @@ export function adaptModelProvider(item: GoModelResponseItem): ModelProvider {
     provider: item.provider,
     model: item.name,
     is_active: item.active,
-    tier: item.tier,
-    cost_per_1k_in: item.cost_per_input_token ? item.cost_per_input_token * 1000 : 0,
-    cost_per_1k_out: item.cost_per_output_token ? item.cost_per_output_token * 1000 : 0,
+    category: item.category,
+    // Costs are converted to dollars per 1M tokens for display. The backend
+    // stays per-token; the conversion lives here so every surface (cards,
+    // modals, CSV) shows $/1M.
+    cost_per_1m_in: item.cost_per_input_token ? item.cost_per_input_token * 1_000_000 : 0,
+    cost_per_1m_out: item.cost_per_output_token ? item.cost_per_output_token * 1_000_000 : 0,
+    cost_per_1m_cached_in: item.cost_per_cached_input_token ? item.cost_per_cached_input_token * 1_000_000 : 0,
+    cost_per_1m_cache_write: item.cost_per_cache_write_token ? item.cost_per_cache_write_token * 1_000_000 : 0,
   }
 }
 

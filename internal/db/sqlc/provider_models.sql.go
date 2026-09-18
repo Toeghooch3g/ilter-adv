@@ -9,10 +9,21 @@ import (
 	"context"
 )
 
+const countModelsInCategory = `-- name: CountModelsInCategory :one
+SELECT COUNT(*) FROM provider_models WHERE category = ?
+`
+
+func (q *Queries) CountModelsInCategory(ctx context.Context, category string) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countModelsInCategory, category)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const getActiveProviderModels = `-- name: GetActiveProviderModels :many
-SELECT id, provider, model, active, tier, cost_in, cost_out,
+SELECT id, provider, model, active, category, cost_in, cost_out,
     display_name, max_context_tokens, max_output_tokens,
-    capabilities, default_base_url, discovered_at
+    capabilities, default_base_url, discovered_at, cost_cache_read, cost_cache_write
 FROM provider_models
 WHERE active = 1
 ORDER BY provider, model
@@ -32,7 +43,7 @@ func (q *Queries) GetActiveProviderModels(ctx context.Context) ([]ProviderModel,
 			&i.Provider,
 			&i.Model,
 			&i.Active,
-			&i.Tier,
+			&i.Category,
 			&i.CostIn,
 			&i.CostOut,
 			&i.DisplayName,
@@ -41,6 +52,8 @@ func (q *Queries) GetActiveProviderModels(ctx context.Context) ([]ProviderModel,
 			&i.Capabilities,
 			&i.DefaultBaseUrl,
 			&i.DiscoveredAt,
+			&i.CostCacheRead,
+			&i.CostCacheWrite,
 		); err != nil {
 			return nil, err
 		}
@@ -57,9 +70,9 @@ func (q *Queries) GetActiveProviderModels(ctx context.Context) ([]ProviderModel,
 
 const getAllProviderModels = `-- name: GetAllProviderModels :many
 
-SELECT id, provider, model, active, tier, cost_in, cost_out,
+SELECT id, provider, model, active, category, cost_in, cost_out,
     display_name, max_context_tokens, max_output_tokens,
-    capabilities, default_base_url, discovered_at
+    capabilities, default_base_url, discovered_at, cost_cache_read, cost_cache_write
 FROM provider_models
 ORDER BY provider, model
 `
@@ -79,7 +92,7 @@ func (q *Queries) GetAllProviderModels(ctx context.Context) ([]ProviderModel, er
 			&i.Provider,
 			&i.Model,
 			&i.Active,
-			&i.Tier,
+			&i.Category,
 			&i.CostIn,
 			&i.CostOut,
 			&i.DisplayName,
@@ -88,6 +101,8 @@ func (q *Queries) GetAllProviderModels(ctx context.Context) ([]ProviderModel, er
 			&i.Capabilities,
 			&i.DefaultBaseUrl,
 			&i.DiscoveredAt,
+			&i.CostCacheRead,
+			&i.CostCacheWrite,
 		); err != nil {
 			return nil, err
 		}
@@ -140,38 +155,6 @@ func (q *Queries) GetLatestDiscovery(ctx context.Context, provider string) (inte
 	return coalesce, err
 }
 
-const getModelStatuses = `-- name: GetModelStatuses :many
-SELECT model, active FROM provider_models
-`
-
-type GetModelStatusesRow struct {
-	Model  string `json:"model"`
-	Active int64  `json:"active"`
-}
-
-func (q *Queries) GetModelStatuses(ctx context.Context) ([]GetModelStatusesRow, error) {
-	rows, err := q.db.QueryContext(ctx, getModelStatuses)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []GetModelStatusesRow{}
-	for rows.Next() {
-		var i GetModelStatusesRow
-		if err := rows.Scan(&i.Model, &i.Active); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const getProviderForModel = `-- name: GetProviderForModel :one
 SELECT provider FROM provider_models WHERE model = ? LIMIT 1
 `
@@ -184,9 +167,9 @@ func (q *Queries) GetProviderForModel(ctx context.Context, model string) (string
 }
 
 const getProviderModels = `-- name: GetProviderModels :many
-SELECT id, provider, model, active, tier, cost_in, cost_out,
+SELECT id, provider, model, active, category, cost_in, cost_out,
     display_name, max_context_tokens, max_output_tokens,
-    capabilities, default_base_url, discovered_at
+    capabilities, default_base_url, discovered_at, cost_cache_read, cost_cache_write
 FROM provider_models
 WHERE provider = ?
 ORDER BY model
@@ -206,7 +189,7 @@ func (q *Queries) GetProviderModels(ctx context.Context, provider string) ([]Pro
 			&i.Provider,
 			&i.Model,
 			&i.Active,
-			&i.Tier,
+			&i.Category,
 			&i.CostIn,
 			&i.CostOut,
 			&i.DisplayName,
@@ -215,6 +198,8 @@ func (q *Queries) GetProviderModels(ctx context.Context, provider string) ([]Pro
 			&i.Capabilities,
 			&i.DefaultBaseUrl,
 			&i.DiscoveredAt,
+			&i.CostCacheRead,
+			&i.CostCacheWrite,
 		); err != nil {
 			return nil, err
 		}
@@ -240,30 +225,31 @@ func (q *Queries) ProviderModelCount(ctx context.Context, provider string) (int6
 	return count, err
 }
 
-const saveModelStatus = `-- name: SaveModelStatus :exec
-UPDATE provider_models SET active = ? WHERE model = ?
+const saveModelCategory = `-- name: SaveModelCategory :exec
+UPDATE provider_models SET category = ? WHERE model = ?
 `
 
-type SaveModelStatusParams struct {
-	Active int64  `json:"active"`
-	Model  string `json:"model"`
+type SaveModelCategoryParams struct {
+	Category string `json:"category"`
+	Model    string `json:"model"`
 }
 
-func (q *Queries) SaveModelStatus(ctx context.Context, arg SaveModelStatusParams) error {
-	_, err := q.db.ExecContext(ctx, saveModelStatus, arg.Active, arg.Model)
+func (q *Queries) SaveModelCategory(ctx context.Context, arg SaveModelCategoryParams) error {
+	_, err := q.db.ExecContext(ctx, saveModelCategory, arg.Category, arg.Model)
 	return err
 }
 
-const saveModelTier = `-- name: SaveModelTier :exec
-UPDATE provider_models SET tier = ? WHERE model = ?
+const saveModelStatus = `-- name: SaveModelStatus :exec
+UPDATE provider_models SET active = ? WHERE provider = ? AND model = ?
 `
 
-type SaveModelTierParams struct {
-	Tier  string `json:"tier"`
-	Model string `json:"model"`
+type SaveModelStatusParams struct {
+	Active   int64  `json:"active"`
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
 }
 
-func (q *Queries) SaveModelTier(ctx context.Context, arg SaveModelTierParams) error {
-	_, err := q.db.ExecContext(ctx, saveModelTier, arg.Tier, arg.Model)
+func (q *Queries) SaveModelStatus(ctx context.Context, arg SaveModelStatusParams) error {
+	_, err := q.db.ExecContext(ctx, saveModelStatus, arg.Active, arg.Provider, arg.Model)
 	return err
 }

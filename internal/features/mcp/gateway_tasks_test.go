@@ -205,7 +205,7 @@ func TestGateway_ToolsCall_PromotesLongRunningToTask(t *testing.T) {
 	gw.SetTaskPromotionThreshold(20 * time.Millisecond) // real tool sleeps 150ms, so this WILL trip
 
 	start := time.Now()
-	params, _ := json.Marshal(map[string]any{"name": "slow-tool", "arguments": map[string]any{}})
+	params, _ := json.Marshal(map[string]any{"name": "promote-slow-server-slow-tool", "arguments": map[string]any{}})
 	resp := dispatch2026(gw, "tools/call", params)
 	elapsed := time.Since(start)
 
@@ -278,7 +278,7 @@ func TestGateway_ToolsCall_FastToolNotPromoted(t *testing.T) {
 	gw := NewGateway(reg, nil, nil, store, &config.MCPConfig{Endpoint: "/mcp"}, executor)
 	gw.SetTaskPromotionThreshold(time.Second) // generous — the tool returns almost instantly
 
-	params, _ := json.Marshal(map[string]any{"name": "fast-tool", "arguments": map[string]any{}})
+	params, _ := json.Marshal(map[string]any{"name": "promote-fast-server-fast-tool", "arguments": map[string]any{}})
 	resp := dispatch2026(gw, "tools/call", params)
 	if resp.Error != nil {
 		t.Fatalf("unexpected error: %+v", resp.Error)

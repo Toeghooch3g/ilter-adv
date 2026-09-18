@@ -14,6 +14,7 @@ type Querier interface {
 	AddUserToGroup(ctx context.Context, arg AddUserToGroupParams) error
 	ConversationExists(ctx context.Context, id string) (int64, error)
 	CountAPIKeys(ctx context.Context) (CountAPIKeysRow, error)
+	CountModelsInCategory(ctx context.Context, category string) (int64, error)
 	// API keys queries.
 	CreateAPIKey(ctx context.Context, arg CreateAPIKeyParams) error
 	CreateConversation(ctx context.Context, arg CreateConversationParams) error
@@ -34,6 +35,7 @@ type Querier interface {
 	DeleteExpiredMCPTasks(ctx context.Context) error
 	DeleteGroup(ctx context.Context, id int64) (int64, error)
 	DeleteGuardrailRule(ctx context.Context, id string) (int64, error)
+	DeleteMCPToolToggle(ctx context.Context, arg DeleteMCPToolToggleParams) error
 	DeleteMCPToolsByServer(ctx context.Context, serverID string) error
 	DeletePromptTemplate(ctx context.Context, id int64) (int64, error)
 	DeleteUser(ctx context.Context, id int64) (int64, error)
@@ -63,8 +65,8 @@ type Querier interface {
 	GetKeyUsage(ctx context.Context, arg GetKeyUsageParams) ([]GetKeyUsageRow, error)
 	GetLatestDiscovery(ctx context.Context, provider string) (interface{}, error)
 	GetMCPTask(ctx context.Context, id string) (McpTask, error)
+	GetMCPToolToggle(ctx context.Context, arg GetMCPToolToggleParams) (GetMCPToolToggleRow, error)
 	GetMessageCreatedAt(ctx context.Context, id int64) (time.Time, error)
-	GetModelStatuses(ctx context.Context) ([]GetModelStatusesRow, error)
 	GetPromptTemplate(ctx context.Context, id int64) (Prompt, error)
 	GetPromptTemplateByName(ctx context.Context, name string) (Prompt, error)
 	GetPromptTemplateVersions(ctx context.Context, promptID int64) ([]PromptVersion, error)
@@ -86,6 +88,7 @@ type Querier interface {
 	ListGuardrailRules(ctx context.Context) ([]ListGuardrailRulesRow, error)
 	// MCP server registry: servers config and their discovered tools.
 	ListMCPServers(ctx context.Context) ([]ListMCPServersRow, error)
+	ListMCPToolToggles(ctx context.Context) ([]McpToolToggle, error)
 	ListMCPTools(ctx context.Context, serverID string) ([]ListMCPToolsRow, error)
 	ListMessagesByConversation(ctx context.Context, conversationID string) ([]Message, error)
 	ListMessagesPaginated(ctx context.Context, arg ListMessagesPaginatedParams) ([]Message, error)
@@ -100,8 +103,8 @@ type Querier interface {
 	// Key usage aggregation queries.
 	RecordKeyUsage(ctx context.Context, arg RecordKeyUsageParams) error
 	RemoveUserFromGroup(ctx context.Context, arg RemoveUserFromGroupParams) (int64, error)
+	SaveModelCategory(ctx context.Context, arg SaveModelCategoryParams) error
 	SaveModelStatus(ctx context.Context, arg SaveModelStatusParams) error
-	SaveModelTier(ctx context.Context, arg SaveModelTierParams) error
 	SetConversationTitle(ctx context.Context, arg SetConversationTitleParams) error
 	SetKeyRateLimit(ctx context.Context, arg SetKeyRateLimitParams) error
 	ToggleGuardrailRule(ctx context.Context, arg ToggleGuardrailRuleParams) (int64, error)
@@ -114,6 +117,7 @@ type Querier interface {
 	UpdatePrompt(ctx context.Context, arg UpdatePromptParams) error
 	UpsertConfig(ctx context.Context, arg UpsertConfigParams) error
 	UpsertMCPTool(ctx context.Context, arg UpsertMCPToolParams) error
+	UpsertMCPToolToggle(ctx context.Context, arg UpsertMCPToolToggleParams) error
 }
 
 var _ Querier = (*Queries)(nil)

@@ -340,6 +340,126 @@ function PiiProtectionViewContent() {
     </>
   )
 
+  const patternFormDialog = (
+    <Dialog open={patternFormOpen} onOpenChange={setPatternFormOpen}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>{editingPattern ? 'Edit Pattern' : 'Add Pattern'}</DialogTitle>
+          <DialogDescription>
+            {editingPattern
+              ? 'Update the regex. Name cannot be changed; delete and recreate to rename.'
+              : 'Define a new regex pattern to detect sensitive data.'}
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-4 py-2">
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-surface-700">Name</label>
+            <Input
+              value={patternFormName}
+              onChange={(e) => setPatternFormName(e.target.value)}
+              placeholder="e.g. credit_card"
+              disabled={!!editingPattern}
+            />
+          </div>
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-surface-700">Regex Pattern</label>
+            <Input
+              value={patternFormRegex}
+              onChange={(e) => setPatternFormRegex(e.target.value)}
+              placeholder="e.g. \b\d{4}[- ]?\d{4}[- ]?\d{4}[- ]?\d{4}\b"
+              className="font-mono text-xs"
+            />
+          </div>
+          <div className="flex gap-4">
+            <div className="space-y-1.5 flex-1">
+              <label className="text-xs font-medium text-surface-700">Action</label>
+              <select
+                value={patternFormAction}
+                onChange={(e) => setPatternFormAction(e.target.value)}
+                className="w-full rounded-md border border-surface-300 bg-white px-3 py-2 text-sm text-surface-700 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+              >
+                <option value="mask">mask</option>
+                <option value="mask_reversible">mask_reversible</option>
+                <option value="block">block</option>
+                <option value="log_only">log_only</option>
+              </select>
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-surface-700">Enabled</label>
+              <div className="flex h-10 items-center">
+                <button
+                  type="button"
+                  onClick={() => setPatternFormEnabled((v) => !v)}
+                  className={`inline-flex h-6 w-11 items-center rounded-full transition-colors ${patternFormEnabled ? 'bg-brand-500' : 'bg-surface-200'}`}
+                  aria-pressed={patternFormEnabled}
+                >
+                  <span
+                    className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${patternFormEnabled ? 'translate-x-5' : 'translate-x-0.5'}`}
+                  />
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setPatternFormOpen(false)}>
+            Cancel
+          </Button>
+          <Button
+            onClick={handleSavePattern}
+            disabled={
+              createPatternMutation.isPending ||
+              updatePatternMutation.isPending ||
+              !patternFormName.trim() ||
+              !patternFormRegex.trim()
+            }
+          >
+            {createPatternMutation.isPending || updatePatternMutation.isPending ? 'Saving...' : 'Save Pattern'}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+
+  const deleteConfirmDialog = (
+    <Dialog
+      open={deletePatternConfirm !== null}
+      onOpenChange={(o) => {
+        if (!o) setDeletePatternConfirm(null)
+      }}
+    >
+      <DialogContent>
+        <DialogHeader>
+          <div className="flex items-center gap-3">
+            <div className="rounded-full bg-error/10 p-2 text-error">
+              <AlertTriangle size={20} />
+            </div>
+            <div>
+              <DialogTitle>Delete Pattern</DialogTitle>
+              <DialogDescription>
+                Are you sure you want to delete{' '}
+                <span className="font-medium text-surface-900">&ldquo;{deletePatternConfirm?.name}&rdquo;</span>? This
+                action cannot be undone and will affect PII detection immediately.
+              </DialogDescription>
+            </div>
+          </div>
+        </DialogHeader>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setDeletePatternConfirm(null)}>
+            Cancel
+          </Button>
+          <Button
+            variant="destructive"
+            onClick={() => deletePatternConfirm && deletePatternMutation.mutate(deletePatternConfirm.name)}
+            disabled={deletePatternMutation.isPending}
+          >
+            {deletePatternMutation.isPending ? 'Deleting...' : 'Yes, Delete'}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+
   if (error && events.length === 0) {
     return (
       <EmptyState
@@ -359,6 +479,8 @@ function PiiProtectionViewContent() {
           description="PII protection is active and scanning requests. Results will appear here once sensitive data is detected."
         />
         {renderPatternsSection()}
+        {patternFormDialog}
+        {deleteConfirmDialog}
       </div>
     )
   }
@@ -539,121 +661,8 @@ function PiiProtectionViewContent() {
         }
       />
 
-      <Dialog open={patternFormOpen} onOpenChange={setPatternFormOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>{editingPattern ? 'Edit Pattern' : 'Add Pattern'}</DialogTitle>
-            <DialogDescription>
-              {editingPattern
-                ? 'Update the regex. Name cannot be changed; delete and recreate to rename.'
-                : 'Define a new regex pattern to detect sensitive data.'}
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4 py-2">
-            <div className="space-y-1.5">
-              <label className="text-xs font-medium text-surface-700">Name</label>
-              <Input
-                value={patternFormName}
-                onChange={(e) => setPatternFormName(e.target.value)}
-                placeholder="e.g. credit_card"
-                disabled={!!editingPattern}
-              />
-            </div>
-            <div className="space-y-1.5">
-              <label className="text-xs font-medium text-surface-700">Regex Pattern</label>
-              <Input
-                value={patternFormRegex}
-                onChange={(e) => setPatternFormRegex(e.target.value)}
-                placeholder="e.g. \b\d{4}[- ]?\d{4}[- ]?\d{4}[- ]?\d{4}\b"
-                className="font-mono text-xs"
-              />
-            </div>
-            <div className="flex gap-4">
-              <div className="space-y-1.5 flex-1">
-                <label className="text-xs font-medium text-surface-700">Action</label>
-                <select
-                  value={patternFormAction}
-                  onChange={(e) => setPatternFormAction(e.target.value)}
-                  className="w-full rounded-md border border-surface-300 bg-white px-3 py-2 text-sm text-surface-700 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
-                >
-                  <option value="mask">mask</option>
-                  <option value="mask_reversible">mask_reversible</option>
-                  <option value="block">block</option>
-                  <option value="log_only">log_only</option>
-                </select>
-              </div>
-              <div className="space-y-1.5">
-                <label className="text-xs font-medium text-surface-700">Enabled</label>
-                <div className="flex h-10 items-center">
-                  <button
-                    type="button"
-                    onClick={() => setPatternFormEnabled((v) => !v)}
-                    className={`inline-flex h-6 w-11 items-center rounded-full transition-colors ${patternFormEnabled ? 'bg-brand-500' : 'bg-surface-200'}`}
-                    aria-pressed={patternFormEnabled}
-                  >
-                    <span
-                      className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${patternFormEnabled ? 'translate-x-5' : 'translate-x-0.5'}`}
-                    />
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setPatternFormOpen(false)}>
-              Cancel
-            </Button>
-            <Button
-              onClick={handleSavePattern}
-              disabled={
-                createPatternMutation.isPending ||
-                updatePatternMutation.isPending ||
-                !patternFormName.trim() ||
-                !patternFormRegex.trim()
-              }
-            >
-              {createPatternMutation.isPending || updatePatternMutation.isPending ? 'Saving...' : 'Save Pattern'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog
-        open={deletePatternConfirm !== null}
-        onOpenChange={(o) => {
-          if (!o) setDeletePatternConfirm(null)
-        }}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <div className="flex items-center gap-3">
-              <div className="rounded-full bg-error/10 p-2 text-error">
-                <AlertTriangle size={20} />
-              </div>
-              <div>
-                <DialogTitle>Delete Pattern</DialogTitle>
-                <DialogDescription>
-                  Are you sure you want to delete{' '}
-                  <span className="font-medium text-surface-900">&ldquo;{deletePatternConfirm?.name}&rdquo;</span>? This
-                  action cannot be undone and will affect PII detection immediately.
-                </DialogDescription>
-              </div>
-            </div>
-          </DialogHeader>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setDeletePatternConfirm(null)}>
-              Cancel
-            </Button>
-            <Button
-              variant="destructive"
-              onClick={() => deletePatternConfirm && deletePatternMutation.mutate(deletePatternConfirm.name)}
-              disabled={deletePatternMutation.isPending}
-            >
-              {deletePatternMutation.isPending ? 'Deleting...' : 'Yes, Delete'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      {patternFormDialog}
+      {deleteConfirmDialog}
     </>
   )
 }

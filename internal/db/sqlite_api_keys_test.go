@@ -358,6 +358,43 @@ func TestUpdateAPIKey_NotFound(t *testing.T) {
 	assert.Contains(t, err.Error(), "not found")
 }
 
+func TestAPIKey_MCPInjectionFlag(t *testing.T) {
+	ts := setupTestStore(t)
+	defer ts.close()
+
+	key, _, err := ts.store.CreateAPIKey(context.Background(), "mcp-opt-in", nil, nil, 0, 0, 0, 0, nil, nil, nil)
+	require.NoError(t, err)
+	require.NotNil(t, key)
+	assert.False(t, key.MCPInjectionEnabled, "new keys must default to injection off")
+
+	got, err := ts.store.GetAPIKey(context.Background(), key.ID)
+	require.NoError(t, err)
+	assert.False(t, got.MCPInjectionEnabled)
+
+	// Opt in, mirroring the dashboard caller: mutate the preloaded existing
+	// struct and pass it through (booleans are written verbatim).
+	existing, err := ts.store.GetAPIKey(context.Background(), key.ID)
+	require.NoError(t, err)
+	existing.MCPInjectionEnabled = true
+	require.NoError(t, ts.store.UpdateAPIKey(context.Background(), key.ID, *existing, false, false))
+
+	got, err = ts.store.GetAPIKey(context.Background(), key.ID)
+	require.NoError(t, err)
+	assert.True(t, got.MCPInjectionEnabled)
+	assert.True(t, got.Enabled, "opting into injection must not disable the key")
+
+	// An unrelated update (passing existing) keeps the flag set.
+	existing, err = ts.store.GetAPIKey(context.Background(), key.ID)
+	require.NoError(t, err)
+	existing.Name = "renamed"
+	require.NoError(t, ts.store.UpdateAPIKey(context.Background(), key.ID, *existing, false, false))
+
+	got, err = ts.store.GetAPIKey(context.Background(), key.ID)
+	require.NoError(t, err)
+	assert.True(t, got.MCPInjectionEnabled, "unrelated update must not reset the flag")
+	assert.Equal(t, "renamed", got.Name)
+}
+
 // ---------------------------------------------------------------------------
 // DeleteAPIKey
 // ---------------------------------------------------------------------------

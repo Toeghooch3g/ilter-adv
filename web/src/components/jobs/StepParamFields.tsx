@@ -19,9 +19,28 @@ interface Props {
   onVariableChange: (key: string, value: string) => void
 }
 
-function parseToolName(stored: string): { serverId: string; toolName: string } {
-  const parts = stored.split('__', 2)
-  return parts.length === 2 ? { serverId: parts[0], toolName: parts[1] } : { serverId: '', toolName: parts[0] }
+function serverToolPrefix(s: { id: string; name: string }): string {
+  const prefix = (s.name || '')
+    .toLowerCase()
+    .replace(/ /g, '_')
+    .replace(/[^a-zA-Z0-9_-]/g, '_')
+  return prefix || s.id
+}
+
+// parseToolName maps a stored job step tool string (a server-prefixed
+// exposed name like "kagi_search-fast_search") back to the server ID and
+// bare tool name by matching each server's derived prefix. Unmatched
+// strings (e.g. old-format "serverId__toolName" configs) fall through with
+// an empty server ID.
+function parseToolName(stored: string, mcpServers: MCPServer[]): { serverId: string; toolName: string } {
+  if (!stored) return { serverId: '', toolName: '' }
+  for (const sv of mcpServers) {
+    const prefix = serverToolPrefix(sv)
+    if (stored.startsWith(`${prefix}-`)) {
+      return { serverId: sv.id, toolName: stored.slice(prefix.length + 1) }
+    }
+  }
+  return { serverId: '', toolName: stored }
 }
 
 function RefsBar({
@@ -70,7 +89,7 @@ export function StepParamFields({
   variableValues,
   onVariableChange,
 }: Props) {
-  const { serverId, toolName } = parseToolName(step.tool || '')
+  const { serverId, toolName } = parseToolName(step.tool || '', mcpServers)
 
   const loadedRef = useRef(new Set<string>())
 
@@ -176,8 +195,9 @@ export function StepParamFields({
             value={serverId}
             onValueChange={(sid) => {
               const s = sid ?? ''
+              const server = mcpServers.find((sv) => sv.id === s)
               onLoadServerTools(s)
-              onUpdate({ ...step, tool: s ? `${s}__${toolName}` : toolName })
+              onUpdate({ ...step, tool: s && server ? `${serverToolPrefix(server)}-${toolName}` : toolName })
             }}
           >
             <SelectTrigger className="h-7 w-full text-xs">
@@ -199,9 +219,10 @@ export function StepParamFields({
           <label className="block text-[11px] font-medium text-surface-400 mb-1">Tool</label>
           <Select
             value={toolName}
-            onValueChange={(name) =>
-              onUpdate({ ...step, tool: serverId ? `${serverId}__${name ?? ''}` : (name ?? '') })
-            }
+            onValueChange={(name) => {
+              const server = mcpServers.find((sv) => sv.id === serverId)
+              onUpdate({ ...step, tool: server ? `${serverToolPrefix(server)}-${name ?? ''}` : (name ?? '') })
+            }}
             disabled={!serverId || loadingTools[serverId]}
           >
             <SelectTrigger className="h-7 w-full text-xs">

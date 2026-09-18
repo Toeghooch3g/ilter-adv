@@ -80,7 +80,7 @@ type HistoryItem struct {
 	Timestamp       string  `json:"timestamp"`
 	Model           string  `json:"model"`
 	Provider        string  `json:"provider"`
-	Tier            string  `json:"tier"`
+	Category        string  `json:"category"`
 	ComplexityScore float64 `json:"complexity_score"`
 	StatusCode      int     `json:"status_code"`
 	LatencyMs       int     `json:"latency_ms"`
@@ -165,7 +165,7 @@ func loadSmartRouterHistory(sdb *sql.DB, page, limit int, resp *HistoryResponse)
 				Timestamp:       ts,
 				Model:           reqModel,
 				Provider:        providerName,
-				Tier:            "standard",
+				Category:        "standard",
 				ComplexityScore: complexity,
 				StatusCode:      status,
 				LatencyMs:       latency,

@@ -599,19 +599,20 @@ func (p *OllamaProvider) ollamaModelInfoFromTag(entry ollamaTagEntry) catalog.Mo
 
 	if ok && len(entries) > 0 {
 		regInfo := entries[0]
+		regInfo.Provider = p.config.Name
 		regInfo.DefaultBaseURL = p.config.BaseURL
 		return regInfo
 	}
 
 	return catalog.ModelInfo{
 		ID:                 entry.Name,
-		Provider:           "ollama",
+		Provider:           p.config.Name,
 		DisplayName:        entry.Name,
 		MaxContextTokens:   8192,
 		MaxOutputTokens:    2048,
 		CostPerInputToken:  0.0,
 		CostPerOutputToken: 0.0,
-		Tier:               "free",
+		Category:           "free",
 		Capabilities:       []string{"function_calling"},
 		DefaultBaseURL:     p.config.BaseURL,
 	}
@@ -623,10 +624,10 @@ func (p *OllamaProvider) mapOpenAIModelsToOllama(openAIModels []catalog.ModelInf
 		if isEmbeddingOnlyModel(m.ID, "", nil) {
 			continue
 		}
-		m.Provider = "ollama"
+		m.Provider = p.config.Name
 		m.CostPerInputToken = 0.0
 		m.CostPerOutputToken = 0.0
-		m.Tier = "free"
+		m.Category = "free"
 		ollamaModels = append(ollamaModels, m)
 	}
 	return ollamaModels

@@ -9,16 +9,18 @@ import (
 
 // ModelInfo holds structural parameters, costs, and limits for a model.
 type ModelInfo struct {
-	ID                 string   `json:"id"`
-	Provider           string   `json:"provider"`
-	DisplayName        string   `json:"display_name"`
-	MaxContextTokens   int      `json:"max_context_tokens"`
-	MaxOutputTokens    int      `json:"max_output_tokens"`
-	CostPerInputToken  float64  `json:"cost_per_input_token"`
-	CostPerOutputToken float64  `json:"cost_per_output_token"`
-	Tier               string   `json:"tier"`
-	Capabilities       []string `json:"capabilities"`
-	DefaultBaseURL     string   `json:"default_base_url"`
+	ID                      string   `json:"id"`
+	Provider                string   `json:"provider"`
+	DisplayName             string   `json:"display_name"`
+	MaxContextTokens        int      `json:"max_context_tokens"`
+	MaxOutputTokens         int      `json:"max_output_tokens"`
+	CostPerInputToken       float64  `json:"cost_per_input_token"`
+	CostPerOutputToken      float64  `json:"cost_per_output_token"`
+	CostPerCachedInputToken float64  `json:"cost_per_cached_input_token"`
+	CostPerCacheWriteToken  float64  `json:"cost_per_cache_write_token"`
+	Category                string   `json:"category"`
+	Capabilities            []string `json:"capabilities"`
+	DefaultBaseURL          string   `json:"default_base_url"`
 }
 
 // Models is the in-memory model cache, populated at startup from the

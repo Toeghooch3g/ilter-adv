@@ -1,6 +1,7 @@
 package providers
 
 import (
+	"context"
 	"net/http"
 	"time"
 
@@ -11,15 +12,16 @@ import (
 )
 
 type ProviderModelItem struct {
-	Name   string `json:"name"`
-	Active bool   `json:"active"`
-	Tier   string `json:"tier,omitempty"`
+	Name     string `json:"name"`
+	Active   bool   `json:"active"`
+	Category string `json:"category,omitempty"`
 }
 
 type ProviderSummary struct {
 	Name                string              `json:"name"`
 	Type                string              `json:"type"`
 	BaseURL             string              `json:"base_url"`
+	ServiceTier         string              `json:"service_tier,omitempty"`
 	Models              []ProviderModelItem `json:"models"`
 	ActiveModels        int                 `json:"active_models"`
 	TotalModels         int                 `json:"total_models"`
@@ -38,23 +40,24 @@ type ProviderSummary struct {
 // static config with live status from statusMap and DB-persisted model
 // overrides (falling back to the config's own model list when the DB has
 // none).
-func (h *Handler) buildProviderSummary(p config.ProviderConfig, statusMap map[string]smartrouter.ProviderStatus) ProviderSummary {
+func (h *Handler) buildProviderSummary(ctx context.Context, p config.ProviderConfig, statusMap map[string]smartrouter.ProviderStatus) ProviderSummary {
 	summary := ProviderSummary{
 		Name:         p.Name,
 		Type:         p.Type,
 		BaseURL:      p.BaseURL,
+		ServiceTier:  p.ServiceTier,
 		APIKeySet:    p.APIKey != "",
 		APIKeySource: p.APIKeySource,
 	}
 
-	dbModels, err := h.store.GetProviderModels(p.Name)
+	dbModels, err := h.store.GetProviderModels(ctx, p.Name)
 	if err == nil && len(dbModels) > 0 {
 		summary.Models = make([]ProviderModelItem, len(dbModels))
 		for i, m := range dbModels {
 			summary.Models[i] = ProviderModelItem{
-				Name:   m.Model,
-				Active: m.Active,
-				Tier:   m.Tier,
+				Name:     m.Model,
+				Active:   m.Active,
+				Category: m.Category,
 			}
 		}
 	} else {
@@ -85,7 +88,7 @@ func (h *Handler) buildProviderSummary(p config.ProviderConfig, statusMap map[st
 	return summary
 }
 
-func (h *Handler) HandleProviders(w http.ResponseWriter, _ *http.Request) {
+func (h *Handler) HandleProviders(w http.ResponseWriter, r *http.Request) {
 	statusMap := make(map[string]smartrouter.ProviderStatus, 8)
 	for _, ps := range h.lb.GetProviderStatus() {
 		statusMap[ps.Name] = ps
@@ -93,7 +96,7 @@ func (h *Handler) HandleProviders(w http.ResponseWriter, _ *http.Request) {
 
 	summaries := make([]ProviderSummary, 0, len(h.cfg.Providers))
 	for _, p := range h.cfg.Providers {
-		summaries = append(summaries, h.buildProviderSummary(p, statusMap))
+		summaries = append(summaries, h.buildProviderSummary(r.Context(), p, statusMap))
 	}
 	model.WriteJSON(w, http.StatusOK, summaries)
 }

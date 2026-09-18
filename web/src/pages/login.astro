@@ -9,7 +9,7 @@ import '../styles/globals.css';
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="generator" content={Astro.generator} />
-    <title>Login | ILTER Admin</title>
+    <title>Login | Ilter Advanced Admin</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -26,7 +26,7 @@ import '../styles/globals.css';
             <path d="M7 11V7a5 5 0 0 1 10 0v4" />
           </svg>
         </div>
-        <h1 class="login-title">ILTER Admin</h1>
+        <h1 class="login-title">Ilter Advanced Admin</h1>
         <p class="login-subtitle" id="login-subtitle">Enter your admin API key to access the dashboard</p>
         <div id="login-root">
           <div class="login-tabs">
@@ -177,7 +177,7 @@ import '../styles/globals.css';
   function showHelpTip() {
     const isUserTab = !formUser.classList.contains('hidden');
     showError(isUserTab
-      ? 'Tip: Use the email and password for your ILTER user account, created via `ilter init` or by an administrator.'
+      ? 'Tip: Use the email and password for your Ilter Advanced user account, created via `ilter init` or by an administrator.'
       : 'Tip: The admin API key is usually set in the ILTER_ADMIN_API_KEY environment variable, or printed by `ilter init`. Check your deployment docs or contact your system administrator.');
   }
 

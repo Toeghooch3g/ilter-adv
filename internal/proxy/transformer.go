@@ -11,13 +11,38 @@ import (
 	"github.com/ilter-ai/ilter/internal/model/catalog"
 )
 
-// CalculateCost returns the dollar cost for a request. The 6-decimal
-// rounding protects the SQLite REAL column from float64 representation
-// noise (PRD 04-IMPLEMENTATION-PLAN.md Sprint 2.2 floating point risk).
-func CalculateCost(m config.ModelConfig, promptTokens, completionTokens int) float64 {
-	inputCost := float64(promptTokens) * m.CostPerInputToken
-	outputCost := float64(completionTokens) * m.CostPerOutputToken
-	return math.Round((inputCost+outputCost)*1e6) / 1e6
+// CalculateCost returns the dollar cost for a request, billing cached-input
+// (cache-read) tokens at CostPerCachedInputToken and Anthropic cache-write
+// tokens at CostPerCacheWriteToken when those prices are configured. The
+// 6-decimal rounding protects the SQLite REAL column from float64
+// representation noise (PRD 04-IMPLEMENTATION-PLAN.md Sprint 2.2 floating
+// point risk). u may be nil (cost 0).
+//
+// Token semantics: OpenAI/DeepSeek report prompt_tokens INCLUDING the cached
+// portion (CacheReadIncludedInPrompt=true), so cached tokens are a subset of
+// prompt tokens and only the non-cached remainder bills at the input rate.
+// Anthropic reports input_tokens EXCLUDING cache (CacheReadIncludedInPrompt=
+// false), so the cache-read and cache-write portions bill at their own rates
+// on top of the full input count.
+func CalculateCost(m config.ModelConfig, u *model.Usage) float64 {
+	if u == nil {
+		return 0
+	}
+	promptTokens := u.PromptTokens
+	cachedTokens := 0
+	if u.PromptTokensDetails != nil {
+		cachedTokens = u.PromptTokensDetails.CachedTokens
+	}
+	inputTokens := promptTokens
+	if u.CacheReadIncludedInPrompt {
+		inputTokens = promptTokens - cachedTokens
+	}
+
+	inputCost := float64(inputTokens) * m.CostPerInputToken
+	cachedCost := float64(cachedTokens) * m.CostPerCachedInputToken
+	writeCost := float64(u.CacheCreationInputTokens) * m.CostPerCacheWriteToken
+	outputCost := float64(u.CompletionTokens) * m.CostPerOutputToken
+	return math.Round((inputCost+cachedCost+writeCost+outputCost)*1e6) / 1e6
 }
 
 // countContentWords counts words in a Message.Content value, which may be
@@ -74,7 +99,7 @@ func cheapestCostInTier(targetTier, excludeModel string, inputTokens, outputToke
 			continue
 		}
 		info := infos[0]
-		if normalizeTier(info.Tier) != targetTier {
+		if normalizeTier(info.Category) != targetTier {
 			continue
 		}
 		c := float64(inputTokens)*info.CostPerInputToken + float64(outputTokens)*info.CostPerOutputToken
@@ -94,7 +119,7 @@ func findCheapestAlternativeCost(selectedModel string, inputTokens, outputTokens
 	if !found || len(selectedInfos) == 0 {
 		return 0
 	}
-	targetTier := normalizeTier(selectedInfos[0].Tier)
+	targetTier := normalizeTier(selectedInfos[0].Category)
 
 	cost, foundCheaper := cheapestCostInTier(targetTier, selectedModel, inputTokens, outputTokens)
 	if !foundCheaper {

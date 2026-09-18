@@ -64,7 +64,7 @@ func (h *Handler) recordDataEndpointOutcome(ctx context.Context, r *http.Request
 		promptTokens = usage.PromptTokens
 		completionTokens = usage.CompletionTokens
 	}
-	cost := CalculateCost(modelCfg, promptTokens, completionTokens)
+	cost := CalculateCost(modelCfg, usage)
 	keyID := reqmeta.GetKeyID(ctx)
 
 	if h.budgetEnforcer != nil {

@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/ilter-ai/ilter/internal/config"
+
 	dashjobs "github.com/ilter-ai/ilter/internal/dashboard/jobs"
 	"github.com/ilter-ai/ilter/internal/jobs"
 	"github.com/ilter-ai/ilter/internal/jobs/triggers"
@@ -72,4 +74,34 @@ func (a *App) initJobs() {
 
 	a.jobRunner.Reconcile(context.Background(), 3)
 	a.jobRunner.StartPeriodicReconciler(context.Background())
+}
+
+// watchJobsFlag hot-applies the runtime feature:jobs toggle: disabling pauses
+// the job runner (StopAccepting) and stops the cron scheduler; enabling
+// resumes both without a restart. Registered after initJobs so the runner and
+// cron trigger exist before any callback fires.
+func (a *App) watchJobsFlag() {
+	if a.jobRunner == nil && a.cronTrigger == nil {
+		return
+	}
+	a.cfgCache.OnChange(func(snap *config.Snapshot) {
+		enabled := snap.JobsEnabled
+		if enabled {
+			if a.jobRunner != nil {
+				a.jobRunner.StartAccepting()
+			}
+			if a.cronTrigger != nil {
+				if err := a.cronTrigger.Start(context.Background()); err != nil {
+					slog.Error("jobs: failed to restart cron scheduler", "error", err)
+				}
+			}
+			return
+		}
+		if a.jobRunner != nil {
+			a.jobRunner.StopAccepting()
+		}
+		if a.cronTrigger != nil {
+			a.cronTrigger.Stop()
+		}
+	})
 }

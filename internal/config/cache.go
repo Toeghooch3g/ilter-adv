@@ -218,6 +218,20 @@ func loadStateFromStores(ctx context.Context, stores *RuntimeStores) (*StateConf
 			state.RuntimeConfigValues = values
 		}
 
+		// ── MCP blocked tools ──
+		// Read directly (not via mergeRuntimeConfigValues): the value is a
+		// JSON array of strings, which has no scalar schema type. A parse
+		// error degrades to an empty list (never a boot failure) so a bad
+		// write cannot wedge MCP.
+		if v, ok := values["mcp:blocked_tools"]; ok && v != "" {
+			var blocked []string
+			if uErr := json.Unmarshal([]byte(v), &blocked); uErr != nil {
+				slog.Warn("config cache: skipping invalid mcp:blocked_tools (expected JSON array of strings)", "error", uErr)
+			} else {
+				state.MCPBlockedTools = blocked
+			}
+		}
+
 		// ── Guardrail rules ──
 		guardRuleNames, customRules, hadEntries, err := loadGuardrailRulesFromStore(ctx, stores.RuntimeConfig)
 		if err != nil {
@@ -226,6 +240,23 @@ func loadStateFromStores(ctx context.Context, stores *RuntimeStores) (*StateConf
 		if hadEntries {
 			state.GuardRules = guardRuleNames
 			state.CustomRules = customRules
+		}
+
+		// ── Providers & model overrides ──
+		// Parse the runtime provider set so the cache snapshot matches the boot
+		// provider set. The registry hot-reloads from snap.Providers() on cache
+		// changes (run.go), letting provider creation/edits and model-override
+		// uploads take effect without a restart.
+		providerEntries, errProv := stores.RuntimeConfig.GetBySection(ctx, "provider")
+		if errProv != nil {
+			return nil, fmt.Errorf("providers: %w", errProv)
+		}
+		overrideEntries, errOver := stores.RuntimeConfig.GetBySection(ctx, modelOverridesSectionName)
+		if errOver != nil {
+			return nil, fmt.Errorf("model overrides: %w", errOver)
+		}
+		if len(providerEntries) > 0 {
+			state.Providers = ProviderConfigsFromSections(providerEntries, overrideEntries)
 		}
 	}
 

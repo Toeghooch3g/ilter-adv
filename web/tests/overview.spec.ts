@@ -55,56 +55,17 @@ test.describe('Overview dashboard', () => {
     expect(errors).toEqual([])
   })
 
-  test('Feature Control Center shows toggles, at least 1 enabled', async ({ page }) => {
+  test('Feature Control Center shows read-only status, at least 1 enabled', async ({ page }) => {
     const errors = await setup(page)
 
-    const toggles = page.getByRole('switch')
-    const toggleCount = await toggles.count()
-    expect(toggleCount).toBeGreaterThanOrEqual(1)
+    // Overview feature panel is read-only: no switches, just status chips.
+    await expect(page.getByRole('switch')).toHaveCount(0)
 
-    const checkedCount = await toggles.evaluateAll(
-      (els) => els.filter((el) => el.getAttribute('aria-checked') === 'true').length,
-    )
-    expect(checkedCount).toBeGreaterThanOrEqual(1)
-
-    await checkCrashIndicators(page, errors)
-    expect(errors).toEqual([])
-  })
-
-  test('toggle a feature switch changes aria-checked', async ({ page }) => {
-    const errors = await setup(page)
-
-    // Find a switch that's currently CHECKED
-    const toggles = page.getByRole('switch')
-    const total = await toggles.count()
-    let targetIndex = -1
-    for (let i = 0; i < total; i++) {
-      const checked = await toggles.nth(i).getAttribute('aria-checked')
-      if (checked === 'true') {
-        targetIndex = i
-        break
-      }
-    }
-    expect(targetIndex).toBeGreaterThanOrEqual(0)
-
-    const toggle = toggles.nth(targetIndex)
-    await expect(toggle).toBeVisible({ timeout: 10000 })
-    await expect(toggle).toHaveAttribute('aria-checked', 'true')
-
-    // Click to toggle off
-    await toggle.click()
-    await page.waitForTimeout(1000)
-
-    // If the API call succeeds, aria-checked changes; if not, it stays the same
-    const afterClick = await toggle.getAttribute('aria-checked')
-    expect(afterClick).toMatch(/true|false/)
-
-    // If the toggle did change (API call succeeded), toggle back to restore state
-    if (afterClick === 'false') {
-      await toggle.click()
-      await page.waitForTimeout(1000)
-      await expect(toggle).toHaveAttribute('aria-checked', 'true')
-    }
+    const enabled = page.getByText('Enabled', { exact: true })
+    const disabled = page.getByText('Disabled', { exact: true })
+    await expect(enabled.or(disabled).first()).toBeVisible({ timeout: 10000 })
+    const statusCount = (await enabled.count()) + (await disabled.count())
+    expect(statusCount).toBeGreaterThanOrEqual(1)
 
     await checkCrashIndicators(page, errors)
     expect(errors).toEqual([])

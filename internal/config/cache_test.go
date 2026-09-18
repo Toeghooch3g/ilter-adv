@@ -279,3 +279,92 @@ func TestConfigSnapshot_Accessors(t *testing.T) {
 		t.Error("expected routing disabled before refresh")
 	}
 }
+
+// TestConfigCache_RequestLogFeatureFlag verifies feature:request_log toggles
+// the RequestLogEnabled snapshot field (default true from boot).
+func TestConfigCache_RequestLogFeatureFlag(t *testing.T) {
+	boot := config.DefaultBootConfig()
+	cache := config.NewConfigCache(&boot)
+	stores, cleanup := setupTestStores(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	dbStore, ok := stores.RuntimeConfig.(*dbpkg.SQLiteStore)
+	if !ok {
+		t.Fatal("expected RuntimeConfig store to be *dbpkg.SQLiteStore")
+	}
+
+	// Default: on (from boot Audit.Enabled).
+	if snap := cache.Get(); snap != nil && !snap.RequestLogEnabled {
+		t.Error("RequestLogEnabled should default true")
+	}
+
+	// Disable via runtime_config feature:request_log.
+	if err := dbStore.UpsertRuntimeConfig(ctx, "feature", "request_log", "false", "test"); err != nil {
+		t.Fatalf("upsert feature flag: %v", err)
+	}
+	if err := cache.Refresh(ctx, stores); err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+	if snap := cache.Get(); snap == nil || snap.RequestLogEnabled {
+		t.Error("RequestLogEnabled should be false after feature:request_log=false")
+	}
+
+	// Re-enable.
+	if err := dbStore.UpsertRuntimeConfig(ctx, "feature", "request_log", "true", "test"); err != nil {
+		t.Fatalf("upsert feature flag: %v", err)
+	}
+	if err := cache.Refresh(ctx, stores); err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+	if snap := cache.Get(); snap == nil || !snap.RequestLogEnabled {
+		t.Error("RequestLogEnabled should be true after re-enable")
+	}
+}
+
+// TestConfigCache_ChatJobsFeatureFlags verifies feature:chat and
+// feature:jobs flip their snapshot fields (default ON).
+func TestConfigCache_ChatJobsFeatureFlags(t *testing.T) {
+	boot := config.DefaultBootConfig()
+	cache := config.NewConfigCache(&boot)
+	stores, cleanup := setupTestStores(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	dbStore, ok := stores.RuntimeConfig.(*dbpkg.SQLiteStore)
+	if !ok {
+		t.Fatal("expected RuntimeConfig store to be *dbpkg.SQLiteStore")
+	}
+
+	// Defaults: chat on, jobs on (boot Jobs.Enabled).
+	if snap := cache.Get(); !snap.ChatEnabled {
+		t.Error("ChatEnabled should default true")
+	} else if !snap.JobsEnabled {
+		t.Error("JobsEnabled should default true (boot Jobs.Enabled)")
+	}
+
+	// Disable chat.
+	if err := dbStore.UpsertRuntimeConfig(ctx, "feature", "chat", "false", "test"); err != nil {
+		t.Fatalf("upsert chat flag: %v", err)
+	}
+	if err := cache.Refresh(ctx, stores); err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+	if snap := cache.Get(); snap.ChatEnabled {
+		t.Error("ChatEnabled should be false after feature:chat=false")
+	} else if !snap.JobsEnabled {
+		t.Error("JobsEnabled should stay true")
+	}
+
+	// Disable jobs.
+	if err := dbStore.UpsertRuntimeConfig(ctx, "feature", "jobs", "false", "test"); err != nil {
+		t.Fatalf("upsert jobs flag: %v", err)
+	}
+	if err := cache.Refresh(ctx, stores); err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+	if snap := cache.Get(); snap.JobsEnabled {
+		t.Error("JobsEnabled should be false after feature:jobs=false")
+	}
+}

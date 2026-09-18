@@ -10,6 +10,7 @@ export const providerMeta: Record<string, { label: string; dot: string }> = {
   openai: { label: 'OpenAI', dot: 'bg-green-500' },
   anthropic: { label: 'Anthropic', dot: 'bg-purple-500' },
   deepseek: { label: 'DeepSeek', dot: 'bg-blue-500' },
+  deepinfra: { label: 'DeepInfra', dot: 'bg-indigo-500' },
   gemini: { label: 'Gemini', dot: 'bg-yellow-500' },
   openrouter: { label: 'OpenRouter', dot: 'bg-orange-500' },
   opencode: { label: 'OpenCode', dot: 'bg-teal-500' },
@@ -19,27 +20,27 @@ export const providerMeta: Record<string, { label: string; dot: string }> = {
   qwen: { label: 'Qwen', dot: 'bg-cyan-500' },
 }
 
-export const tierLabel: Record<string, string> = {
+export const categoryLabel: Record<string, string> = {
   free: 'Free',
   economy: 'Eco',
   standard: 'Std',
   premium: 'Prem',
 }
 
-export const tierColors: Record<string, string> = {
+export const categoryColors: Record<string, string> = {
   free: 'bg-gray-100 text-gray-700 border border-gray-200',
   economy: 'bg-green-50 text-green-700 border border-green-200',
   standard: 'bg-blue-50 text-blue-700 border border-blue-200',
   premium: 'bg-purple-50 text-purple-700 border border-purple-200',
 }
 
-export function TierBadge({ tier }: { tier?: string }) {
-  if (!tier) return null
+export function CategoryBadge({ category }: { category?: string }) {
+  if (!category) return null
   return (
     <span
-      className={`inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase leading-none ${tierColors[tier] || 'bg-surface-100 text-surface-500'}`}
+      className={`inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase leading-none ${categoryColors[category] || 'bg-surface-100 text-surface-500'}`}
     >
-      {tierLabel[tier] || tier}
+      {categoryLabel[category] || category}
     </span>
   )
 }
@@ -47,14 +48,14 @@ export function TierBadge({ tier }: { tier?: string }) {
 export function ModelBadge({
   modelId,
   provider,
-  tier,
+  category,
   name,
   onRemove,
   className,
 }: {
   modelId: string
   provider?: string
-  tier?: string
+  category?: string
   name?: string
   onRemove?: () => void
   className?: string
@@ -73,7 +74,7 @@ export function ModelBadge({
       {meta?.dot && <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${meta.dot}`} />}
       {provKey && <span className="font-semibold text-surface-500 font-sans">{meta?.label || provKey} /</span>}
       <span className="font-medium font-sans">{displayName}</span>
-      <TierBadge tier={tier} />
+      <CategoryBadge category={category} />
       {onRemove && (
         <button
           type="button"
@@ -161,7 +162,7 @@ export function ModelSelector({
             <span className="flex items-center gap-1.5 min-w-0">
               {meta && <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${meta.dot}`} />}
               <span className="font-medium truncate">{selected.name}</span>
-              <TierBadge tier={selected.tier} />
+              <CategoryBadge category={selected.category} />
             </span>
           )}
         </SelectValue>
@@ -224,7 +225,7 @@ export function ModelSelector({
                 >
                   <span className="flex items-center gap-2">
                     <span className="font-medium">{search ? highlightMatch(m.name, search) : m.name}</span>
-                    <TierBadge tier={m.tier} />
+                    <CategoryBadge category={m.category} />
                   </span>
                 </SelectItem>
               ))}

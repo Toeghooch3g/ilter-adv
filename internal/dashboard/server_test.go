@@ -117,7 +117,7 @@ func TestDashboardServer_API(t *testing.T) {
 	// Seed provider_models so catalog.Models is populated for handlers that
 	// look up model tiers (e.g. GET /providers, POST /optimize).
 	_, _ = store.DB.Exec(`
-		INSERT INTO provider_models (provider, model, active, tier, cost_in, cost_out)
+		INSERT INTO provider_models (provider, model, active, category, cost_in, cost_out)
 		VALUES
 		('openai', 'gpt-4o', 1, 'standard', 0.0000025, 0.00001),
 		('openai', 'gpt-4o-mini', 1, 'economy', 0.00000015, 0.0000006),
@@ -629,7 +629,7 @@ func TestDashboardServer_AdditionalHandlers(t *testing.T) {
 	catalog.Models["gpt-4o"] = []catalog.ModelInfo{{
 		Provider:           "openai",
 		DisplayName:        "GPT-4o",
-		Tier:               "standard",
+		Category:           "standard",
 		CostPerInputToken:  0.0000025,
 		CostPerOutputToken: 0.00001,
 	}}
@@ -695,7 +695,7 @@ func TestDashboardServer_AdditionalHandlers(t *testing.T) {
 		r.Get("/pii-stats", server.delegateHandler(server.piiHandler.HandleStats, "PII"))
 		r.Get("/pii-export", server.delegateHandler(server.piiHandler.HandlePIIExport, "PII"))
 		r.Post("/models/toggle", server.delegateHandler(server.modelsHandler.HandleToggleModel, "Models"))
-		r.Post("/models/tier", server.delegateHandler(server.modelsHandler.HandleUpdateModelTier, "Models"))
+		r.Post("/models/category", server.delegateHandler(server.modelsHandler.HandleUpdateModelCategory, "Models"))
 		r.Get("/smart-router/stats", server.delegateHandler(server.smartrouterHandler.HandleSmartRouterStats, "Smart router"))
 		r.Get("/smart-router/history", server.delegateHandler(server.smartrouterHandler.HandleSmartRouterHistory, "Smart router"))
 	})
@@ -765,8 +765,20 @@ func TestDashboardServer_AdditionalHandlers(t *testing.T) {
 		}
 	})
 
+	// Seed provider_models rows so the composite-key toggle contract can be
+	// asserted: the same bare model id exists under two providers, and
+	// disabling it under one must not touch the other.
+	_, err = store.DB.Exec(`
+		INSERT INTO provider_models (provider, model, active, category, cost_in, cost_out)
+		VALUES ('openai', 'gpt-4o', 1, 'standard', 0.0000025, 0.00001),
+		       ('fake', 'gpt-4o', 1, 'standard', 0.0000025, 0.00001)
+	`)
+	if err != nil {
+		t.Fatalf("failed to seed provider_models: %v", err)
+	}
+
 	t.Run("POST /models/toggle (deactivate)", func(t *testing.T) {
-		body, _ := json.Marshal(ToggleModelRequest{Name: "gpt-4o", Active: false})
+		body, _ := json.Marshal(ToggleModelRequest{Provider: "openai", Name: "gpt-4o", Active: false})
 		rr := makeRequest("POST", "/api/models/toggle", body, true)
 		if rr.Code != http.StatusOK {
 			t.Fatalf("expected 200 OK, got %d: %s", rr.Code, rr.Body.String())
@@ -779,13 +791,38 @@ func TestDashboardServer_AdditionalHandlers(t *testing.T) {
 		if resp["status"] != "ok" {
 			t.Errorf("expected status 'ok', got %v", resp["status"])
 		}
+
+		// The composite key must scope the update: the same bare model id under
+		// another provider stays active.
+		rows, err := store.GetAllProviderModels(context.Background())
+		if err != nil {
+			t.Fatalf("failed to list provider models: %v", err)
+		}
+		byKey := make(map[string]bool)
+		for _, r := range rows {
+			byKey[r.Provider+":"+r.Model] = r.Active
+		}
+		if byKey["openai:gpt-4o"] {
+			t.Errorf("expected openai/gpt-4o to be inactive after toggle")
+		}
+		if !byKey["fake:gpt-4o"] {
+			t.Errorf("expected fake/gpt-4o to stay active (composite key)")
+		}
 	})
 
 	t.Run("POST /models/toggle (missing name)", func(t *testing.T) {
-		body, _ := json.Marshal(ToggleModelRequest{Name: "", Active: false})
+		body, _ := json.Marshal(ToggleModelRequest{Provider: "openai", Name: "", Active: false})
 		rr := makeRequest("POST", "/api/models/toggle", body, true)
 		if rr.Code != http.StatusBadRequest {
 			t.Errorf("expected 400 for missing name, got %d: %s", rr.Code, rr.Body.String())
+		}
+	})
+
+	t.Run("POST /models/toggle (missing provider)", func(t *testing.T) {
+		body, _ := json.Marshal(ToggleModelRequest{Provider: "", Name: "gpt-4o", Active: false})
+		rr := makeRequest("POST", "/api/models/toggle", body, true)
+		if rr.Code != http.StatusBadRequest {
+			t.Errorf("expected 400 for missing provider, got %d: %s", rr.Code, rr.Body.String())
 		}
 	})
 
@@ -796,9 +833,33 @@ func TestDashboardServer_AdditionalHandlers(t *testing.T) {
 		}
 	})
 
-	t.Run("POST /models/tier (update to economy)", func(t *testing.T) {
-		body, _ := json.Marshal(UpdateModelTierRequest{Name: "gpt-4o", Tier: "economy"})
-		rr := makeRequest("POST", "/api/models/tier", body, true)
+	t.Run("POST /models/toggle (unknown provider)", func(t *testing.T) {
+		// A provider with no row must not disturb existing rows.
+		body, _ := json.Marshal(ToggleModelRequest{Provider: "no-such-provider", Name: "gpt-4o", Active: false})
+		rr := makeRequest("POST", "/api/models/toggle", body, true)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("expected 200 OK, got %d: %s", rr.Code, rr.Body.String())
+		}
+
+		rows, err := store.GetAllProviderModels(context.Background())
+		if err != nil {
+			t.Fatalf("failed to list provider models: %v", err)
+		}
+		byKey := make(map[string]bool)
+		for _, r := range rows {
+			byKey[r.Provider+":"+r.Model] = r.Active
+		}
+		if byKey["openai:gpt-4o"] {
+			t.Errorf("expected openai/gpt-4o to stay inactive after unknown-provider toggle")
+		}
+		if !byKey["fake:gpt-4o"] {
+			t.Errorf("expected fake/gpt-4o to stay active after unknown-provider toggle")
+		}
+	})
+
+	t.Run("POST /models/category (update to economy)", func(t *testing.T) {
+		body, _ := json.Marshal(UpdateModelCategoryRequest{Name: "gpt-4o", Category: "economy"})
+		rr := makeRequest("POST", "/api/models/category", body, true)
 		if rr.Code != http.StatusOK {
 			t.Fatalf("expected 200 OK, got %d: %s", rr.Code, rr.Body.String())
 		}
@@ -818,29 +879,65 @@ func TestDashboardServer_AdditionalHandlers(t *testing.T) {
 		if !ok {
 			t.Fatal("expected gpt-4o to exist in registry")
 		}
-		if info[0].Tier != "economy" {
-			t.Errorf("expected tier 'economy', got %q", info[0].Tier)
+		if info[0].Category != "economy" {
+			t.Errorf("expected tier 'economy', got %q", info[0].Category)
 		}
 	})
 
-	t.Run("POST /models/tier (invalid tier)", func(t *testing.T) {
-		body, _ := json.Marshal(UpdateModelTierRequest{Name: "gpt-4o", Tier: "ultra-premium"})
-		rr := makeRequest("POST", "/api/models/tier", body, true)
+	t.Run("POST /models/category (invalid tier)", func(t *testing.T) {
+		body, _ := json.Marshal(UpdateModelCategoryRequest{Name: "gpt-4o", Category: "ultra-premium"})
+		rr := makeRequest("POST", "/api/models/category", body, true)
 		if rr.Code != http.StatusBadRequest {
 			t.Errorf("expected 400 for invalid tier, got %d: %s", rr.Code, rr.Body.String())
 		}
 	})
 
-	t.Run("POST /models/tier (missing name)", func(t *testing.T) {
-		body, _ := json.Marshal(UpdateModelTierRequest{Name: "", Tier: "economy"})
-		rr := makeRequest("POST", "/api/models/tier", body, true)
+	// Regression: the web models card sends the bare model id in the category
+	// update (it previously sent the prettified display name, which keyed
+	// nothing, so the dropdown snapped back after refetch). This pins the
+	// backend contract that a bare-id POST updates the provider_models row
+	// even when a prettified display_name exists.
+	t.Run("POST /models/category (bare id with prettified display name)", func(t *testing.T) {
+		_, err := store.DB.Exec(`
+			INSERT INTO provider_models (provider, model, display_name, active, category, cost_in, cost_out)
+			VALUES ('openai', 'DeepSeek-V4.1-Flash', 'Deepseek V4.1 Flash', 1, 'standard', 0.000002, 0.000002)
+		`)
+		if err != nil {
+			t.Fatalf("failed to seed provider model: %v", err)
+		}
+
+		body, _ := json.Marshal(UpdateModelCategoryRequest{Name: "DeepSeek-V4.1-Flash", Category: "premium"})
+		rr := makeRequest("POST", "/api/models/category", body, true)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("expected 200 OK, got %d: %s", rr.Code, rr.Body.String())
+		}
+
+		// Re-read the row: the update must have landed on the bare-id row.
+		rows, err := store.GetProviderModels(context.Background(), "openai")
+		if err != nil {
+			t.Fatalf("failed to re-read provider models: %v", err)
+		}
+		var got string
+		for _, r := range rows {
+			if r.Model == "DeepSeek-V4.1-Flash" {
+				got = r.Category
+			}
+		}
+		if got != "premium" {
+			t.Errorf("expected category 'premium' for bare id DeepSeek-V4.1-Flash, got %q", got)
+		}
+	})
+
+	t.Run("POST /models/category (missing name)", func(t *testing.T) {
+		body, _ := json.Marshal(UpdateModelCategoryRequest{Name: "", Category: "economy"})
+		rr := makeRequest("POST", "/api/models/category", body, true)
 		if rr.Code != http.StatusBadRequest {
 			t.Errorf("expected 400 for missing name, got %d: %s", rr.Code, rr.Body.String())
 		}
 	})
 
-	t.Run("POST /models/tier (invalid JSON)", func(t *testing.T) {
-		rr := makeRequest("POST", "/api/models/tier", []byte("{bad"), true)
+	t.Run("POST /models/category (invalid JSON)", func(t *testing.T) {
+		rr := makeRequest("POST", "/api/models/category", []byte("{bad"), true)
 		if rr.Code != http.StatusBadRequest {
 			t.Errorf("expected 400 for invalid JSON, got %d: %s", rr.Code, rr.Body.String())
 		}
@@ -873,7 +970,7 @@ func TestDashboardServer_AdditionalHandlers(t *testing.T) {
 			t.Errorf("expected total_routed 2, got %d", stats.TotalRouted)
 		}
 
-		// Tier distribution should contain our models
+		// Category distribution should contain our models
 		if len(stats.TierDistribution) == 0 {
 			t.Error("expected non-empty tier distribution")
 		}

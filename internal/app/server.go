@@ -14,6 +14,7 @@ import (
 
 	"github.com/ilter-ai/ilter/internal/config"
 	"github.com/ilter-ai/ilter/internal/dashboard"
+	dashconfig "github.com/ilter-ai/ilter/internal/dashboard/config"
 	iltermiddleware "github.com/ilter-ai/ilter/internal/middleware"
 )
 
@@ -30,6 +31,17 @@ func (a *App) startDashboard() *http.Server {
 		dashboard.WithJobsHandler(a.jobsHandler),
 		dashboard.WithOpenAPIHandler(a.openapiHandler),
 	}
+	// Generic runtime-config CRUD (/api/config/{section}/{key}) backs the
+	// hot-editable blocked-tools and tool-pricing sections (and any other
+	// schema-registered runtime_config key).
+	opts = append(opts, dashboard.WithConfigAPIHandler(
+		dashconfig.NewConfigAPIHandler(
+			&config.RuntimeStores{RuntimeConfig: a.store},
+			a.cfgCache,
+			a.auditor,
+			a.store.DB,
+		),
+	))
 	if a.guardrailsMiddleware != nil {
 		opts = append(opts, dashboard.WithGuardrailsMiddleware(a.guardrailsMiddleware))
 	}

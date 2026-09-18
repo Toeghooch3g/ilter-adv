@@ -250,10 +250,17 @@ func (p *AnthropicProvider) TransformResponse(_ context.Context, resp *http.Resp
 			},
 		},
 		Usage: &model.Usage{
-			PromptTokens:     anthResp.Usage.InputTokens,
-			CompletionTokens: anthResp.Usage.OutputTokens,
-			TotalTokens:      anthResp.Usage.InputTokens + anthResp.Usage.OutputTokens,
+			PromptTokens:              anthResp.Usage.InputTokens,
+			CompletionTokens:          anthResp.Usage.OutputTokens,
+			TotalTokens:               anthResp.Usage.InputTokens + anthResp.Usage.OutputTokens,
+			CacheCreationInputTokens:  anthResp.Usage.CacheCreationInputTokens,
+			CacheReadIncludedInPrompt: false, // Anthropic input_tokens excludes cache read/write
 		},
+	}
+	if anthResp.Usage.CacheReadInputTokens > 0 {
+		chatResp.Usage.PromptTokensDetails = &model.PromptTokensDetails{
+			CachedTokens: anthResp.Usage.CacheReadInputTokens,
+		}
 	}
 
 	return chatResp, nil

@@ -1,6 +1,7 @@
 package semanticcache
 
 import (
+	"context"
 	"testing"
 
 	"github.com/ilter-ai/ilter/internal/config"
@@ -8,7 +9,7 @@ import (
 
 func TestNew(t *testing.T) {
 	// With nil client and disabled cfg, New should not panic.
-	sc := New(cfgDisabled(), nil, "")
+	sc := New(cfgDisabled(), nil, nil, nil, "")
 	if sc == nil {
 		t.Fatal("New returned nil")
 	}
@@ -16,16 +17,50 @@ func TestNew(t *testing.T) {
 
 func TestNew_WithConfig(t *testing.T) {
 	cfg := configWithDefaults()
-	sc := New(cfg, nil, "")
+	sc := New(cfg, nil, nil, nil, "")
 	if sc == nil {
 		t.Fatal("New returned nil")
 	}
 	if sc.cfg.SimilarityThreshold != 0.92 {
 		t.Errorf("expected similarity threshold 0.92, got %f", sc.cfg.SimilarityThreshold)
 	}
-	if sc.client != nil {
-		t.Errorf("expected nil client, got %v", sc.client)
+	if sc.backend != nil {
+		t.Errorf("expected nil backend, got %v", sc.backend)
 	}
+	if sc.Mode() != CacheModeDisabled {
+		t.Errorf("expected disabled mode without a client, got %q", sc.Mode())
+	}
+}
+
+// TestNew_TypeDisabled verifies ILTER_CACHE_TYPE=disabled produces a fully
+// inert cache: no backend, Mode()==disabled, and GetFull/SetFull no-op —
+// even when an embedder is present, so no embedding provider is probed.
+func TestNew_TypeDisabled(t *testing.T) {
+	cfg := config.CacheConfig{Enabled: true, Type: "disabled", SimilarityThreshold: 0.7}
+	sc := New(cfg, &stubEmbedder{}, nil, nil, "")
+
+	if sc.Mode() != CacheModeDisabled {
+		t.Fatalf("Mode() = %q, want disabled", sc.Mode())
+	}
+	if sc.backend != nil {
+		t.Fatalf("expected no backend for disabled type, got %v", sc.backend)
+	}
+
+	if resp, _, found := sc.GetFull(t.Context(), "hello", "exact-key"); found || resp != "" {
+		t.Fatalf("GetFull must no-op on a disabled cache, got found=%v resp=%q", found, resp)
+	}
+	if err := sc.SetFull(t.Context(), "hello", "exact-key", "response"); err != nil {
+		t.Fatalf("SetFull must no-op without error, got %v", err)
+	}
+}
+
+// stubEmbedder satisfies Embedder without any real embedding backend.
+type stubEmbedder struct{}
+
+func (stubEmbedder) Dim() int      { return 4 }
+func (stubEmbedder) Model() string { return "stub" }
+func (stubEmbedder) Embed(context.Context, string) ([]float32, error) {
+	return []float32{1, 2, 3, 4}, nil
 }
 
 func TestFloat32ToByte(t *testing.T) {

@@ -687,3 +687,60 @@ func TestPIIPhoneUnmask(t *testing.T) {
 		t.Errorf("response should contain original phone %q, got: %q", phone, respBody)
 	}
 }
+
+// TestPIIMasker_RefreshPatternsLive verifies that a pattern added at runtime
+// applies to live traffic immediately after RefreshPatterns — the backend
+// live-apply path behind dashboard pattern CRUD (no restart).
+func TestPIIMasker_RefreshPatternsLive(t *testing.T) {
+	// Load defaults only; the masker snapshots them at construction.
+	pii.LoadPatterns(pii.DefaultPIIPatterns)
+	masker := NewPIIMaskerMiddleware(nil, config.PIIConfig{Enabled: true}, nil, nil)
+
+	// New pattern NOT in the initial snapshot, and not colliding with any
+	// default regex.
+	pii.LoadPatterns(append(pii.DefaultPIIPatterns, pii.Pattern{
+		Name: "customer_token", Regex: `CUST-[A-Z]{4}[0-9]{2}`, Enabled: true, Action: pii.ActionMask,
+	}))
+
+	send := func(content string) string {
+		reqBody := model.ChatCompletionRequest{
+			Model: "gpt-4o",
+			Messages: []model.Message{
+				{Role: "user", Content: content},
+			},
+		}
+		bodyBytes, _ := json.Marshal(reqBody)
+		req, _ := http.NewRequestWithContext(context.Background(), "POST", "/v1/chat/completions", bytes.NewReader(bodyBytes))
+
+		var processedBody []byte
+		nextHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			processedBody, _ = io.ReadAll(r.Body)
+			w.WriteHeader(http.StatusOK)
+		})
+		rr := httptest.NewRecorder()
+		masker.Handler(nextHandler).ServeHTTP(rr, req)
+
+		var parsed model.ChatCompletionRequest
+		if err := json.Unmarshal(processedBody, &parsed); err != nil {
+			t.Fatalf("parse processed body: %v", err)
+		}
+		content, ok := parsed.Messages[0].Content.(string)
+		if !ok {
+			t.Fatalf("message content is not a string: %T", parsed.Messages[0].Content)
+		}
+		return content
+	}
+
+	const input = "reference CUST-ABCD12 here"
+
+	// Before refresh: the new name is not in the masker's snapshot → untouched.
+	if got := send(input); got != input {
+		t.Fatalf("before refresh: expected untouched %q, got %q", input, got)
+	}
+
+	// After refresh: the new pattern is live.
+	masker.RefreshPatterns()
+	if got := send(input); !strings.Contains(got, "<MASKED_PII>") {
+		t.Fatalf("after refresh: expected masked, got %q", got)
+	}
+}

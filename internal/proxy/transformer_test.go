@@ -69,10 +69,76 @@ func TestTransformerCalculateCost(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := CalculateCost(tt.model, tt.promptTokens, tt.completionTokens)
+			u := &model.Usage{PromptTokens: tt.promptTokens, CompletionTokens: tt.completionTokens}
+			u.CacheReadIncludedInPrompt = true
+			got := CalculateCost(tt.model, u)
 			if got != tt.want {
-				t.Errorf("CalculateCost(%+v, %d, %d) = %v, want %v",
-					tt.model, tt.promptTokens, tt.completionTokens, got, tt.want)
+				t.Errorf("CalculateCost(%+v, %+v) = %v, want %v",
+					tt.model, u, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestTransformerCalculateCostCachedTokens verifies cache-read and
+// cache-write tokens are billed at their own prices, both for the OpenAI
+// semantics (cached is a subset of prompt_tokens) and Anthropic semantics
+// (input_tokens excludes cache).
+func TestTransformerCalculateCostCachedTokens(t *testing.T) {
+	tests := []struct {
+		name  string
+		model config.ModelConfig
+		usage *model.Usage
+		want  float64
+	}{
+		{
+			name: "openai cached read is subset of prompt tokens",
+			model: config.ModelConfig{
+				CostPerInputToken:       0.0001,
+				CostPerCachedInputToken: 0.00005,
+				CostPerOutputToken:      0.0002,
+			},
+			usage: &model.Usage{
+				PromptTokens:              1000, // includes the 400 cached
+				CompletionTokens:          500,
+				CacheReadIncludedInPrompt: true,
+				PromptTokensDetails:       &model.PromptTokensDetails{CachedTokens: 400},
+			},
+			// 600*0.0001 + 400*0.00005 + 500*0.0002 = 0.06+0.02+0.1 = 0.18
+			want: 0.18,
+		},
+		{
+			name: "anthropic cache read is separate from input tokens",
+			model: config.ModelConfig{
+				CostPerInputToken:       0.000003,
+				CostPerCachedInputToken: 0.0000003,
+				CostPerCacheWriteToken:  0.00000375,
+				CostPerOutputToken:      0.000015,
+			},
+			usage: &model.Usage{
+				PromptTokens:              100,
+				CompletionTokens:          50,
+				CacheReadIncludedInPrompt: false,
+				PromptTokensDetails:       &model.PromptTokensDetails{CachedTokens: 80},
+				CacheCreationInputTokens:  20,
+			},
+			// 100*3e-6 + 80*3e-7 + 20*3.75e-6 + 50*15e-6
+			// = 0.0003 + 0.000024 + 0.000075 + 0.00075 = 0.001149
+			want: 0.001149,
+		},
+		{
+			name:  "nil usage costs zero",
+			model: config.ModelConfig{CostPerInputToken: 1, CostPerOutputToken: 1},
+			usage: nil,
+			want:  0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := CalculateCost(tt.model, tt.usage)
+			if math.Abs(got-tt.want) > 1e-9 {
+				t.Errorf("CalculateCost = %v, want %v", got, tt.want)
 			}
 		})
 	}
@@ -135,21 +201,21 @@ func TestTransformerFindCheapestAlternativeCost(t *testing.T) {
 	catalog.ModelsMu.Lock()
 	catalog.Models["transformer-test-alpha"] = []catalog.ModelInfo{{
 		ID:                 "transformer-test-alpha",
-		Tier:               "transformer-test-tier",
+		Category:           "transformer-test-tier",
 		Provider:           "test-provider",
 		CostPerInputToken:  0.0005,
 		CostPerOutputToken: 0.002,
 	}}
 	catalog.Models["transformer-test-beta"] = []catalog.ModelInfo{{
 		ID:                 "transformer-test-beta",
-		Tier:               "transformer-test-tier",
+		Category:           "transformer-test-tier",
 		Provider:           "test-provider",
 		CostPerInputToken:  0.0003,
 		CostPerOutputToken: 0.001,
 	}}
 	catalog.Models["transformer-test-gamma"] = []catalog.ModelInfo{{
 		ID:                 "transformer-test-gamma",
-		Tier:               "transformer-test-tier",
+		Category:           "transformer-test-tier",
 		Provider:           "test-provider",
 		CostPerInputToken:  0.0001,
 		CostPerOutputToken: 0.0005,
@@ -386,14 +452,14 @@ func TestTransformerComputeCostEstimates(t *testing.T) {
 	catalog.ModelsMu.Lock()
 	catalog.Models["transformer-est-test-model"] = []catalog.ModelInfo{{
 		ID:                 "transformer-est-test-model",
-		Tier:               "transformer-est-tier",
+		Category:           "transformer-est-tier",
 		Provider:           "test-provider",
 		CostPerInputToken:  0.001,
 		CostPerOutputToken: 0.002,
 	}}
 	catalog.Models["transformer-est-cheaper"] = []catalog.ModelInfo{{
 		ID:                 "transformer-est-cheaper",
-		Tier:               "transformer-est-tier",
+		Category:           "transformer-est-tier",
 		Provider:           "test-provider",
 		CostPerInputToken:  0.0001,
 		CostPerOutputToken: 0.0002,

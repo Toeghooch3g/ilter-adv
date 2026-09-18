@@ -1,5 +1,5 @@
 /**
- * ILTER dashboard API client — domain-split barrel.
+ * Ilter Advanced dashboard API client — domain-split barrel.
  *
  * All API functions are organized into domain modules and re-exported
  * through the `api` aggregator object: `api.dashboard.getDashboardStats()`.

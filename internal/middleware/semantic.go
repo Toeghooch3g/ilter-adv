@@ -18,6 +18,8 @@ import (
 	"github.com/ilter-ai/ilter/internal/features/semanticcache"
 	"github.com/ilter-ai/ilter/internal/model"
 
+	"github.com/redis/go-redis/v9"
+
 	"github.com/ilter-ai/ilter/internal/platform/reqmeta"
 )
 
@@ -33,12 +35,13 @@ type SemanticCacheMiddleware struct {
 // even if config has caching enabled.
 func (c *SemanticCacheMiddleware) SetEnabled(enabled bool) { c.runtimeDisabled.Store(!enabled) }
 
-func NewSemanticCacheMiddleware(cfg config.CacheConfig, g *circuitbreaker.RedisBreaker, cfgCache *config.Cache) *SemanticCacheMiddleware {
-	if g == nil {
-		return &SemanticCacheMiddleware{cfg: cfg, cfgCache: cfgCache}
+func NewSemanticCacheMiddleware(cfg config.CacheConfig, g *circuitbreaker.RedisBreaker, cfgCache *config.Cache, embedder semanticcache.Embedder, reranker semanticcache.Reranker) *SemanticCacheMiddleware {
+	var redisClient *redis.Client
+	if g != nil {
+		redisClient = g.Client()
 	}
 	return &SemanticCacheMiddleware{
-		cache:    semanticcache.New(cfg, g.Client(), cfg.OllamaURL),
+		cache:    semanticcache.New(cfg, embedder, reranker, redisClient, cfg.PostgresDSN),
 		cfg:      cfg,
 		cfgCache: cfgCache,
 	}
@@ -184,13 +187,17 @@ func (c *SemanticCacheMiddleware) handleCacheableResponse(ctx context.Context, r
 }
 
 // cachingEnabled reports whether r is even a candidate for semantic
-// caching: the feature is on (config or runtime override) and it's a POST.
+// caching: the feature is on (config or runtime override), the backend is
+// not the disabled mode, and it's a POST. The explicit Mode() check lets
+// ILTER_CACHE_TYPE=disabled short-circuit before any request-body
+// reading/parsing, so no external DB or embedding provider is needed.
 func (c *SemanticCacheMiddleware) cachingEnabled(r *http.Request) bool {
 	enabled := c.cfg.Enabled
 	if c.cfgCache != nil {
 		enabled = IsEnabled(c.cfgCache, "semantic_cache")
 	}
-	return enabled && !c.runtimeDisabled.Load() && c.cache != nil && r.Method == "POST"
+	return enabled && !c.runtimeDisabled.Load() && c.cache != nil &&
+		c.cache.Mode() != semanticcache.CacheModeDisabled && r.Method == "POST"
 }
 
 // prepareCacheableRequest reads r's body, restores it for downstream

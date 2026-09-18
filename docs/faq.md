@@ -1,4 +1,4 @@
-# Frequently Asked Questions — ILTER
+# Frequently Asked Questions — Ilter Advanced
 
 This document is divided into two sections: **User FAQ**, covering daily operational questions, and **Internal FAQ**, detailing technical design decisions and architecture rationale.
 
@@ -8,18 +8,18 @@ This document is divided into two sections: **User FAQ**, covering daily operati
 
 ### Do I need to modify my existing application code?
 
-No. ILTER speaks the exact OpenAI chat completions API (`/v1/chat/completions`), so any application using the OpenAI SDK or an OpenAI-compatible client works seamlessly simply by updating the `base_url` to `http://localhost:8181/v1`. It also accepts Anthropic-native clients (`/v1/messages`, e.g. Claude Code) and the legacy `/v1/completions` API directly — see the next question. Provider switching, PII protection, and cost tracking all happen at the proxy layer—not a single line of your application code needs to change.
+No. Ilter Advanced speaks the exact OpenAI chat completions API (`/v1/chat/completions`), so any application using the OpenAI SDK or an OpenAI-compatible client works seamlessly simply by updating the `base_url` to `http://localhost:8181/v1`. It also accepts Anthropic-native clients (`/v1/messages`, e.g. Claude Code) and the legacy `/v1/completions` API directly — see the next question. Provider switching, PII protection, and cost tracking all happen at the proxy layer—not a single line of your application code changes.
 
 ---
 
-### Which API formats and endpoints does ILTER accept?
+### Which API formats and endpoints does Ilter Advanced accept?
 
-ILTER isn't limited to OpenAI Chat Completions. Whatever the inbound format, requests are translated into a single internal representation and run through the same pipeline (auth, budget, PII, guardrails, routing, semantic cache):
+Ilter Advanced isn't limited to OpenAI Chat Completions. Whatever the inbound format, requests are translated into a single internal representation and run through the same pipeline (auth, budget, PII, guardrails, routing, semantic cache):
 
 | Endpoint | Format |
 |----------|--------|
 | `POST /v1/chat/completions` | OpenAI Chat (primary) |
-| `POST /v1/messages` | Anthropic Messages (e.g. Claude Code pointed at ILTER) |
+| `POST /v1/messages` | Anthropic Messages (e.g. Claude Code pointed at Ilter Advanced) |
 | `POST /v1/completions` | OpenAI legacy text completions |
 | `POST /v1/embeddings` | OpenAI Embeddings |
 | `POST /v1/rerank` | Cohere/TEI-style rerank |
@@ -29,7 +29,7 @@ The inbound format is independent of the upstream provider: an Anthropic-native 
 
 ---
 
-### Which providers does ILTER support?
+### Which providers does Ilter Advanced support?
 
 | Provider Config Type | Notes |
 |----------------------|-------|
@@ -104,7 +104,7 @@ Four parallel detection mechanisms run across a sliding window:
 
 ### Do I need to change my client code to use the MCP Gateway?
 
-No. The MCP Gateway operates entirely at the proxy layer. When you register an MCP server (stdio or SSE), ILTER injects tools as OpenAI `tool` definitions. When the model returns a `tool_call`, ILTER intercepts it, executes the tool via MCP, and feeds the result back to the model transparently.
+No. The MCP Gateway operates entirely at the proxy layer. When you register an MCP server (stdio or SSE), Ilter Advanced injects tools as OpenAI `tool` definitions. When the model returns a `tool_call`, Ilter Advanced intercepts it, executes the tool via MCP, and feeds the result back to the model transparently.
 
 Remote MCP clients (such as VS Code) can authenticate via built-in OAuth PKCE endpoints on port `8181`.
 
@@ -124,7 +124,7 @@ No. The dashboard (Astro + React) is pre-compiled at build time and embedded int
 
 ### Is Redis mandatory?
 
-No. Redis is optional and used only for vector-based semantic cache and distributed rate limiting across multiple instances. If Redis is absent, ILTER degrades gracefully (fails open) and operates as a standalone proxy.
+No. Redis is optional and used only for vector-based semantic cache and distributed rate limiting across multiple instances. If Redis is absent, Ilter Advanced degrades gracefully (fails open) and operates as a standalone proxy.
 
 ---
 
@@ -141,7 +141,7 @@ No. Redis is optional and used only for vector-based semantic cache and distribu
 
 ### Why SQLite instead of PostgreSQL?
 
-ILTER targets zero-infrastructure overhead. `modernc.org/sqlite` is a pure Go CGo-free SQLite driver operating in WAL (Write-Ahead Logging) mode. It handles thousands of concurrent reads and hundreds of writes per second without requiring a database server or network overhead.
+Ilter Advanced targets zero-infrastructure overhead. `modernc.org/sqlite` is a pure Go CGo-free SQLite driver operating in WAL (Write-Ahead Logging) mode. It handles thousands of concurrent reads and hundreds of writes per second without requiring a database server or network overhead.
 
 ---
 

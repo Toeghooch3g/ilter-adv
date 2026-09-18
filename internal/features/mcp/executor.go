@@ -5,11 +5,14 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
 	"github.com/cenkalti/backoff/v7"
 	"github.com/sony/gobreaker/v2"
+
+	"github.com/ilter-ai/ilter/internal/features/mcp/toolpricing"
 )
 
 // Executor resolves the server for a tool call, delegates to the appropriate
@@ -22,6 +25,76 @@ type Executor struct {
 	db              *sql.DB
 	toolConfigCache sync.Map // toolName → *ToolConfig
 	rateLimits      sync.Map // toolName → *rateLimitWindow
+
+	// blockedToolsFn returns the current blocked-tool list (same closure as
+	// Registry.SetBlockedToolsFn). Nil disables execution-time blocking.
+	blockedToolsFn func() []string
+
+	// pricingFn returns the current tool-pricing resolver; nil disables cost
+	// accounting (un-priced tools always cost 0).
+	pricingFn func() *toolpricing.Resolver
+	// budgetRecorder bills the computed cost against the caller's key budget
+	// (budget.Enforcer.RecordUsage); nil disables budget recording.
+	budgetRecorder func(ctx context.Context, keyID string, cost float64)
+	// usageRecorder records one usage_daily row per priced call (provider
+	// "mcp"); nil disables usage_daily recording.
+	usageRecorder func(ctx context.Context, keyID, serverID, toolName string, cost float64)
+}
+
+// SetPricingResolver installs the closure returning the current pricing
+// resolver (rebuilt on config-cache changes).
+func (ex *Executor) SetPricingResolver(fn func() *toolpricing.Resolver) {
+	ex.pricingFn = fn
+}
+
+// SetBudgetRecorder installs the budget recording callback.
+func (ex *Executor) SetBudgetRecorder(fn func(ctx context.Context, keyID string, cost float64)) {
+	ex.budgetRecorder = fn
+}
+
+// SetUsageRecorder installs the usage_daily recording callback.
+func (ex *Executor) SetUsageRecorder(fn func(ctx context.Context, keyID, serverID, toolName string, cost float64)) {
+	ex.usageRecorder = fn
+}
+
+// computeCost resolves the priced cost of a successful tool call (0 when no
+// rule matches or pricing is disabled). A per-tool dashboard cost (registry
+// toolCosts) takes precedence over the tool_pricing runtime rules for the
+// exact (server, tool); both fall back to 0 for unpriced tools.
+func (ex *Executor) computeCost(serverID, toolName string, args json.RawMessage) float64 {
+	if cost := ex.registry.ToolCost(serverID, toolName); cost > 0 {
+		return cost
+	}
+	if ex.pricingFn == nil {
+		return 0
+	}
+	r := ex.pricingFn()
+	if r == nil {
+		return 0
+	}
+	return r.CostFor(serverID, toolName, args)
+}
+
+// SetBlockedToolsFn installs the closure the executor consults before every
+// tool call (defense in depth behind the registry's ListTools filter, so a
+// client that guesses a blocked tool's name is still rejected).
+func (ex *Executor) SetBlockedToolsFn(fn func() []string) {
+	ex.blockedToolsFn = fn
+}
+
+// isBlocked reports whether the server's tool matches the blocked-tools list.
+// Entries match a tool's server-prefixed exposed name
+// (ExposedToolName(server.Config.Name, server.ID, toolName)) exactly; bare
+// names and legacy "server__tool" forms no longer match.
+func (ex *Executor) isBlocked(server *ServerInfo, toolName string) bool {
+	if ex.blockedToolsFn == nil {
+		return false
+	}
+	blocked := ex.blockedToolsFn()
+	if len(blocked) == 0 {
+		return false
+	}
+	return slices.Contains(blocked, ExposedToolName(server.Config.Name, server.ID, toolName))
 }
 
 func NewExecutor(registry *Registry, clients *ClientManager, authorizer *Authorizer, auditLog *AuditLogger, db *sql.DB) *Executor {
@@ -54,6 +127,21 @@ func (ex *Executor) ExecuteTool(ctx context.Context, p *ExecuteToolParams) *Call
 		return errorResult(p.ToolName, err.Error())
 	}
 
+	// 1b. Blocked-tool policy (defense in depth: the registry's ListTools
+	// filter hides blocked tools from every client surface; this rejects a
+	// client that guesses a blocked tool's name anyway).
+	if ex.isBlocked(server, tool.Name) {
+		ex.logAudit(ctx, p, tool.Name, server.ID, start, 403, false, "blocked", 0)
+		return errorResult(p.ToolName, "tool blocked by gateway policy")
+	}
+
+	// 1c. Admin-disabled tool policy (same defense-in-depth pattern: the
+	// registry hides the tool from ListTools; reject a direct guess here).
+	if ex.registry.IsToolDisabled(server.ID, tool.Name) {
+		ex.logAudit(ctx, p, tool.Name, server.ID, start, 403, false, "disabled", 0)
+		return errorResult(p.ToolName, "tool is disabled")
+	}
+
 	// 2. Check access (with resolved server and bare tool name).
 	if blocked := ex.checkToolAccess(ctx, p, tool, server, start); blocked != nil {
 		return blocked
@@ -82,7 +170,7 @@ func (ex *Executor) ExecuteTool(ctx context.Context, p *ExecuteToolParams) *Call
 	// 5. Obtain a transport client.
 	client, err := ex.clients.GetOrCreate(ctx, server)
 	if err != nil {
-		ex.logAudit(ctx, p, tool.Name, server.ID, "tools/call", start, 500, false, err.Error())
+		ex.logAudit(ctx, p, tool.Name, server.ID, start, 500, false, err.Error(), 0)
 		return errorResult(p.ToolName, fmt.Sprintf("Failed to connect to server %q: %v", server.Config.Name, err))
 	}
 
@@ -102,19 +190,31 @@ func (ex *Executor) ExecuteTool(ctx context.Context, p *ExecuteToolParams) *Call
 
 	resp, err := ex.callWithRetry(callCtx, client, req, tool.Name, server.ID, maxRetries)
 	if err != nil {
-		ex.logAudit(ctx, p, tool.Name, server.ID, "tools/call", start, 500, false, err.Error())
+		ex.logAudit(ctx, p, tool.Name, server.ID, start, 500, false, err.Error(), 0)
 		return errorResult(p.ToolName, fmt.Sprintf("Tool call failed after %d attempt(s): %v", maxRetries, err))
 	}
 
 	if resp.Error != nil {
-		ex.logAudit(ctx, p, tool.Name, server.ID, "tools/call", start, 200, false, resp.Error.Message)
+		ex.logAudit(ctx, p, tool.Name, server.ID, start, 200, false, resp.Error.Message, 0)
 		return &CallToolResult{
 			IsError: true,
 			Content: []ToolContent{{Type: "text", Text: resp.Error.Message}},
 		}
 	}
 
-	ex.logAudit(ctx, p, tool.Name, server.ID, "tools/call", start, 200, true, "")
+	// Cost accounting runs only on the success path (status 200, success=true):
+	// failed, blocked, and rate-limited calls cost nothing.
+	cost := ex.computeCost(server.ID, tool.Name, p.Arguments)
+	if cost > 0 {
+		if ex.budgetRecorder != nil {
+			ex.budgetRecorder(ctx, p.APIKeyID, cost)
+		}
+		if ex.usageRecorder != nil {
+			ex.usageRecorder(ctx, p.APIKeyID, server.ID, tool.Name, cost)
+		}
+	}
+
+	ex.logAudit(ctx, p, tool.Name, server.ID, start, 200, true, "", cost)
 
 	return parseToolResult(resp.Result)
 }
@@ -130,7 +230,7 @@ func (ex *Executor) checkToolAccess(ctx context.Context, p *ExecuteToolParams, t
 	}
 	result := ex.authorizer.CheckAccess(p.KeyPrefix, nil, p.APIKeyID, server.ID, tool.Name)
 	if !result.Allowed {
-		ex.logAudit(ctx, p, tool.Name, server.ID, "tools/call", start, 403, false, "access denied")
+		ex.logAudit(ctx, p, tool.Name, server.ID, start, 403, false, "access denied", 0)
 		return errorResult(p.ToolName, "Access denied by MCP access rules")
 	}
 	return nil
@@ -146,15 +246,15 @@ func (ex *Executor) checkToolPolicy(ctx context.Context, p *ExecuteToolParams, t
 		return nil
 	}
 	if tc.Destructive {
-		ex.logAudit(ctx, p, tool.Name, server.ID, "tools/call", start, 403, false, "destructive tool blocked")
+		ex.logAudit(ctx, p, tool.Name, server.ID, start, 403, false, "destructive tool blocked", 0)
 		return errorResult(p.ToolName, "Tool call blocked: destructive tool not allowed")
 	}
 	if tc.RequiresConfirmation {
-		ex.logAudit(ctx, p, tool.Name, server.ID, "tools/call", start, 403, false, "tool requires confirmation")
+		ex.logAudit(ctx, p, tool.Name, server.ID, start, 403, false, "tool requires confirmation", 0)
 		return errorResult(p.ToolName, "Tool call blocked: tool requires manual confirmation")
 	}
 	if ex.isRateLimited(p.ToolName, tc.RateLimitRPM) {
-		ex.logAudit(ctx, p, tool.Name, server.ID, "tools/call", start, 403, false, "rate limit exceeded")
+		ex.logAudit(ctx, p, tool.Name, server.ID, start, 403, false, "rate limit exceeded", 0)
 		return errorResult(p.ToolName, "Tool call blocked: rate limit exceeded")
 	}
 	return nil
@@ -205,7 +305,7 @@ func (ex *Executor) callWithRetry(callCtx context.Context, client TransportClien
 	return resp, err
 }
 
-func (ex *Executor) logAudit(ctx context.Context, p *ExecuteToolParams, toolName, serverID, method string, start time.Time, statusCode int, success bool, errMsg string) {
+func (ex *Executor) logAudit(ctx context.Context, p *ExecuteToolParams, toolName, serverID string, start time.Time, statusCode int, success bool, errMsg string, cost float64) {
 	if ex.auditLog == nil {
 		return
 	}
@@ -219,13 +319,14 @@ func (ex *Executor) logAudit(ctx context.Context, p *ExecuteToolParams, toolName
 		APIKeyID:   p.APIKeyID,
 		Tool:       toolName,
 		ServerID:   serverID,
-		Method:     method,
+		Method:     "tools/call",
 		Params:     paramsStr,
 		DurationMs: float64(time.Since(start).Microseconds()) / 1000.0,
 		StatusCode: statusCode,
 		Success:    success,
 		ErrorMsg:   errMsg,
 		ClientIP:   p.ClientIP,
+		Cost:       cost,
 	})
 	if MCPToolCallsTotal != nil {
 		MCPToolCallsTotal.Add(ctx, 1)

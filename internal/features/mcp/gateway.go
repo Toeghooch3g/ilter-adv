@@ -333,29 +333,38 @@ func (g *Gateway) handleInitialize(req *JSONRPCRequest, rctx *RequestContext) *J
 
 	rctx.ProtocolVersion = version.ID()
 
-	if params.ProtocolVersion != "" && params.ProtocolVersion != string(version.ID()) {
-		mcpLog.Warn(
-			"client requested different protocol version, responding with negotiated version",
-			"client_version", params.ProtocolVersion,
-			"server_version", version.ID(),
-		)
-	}
+	mcpLog.Info("mcp initialize negotiated",
+		"key_id", rctx.KeyID,
+		"client_version", params.ProtocolVersion,
+		"server_version", version.ID(),
+		"client_info", params.ClientInfo.Name,
+	)
 
 	return NewSuccessResponse(req.ID, resultJSON)
 }
 
 func (g *Gateway) handleToolsList(req *JSONRPCRequest, rctx *RequestContext, version protocol.Version) *JSONRPCResponse {
-	var tools []ToolDefinition
+	var mcpTools, openAPITools []ToolDefinition
 
 	// 1. MCP Server Tools (if mcp feature is enabled)
 	if (g.cfgCache == nil || config.IsEnabled(g.cfgCache, "mcp")) && g.registry != nil {
-		tools = append(tools, g.collectMCPServerTools(rctx)...)
+		mcpTools = g.collectMCPServerTools(rctx)
 	}
 
 	// 2. OpenAPI Meta-Tools (if openapi feature is enabled)
 	if (g.cfgCache == nil || config.IsEnabled(g.cfgCache, "openapi")) && g.openapiProvider != nil {
-		tools = append(tools, g.collectOpenAPITools(rctx)...)
+		openAPITools = g.collectOpenAPITools(rctx)
 	}
+
+	tools := append(append([]ToolDefinition(nil), mcpTools...), openAPITools...)
+
+	mcpLog.Info("mcp tools/list",
+		"key_id", rctx.KeyID,
+		"mcp_tools", len(mcpTools),
+		"openapi_tools", len(openAPITools),
+		"total_tools", len(tools),
+		"version", version.ID(),
+	)
 
 	toolsJSON, err := json.Marshal(tools)
 	if err != nil {
@@ -368,76 +377,17 @@ func (g *Gateway) handleToolsList(req *JSONRPCRequest, rctx *RequestContext, ver
 	return NewSuccessResponse(req.ID, resultJSON)
 }
 
-// namedToolEntry pairs a (possibly disambiguated) tool name with the
-// ToolInfo it was derived from.
-type namedToolEntry struct {
-	name string
-	ti   ToolInfo
-}
-
-// toolNameServerSets maps each tool name to the set of server IDs offering
-// it, so callers can detect and disambiguate cross-server name collisions.
-func toolNameServerSets(allTools []ToolInfo) map[string]map[string]struct{} {
-	nameServers := make(map[string]map[string]struct{})
-	for _, ti := range allTools {
-		if nameServers[ti.Tool.Name] == nil {
-			nameServers[ti.Tool.Name] = make(map[string]struct{})
-		}
-		nameServers[ti.Tool.Name][ti.ServerID] = struct{}{}
-	}
-	return nameServers
-}
-
-// disambiguateToolNames renames tools whose name is offered by more than one
-// server (via SanitizeToolName), returning the resulting entries plus how
-// many times each final name was emitted.
-func disambiguateToolNames(authorizedTools []ToolInfo, nameServers map[string]map[string]struct{}) ([]namedToolEntry, map[string]int) {
-	entries := make([]namedToolEntry, 0, len(authorizedTools))
-	emittedCount := make(map[string]int, len(authorizedTools))
-	for _, ti := range authorizedTools {
-		name := ti.Tool.Name
-		if len(nameServers[name]) > 1 {
-			name = SanitizeToolName(ti.ServerID, ti.Tool.Name)
-		}
-		entries = append(entries, namedToolEntry{name: name, ti: ti})
-		emittedCount[name]++
-	}
-	return entries, emittedCount
-}
-
 // collectMCPServerTools returns the authorized MCP server tools for rctx,
-// disambiguating same-named tools offered by different servers.
+// each named by its server-prefixed exposed name (ExposedToolName).
 func (g *Gateway) collectMCPServerTools(rctx *RequestContext) []ToolDefinition {
 	allTools := g.registry.ListTools()
 
-	toolNames := make([]string, 0, len(allTools))
-	for _, ti := range allTools {
-		toolNames = append(toolNames, ti.Tool.Name)
-	}
+	authorizedTools := g.authorizer.GetAuthorizedToolsForServers(rctx.KeyPrefix, nil, rctx.KeyID, allTools)
 
-	authorized := g.authorizer.GetAuthorizedTools(rctx.KeyPrefix, nil, rctx.KeyID, toolNames)
-	authSet := make(map[string]bool, len(authorized))
-	for _, name := range authorized {
-		authSet[name] = true
-	}
-
-	var authorizedTools []ToolInfo
-	for _, ti := range allTools {
-		if authSet[ti.Tool.Name] {
-			authorizedTools = append(authorizedTools, ti)
-		}
-	}
-
-	nameServers := toolNameServerSets(allTools)
-	entries, emittedCount := disambiguateToolNames(authorizedTools, nameServers)
-
-	tools := make([]ToolDefinition, 0, len(entries))
-	for _, e := range entries {
-		t := e.ti.Tool
-		t.Name = e.name
-		if emittedCount[e.name] > 1 {
-			t.Name = SanitizeToolName(e.ti.ServerID, e.ti.Tool.Name)
-		}
+	tools := make([]ToolDefinition, 0, len(authorizedTools))
+	for _, ti := range authorizedTools {
+		t := ti.Tool
+		t.Name = ExposedToolName(ti.ServerName, ti.ServerID, ti.Tool.Name)
 		tools = append(tools, t)
 	}
 	return tools
@@ -588,10 +538,14 @@ func (g *Gateway) checkMCPToolAccess(req *JSONRPCRequest, rctx *RequestContext, 
 	}
 	tool, server, err := g.registry.ResolveTool(params.Name)
 	if err != nil || tool == nil {
+		mcpLog.Warn("mcp tools/call rejected: tool not registered",
+			"key_id", rctx.KeyID, "tool", params.Name, "error", err)
 		return NewErrorResponse(req.ID, version.ErrorCode(protocol.ErrToolNotFound), "Tool not found: "+params.Name)
 	}
 	result := g.authorizer.CheckAccess(rctx.KeyPrefix, nil, rctx.KeyID, server.ID, tool.Name)
 	if !result.Allowed {
+		mcpLog.Warn("mcp tools/call rejected: not authorized",
+			"key_id", rctx.KeyID, "key_prefix", rctx.KeyPrefix, "tool", tool.Name, "server_id", server.ID, "matched_rule", result.MatchedRule)
 		return NewErrorResponse(req.ID, version.ErrorCode(protocol.ErrToolNotFound), "Tool not found")
 	}
 	return nil
@@ -602,8 +556,16 @@ func (g *Gateway) checkMCPToolAccess(req *JSONRPCRequest, rctx *RequestContext, 
 func (g *Gateway) executeToolSync(req *JSONRPCRequest, version protocol.Version, execParams *ExecuteToolParams) *JSONRPCResponse {
 	result := g.executor.ExecuteTool(context.Background(), execParams)
 	if result == nil {
+		mcpLog.Warn("mcp tools/call failed",
+			"key_id", execParams.APIKeyID, "tool", execParams.ToolName, "error", "tool execution returned no result")
 		return NewErrorResponse(req.ID, version.ErrorCode(protocol.ErrToolExecution), "Tool execution failed")
 	}
+
+	mcpLog.Info("mcp tools/call",
+		"key_id", execParams.APIKeyID,
+		"tool", execParams.ToolName,
+		"is_error", result.IsError,
+	)
 
 	contentJSON, err := json.Marshal(result.Content)
 	if err != nil {

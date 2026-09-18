@@ -27,16 +27,18 @@ func NewModelsHandler(store *db.SQLiteStore, cfg *config.Config, lb *smartrouter
 }
 
 type ModelResponseItem struct {
-	Name               string  `json:"name"`
-	Provider           string  `json:"provider"`
-	Type               string  `json:"type"`
-	OwnedBy            string  `json:"owned_by"`
-	Active             bool    `json:"active"`
-	Configured         bool    `json:"configured"`
-	DisplayName        string  `json:"display_name,omitempty"`
-	Tier               string  `json:"tier,omitempty"`
-	CostPerInputToken  float64 `json:"cost_per_input_token,omitempty"`
-	CostPerOutputToken float64 `json:"cost_per_output_token,omitempty"`
+	Name                    string  `json:"name"`
+	Provider                string  `json:"provider"`
+	Type                    string  `json:"type"`
+	OwnedBy                 string  `json:"owned_by"`
+	Active                  bool    `json:"active"`
+	Configured              bool    `json:"configured"`
+	DisplayName             string  `json:"display_name,omitempty"`
+	Category                string  `json:"category,omitempty"`
+	CostPerInputToken       float64 `json:"cost_per_input_token,omitempty"`
+	CostPerOutputToken      float64 `json:"cost_per_output_token,omitempty"`
+	CostPerCachedInputToken float64 `json:"cost_per_cached_input_token,omitempty"`
+	CostPerCacheWriteToken  float64 `json:"cost_per_cache_write_token,omitempty"`
 }
 
 // buildLBModelItems converts the load balancer's live model infos into
@@ -58,13 +60,17 @@ func buildLBModelItems(lbInfos []smartrouter.ModelInfo, dbMap map[string]db.Prov
 		}
 		if regInfo, ok := catalog.GetModel(info.Name); ok {
 			item.DisplayName = regInfo.DisplayName
-			item.Tier = regInfo.Tier
+			item.Category = regInfo.Category
 			item.CostPerInputToken = regInfo.CostPerInputToken
 			item.CostPerOutputToken = regInfo.CostPerOutputToken
+			item.CostPerCachedInputToken = regInfo.CostPerCachedInputToken
+			item.CostPerCacheWriteToken = regInfo.CostPerCacheWriteToken
 		} else if dbEntry, ok := dbMap[info.Provider+":"+info.Name]; ok {
-			item.Tier = dbEntry.Tier
+			item.Category = dbEntry.Category
 			item.CostPerInputToken = dbEntry.CostIn
 			item.CostPerOutputToken = dbEntry.CostOut
+			item.CostPerCachedInputToken = dbEntry.CostCacheRead
+			item.CostPerCacheWriteToken = dbEntry.CostCacheWrite
 		}
 		items = append(items, item)
 	}
@@ -80,14 +86,20 @@ func enrichModelItemFromCatalog(item *ModelResponseItem, modelName string) {
 		return
 	}
 	item.DisplayName = regInfo.DisplayName
-	if regInfo.Tier != "" && regInfo.Tier != "standard" {
-		item.Tier = regInfo.Tier
+	if regInfo.Category != "" && regInfo.Category != "standard" {
+		item.Category = regInfo.Category
 	}
 	if regInfo.CostPerInputToken > 0 {
 		item.CostPerInputToken = regInfo.CostPerInputToken
 	}
 	if regInfo.CostPerOutputToken > 0 {
 		item.CostPerOutputToken = regInfo.CostPerOutputToken
+	}
+	if regInfo.CostPerCachedInputToken > 0 {
+		item.CostPerCachedInputToken = regInfo.CostPerCachedInputToken
+	}
+	if regInfo.CostPerCacheWriteToken > 0 {
+		item.CostPerCacheWriteToken = regInfo.CostPerCacheWriteToken
 	}
 }
 
@@ -102,15 +114,17 @@ func buildDBOnlyModelItems(dbModels []db.ProviderModel, configuredProviders, lbS
 		}
 		lbSeen[pm.Provider+":"+pm.Model] = true
 		item := ModelResponseItem{
-			Name:               pm.Model,
-			Provider:           pm.Provider,
-			Type:               pm.Provider,
-			OwnedBy:            pm.Provider,
-			Active:             pm.Active,
-			Configured:         false,
-			Tier:               pm.Tier,
-			CostPerInputToken:  pm.CostIn,
-			CostPerOutputToken: pm.CostOut,
+			Name:                    pm.Model,
+			Provider:                pm.Provider,
+			Type:                    pm.Provider,
+			OwnedBy:                 pm.Provider,
+			Active:                  pm.Active,
+			Configured:              false,
+			Category:                pm.Category,
+			CostPerInputToken:       pm.CostIn,
+			CostPerOutputToken:      pm.CostOut,
+			CostPerCachedInputToken: pm.CostCacheRead,
+			CostPerCacheWriteToken:  pm.CostCacheWrite,
 		}
 		enrichModelItemFromCatalog(&item, pm.Model)
 		items = append(items, item)
@@ -118,7 +132,7 @@ func buildDBOnlyModelItems(dbModels []db.ProviderModel, configuredProviders, lbS
 	return items
 }
 
-func (h *Handler) HandleModels(w http.ResponseWriter, _ *http.Request) {
+func (h *Handler) HandleModels(w http.ResponseWriter, r *http.Request) {
 	lbInfos := h.lb.GetAvailableModelInfos()
 
 	configuredProviders := make(map[string]bool, len(h.cfg.Providers))
@@ -126,7 +140,7 @@ func (h *Handler) HandleModels(w http.ResponseWriter, _ *http.Request) {
 		configuredProviders[p.Name] = true
 	}
 
-	dbModels, err := h.store.GetAllProviderModels()
+	dbModels, err := h.store.GetAllProviderModels(r.Context())
 	if err != nil {
 		slog.Error("Failed to query provider_models", "error", err)
 		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", err.Error())
@@ -152,8 +166,9 @@ func (h *Handler) HandleModels(w http.ResponseWriter, _ *http.Request) {
 }
 
 type ToggleModelRequest struct {
-	Name   string `json:"name"`
-	Active bool   `json:"active"`
+	Provider string `json:"provider"`
+	Name     string `json:"name"`
+	Active   bool   `json:"active"`
 }
 
 func (h *Handler) HandleToggleModel(w http.ResponseWriter, r *http.Request) {
@@ -167,13 +182,17 @@ func (h *Handler) HandleToggleModel(w http.ResponseWriter, r *http.Request) {
 		model.WriteJSONError(w, http.StatusBadRequest, "invalid_request_error", "Model name is required")
 		return
 	}
+	if req.Provider == "" {
+		model.WriteJSONError(w, http.StatusBadRequest, "invalid_request_error", "Provider is required")
+		return
+	}
 
-	if err := h.store.SaveModelStatus(req.Name, req.Active); err != nil {
+	if err := h.store.SaveModelStatus(r.Context(), req.Provider, req.Name, req.Active); err != nil {
 		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", "Failed to save model status to DB")
 		return
 	}
 
-	inactiveList, err := h.store.GetInactiveModels()
+	inactiveList, err := h.store.GetInactiveModels(r.Context())
 	if err == nil {
 		h.lb.SetInactiveModels(inactiveList)
 	}
@@ -197,13 +216,17 @@ func (h *Handler) HandleUpdateModelByID(w http.ResponseWriter, r *http.Request) 
 		model.WriteJSONError(w, http.StatusBadRequest, "invalid_request_error", "Model name is required")
 		return
 	}
+	if req.Provider == "" {
+		model.WriteJSONError(w, http.StatusBadRequest, "invalid_request_error", "Provider is required")
+		return
+	}
 
-	if err := h.store.SaveModelStatus(req.Name, req.Active); err != nil {
+	if err := h.store.SaveModelStatus(r.Context(), req.Provider, req.Name, req.Active); err != nil {
 		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", "Failed to save model status to DB")
 		return
 	}
 
-	inactiveList, err := h.store.GetInactiveModels()
+	inactiveList, err := h.store.GetInactiveModels(r.Context())
 	if err == nil {
 		h.lb.SetInactiveModels(inactiveList)
 	}
@@ -216,14 +239,14 @@ func (h *Handler) HandleUpdateModelByID(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
-type UpdateModelTierRequest struct {
-	Name string `json:"name"`
-	Tier string `json:"tier"`
+type UpdateModelCategoryRequest struct {
+	Name     string `json:"name"`
+	Category string `json:"category"`
 }
 
-func (h *Handler) HandleUpdateModelTier(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) HandleUpdateModelCategory(w http.ResponseWriter, r *http.Request) {
 	defer func() { _ = r.Body.Close() }()
-	var req UpdateModelTierRequest
+	var req UpdateModelCategoryRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		model.WriteJSONError(w, http.StatusBadRequest, "invalid_request_error", "Invalid request body")
 		return
@@ -232,23 +255,26 @@ func (h *Handler) HandleUpdateModelTier(w http.ResponseWriter, r *http.Request) 
 		model.WriteJSONError(w, http.StatusBadRequest, "invalid_request_error", "Model name is required")
 		return
 	}
-	validTiers := map[string]bool{"free": true, "economy": true, "standard": true, "premium": true}
-	if req.Tier == "" || !validTiers[req.Tier] {
-		model.WriteJSONError(w, http.StatusBadRequest, "invalid_request_error", "Invalid tier: must be free, economy, standard, or premium")
+	validCategories := make(map[string]bool, len(DefaultCategories)+4)
+	for _, c := range h.categoryList(r.Context()) {
+		validCategories[c] = true
+	}
+	if req.Category == "" || !validCategories[req.Category] {
+		model.WriteJSONError(w, http.StatusBadRequest, "invalid_request_error", "Invalid category: must be an existing category")
 		return
 	}
 
 	catalog.ModelsMu.Lock()
 	if infos, ok := catalog.Models[req.Name]; ok {
 		for i := range infos {
-			infos[i].Tier = req.Tier
+			infos[i].Category = req.Category
 		}
 		catalog.Models[req.Name] = infos
 	}
 	catalog.ModelsMu.Unlock()
 
-	if err := h.store.SaveModelTier(req.Name, req.Tier); err != nil {
-		slog.Error("Failed to persist model tier to DB", "model", req.Name, "tier", req.Tier, "error", err)
+	if err := h.store.SaveModelCategory(r.Context(), req.Name, req.Category); err != nil {
+		slog.Error("Failed to persist model category to DB", "model", req.Name, "category", req.Category, "error", err)
 	}
 
 	model.WriteJSON(w, http.StatusOK, map[string]any{"status": "ok"})

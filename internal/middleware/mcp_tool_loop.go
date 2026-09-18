@@ -149,9 +149,8 @@ func (m *MCPInjectMiddleware) cleanToolResultContent(r *http.Request, tm model.M
 	return s
 }
 
-// logToolExecution logs one tool's execution outcome and, if configured,
-// emits a tool_result event to the client.
-func (m *MCPInjectMiddleware) logToolExecution(w http.ResponseWriter, tm model.Message, cleanedContent any, toolCallInfo map[string]toolCallMeta, isErr bool, turn int, turnStart time.Time) {
+// logToolExecution logs one tool's execution outcome.
+func (m *MCPInjectMiddleware) logToolExecution(tm model.Message, cleanedContent any, toolCallInfo map[string]toolCallMeta, isErr bool, turn int, turnStart time.Time) {
 	toolName := "unknown"
 	toolArgs := ""
 	if info, ok := toolCallInfo[tm.ToolCallID]; ok {
@@ -172,22 +171,12 @@ func (m *MCPInjectMiddleware) logToolExecution(w http.ResponseWriter, tm model.M
 		"result_bytes", resultSize,
 		"duration_ms", time.Since(turnStart).Milliseconds(),
 	)
-
-	if m.toolEventWriter != nil {
-		evtPayload, _ := json.Marshal(map[string]any{
-			"call_id":  tm.ToolCallID,
-			"content":  cleanedContent,
-			"is_error": isErr,
-		})
-		m.toolEventWriter(w, "ilter.tool_result", evtPayload)
-	}
 }
 
 // processToolResultMessage applies PII masking and guardrail checks to a
-// tool result message, logs the tool execution, and (if configured) emits a
-// tool_result event to the client. Returns the message to accumulate.
+// tool result message and logs the tool execution. Returns the message to
+// accumulate.
 func (m *MCPInjectMiddleware) processToolResultMessage(
-	w http.ResponseWriter,
 	r *http.Request,
 	tm model.Message,
 	toolCallInfo map[string]toolCallMeta,
@@ -200,7 +189,7 @@ func (m *MCPInjectMiddleware) processToolResultMessage(
 	toolMsg := tm
 	toolMsg.Content = cleanedContent
 
-	m.logToolExecution(w, tm, cleanedContent, toolCallInfo, isErr, turn, turnStart)
+	m.logToolExecution(tm, cleanedContent, toolCallInfo, isErr, turn, turnStart)
 
 	return toolMsg
 }
@@ -237,7 +226,6 @@ func appendFirstAssistantToolCallMessage(accumulatedMessages, toolMsgs []model.M
 // processToolMessages cleans, logs, and accumulates every tool-role message
 // in toolMsgs, returning the updated message list and how many were processed.
 func (m *MCPInjectMiddleware) processToolMessages(
-	w http.ResponseWriter,
 	r *http.Request,
 	accumulatedMessages, toolMsgs []model.Message,
 	toolErrors []bool,
@@ -251,7 +239,7 @@ func (m *MCPInjectMiddleware) processToolMessages(
 			continue
 		}
 		isErr := toolIdx < len(toolErrors) && toolErrors[toolIdx]
-		toolMsg := m.processToolResultMessage(w, r, tm, toolCallInfo, isErr, turn, turnStart)
+		toolMsg := m.processToolResultMessage(r, tm, toolCallInfo, isErr, turn, turnStart)
 		accumulatedMessages = append(accumulatedMessages, toolMsg)
 		toolIdx++
 	}
@@ -266,7 +254,7 @@ func (m *MCPInjectMiddleware) runTurn(w http.ResponseWriter, turnReq *http.Reque
 	if originalStream {
 		return m.handleStreamingOnce(w, turnReq, wireReq, next, markerOffset)
 	}
-	return m.handleNonStreamingOnce(w, turnReq, wireReq, next, originalStream, markerOffset)
+	return m.handleNonStreamingOnce(w, turnReq, wireReq, next, markerOffset)
 }
 
 // toolCallLoop orchestrates the multi-turn tool execution loop.
@@ -300,7 +288,7 @@ func (m *MCPInjectMiddleware) toolCallLoop(w http.ResponseWriter, r *http.Reques
 		toolCallInfo := buildToolCallInfo(accumulatedMessages)
 
 		var processed int
-		accumulatedMessages, processed = m.processToolMessages(w, r, accumulatedMessages, toolMsgs, toolErrors, toolCallInfo, turn, turnStart)
+		accumulatedMessages, processed = m.processToolMessages(r, accumulatedMessages, toolMsgs, toolErrors, toolCallInfo, turn, turnStart)
 		totalToolCount += processed
 	}
 

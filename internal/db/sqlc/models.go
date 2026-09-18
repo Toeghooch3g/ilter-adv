@@ -30,6 +30,7 @@ type ApiKey struct {
 	OrgID               *string   `json:"org_id"`
 	CreatedAt           time.Time `json:"created_at"`
 	UpdatedAt           time.Time `json:"updated_at"`
+	McpInjectionEnabled int64     `json:"mcp_injection_enabled"`
 }
 
 type AuditBody struct {
@@ -42,26 +43,28 @@ type AuditBody struct {
 }
 
 type AuditLog struct {
-	ID                 int64      `json:"id"`
-	Timestamp          *time.Time `json:"timestamp"`
-	KeyID              *string    `json:"key_id"`
-	Model              *string    `json:"model"`
-	Provider           *string    `json:"provider"`
-	PromptTokens       *int64     `json:"prompt_tokens"`
-	CompletionTokens   *int64     `json:"completion_tokens"`
-	TotalCost          *float64   `json:"total_cost"`
-	LatencyMs          *int64     `json:"latency_ms"`
-	StatusCode         *int64     `json:"status_code"`
-	CacheHit           *bool      `json:"cache_hit"`
-	PromptPreview      *string    `json:"prompt_preview"`
-	RequestBody        *string    `json:"request_body"`
-	ResponseBody       *string    `json:"response_body"`
-	ComplexityScore    *float64   `json:"complexity_score"`
-	GuardrailLatencyMs *float64   `json:"guardrail_latency_ms"`
-	LlmLatencyMs       *float64   `json:"llm_latency_ms"`
-	QueuedLatencyMs    *float64   `json:"queued_latency_ms"`
-	ClientIp           *string    `json:"client_ip"`
-	TraceID            *string    `json:"trace_id"`
+	ID                  int64      `json:"id"`
+	Timestamp           *time.Time `json:"timestamp"`
+	KeyID               *string    `json:"key_id"`
+	Model               *string    `json:"model"`
+	Provider            *string    `json:"provider"`
+	PromptTokens        *int64     `json:"prompt_tokens"`
+	CompletionTokens    *int64     `json:"completion_tokens"`
+	TotalCost           *float64   `json:"total_cost"`
+	LatencyMs           *int64     `json:"latency_ms"`
+	StatusCode          *int64     `json:"status_code"`
+	CacheHit            *bool      `json:"cache_hit"`
+	PromptPreview       *string    `json:"prompt_preview"`
+	RequestBody         *string    `json:"request_body"`
+	ResponseBody        *string    `json:"response_body"`
+	ComplexityScore     *float64   `json:"complexity_score"`
+	GuardrailLatencyMs  *float64   `json:"guardrail_latency_ms"`
+	LlmLatencyMs        *float64   `json:"llm_latency_ms"`
+	QueuedLatencyMs     *float64   `json:"queued_latency_ms"`
+	ClientIp            *string    `json:"client_ip"`
+	TraceID             *string    `json:"trace_id"`
+	CachedTokens        int64      `json:"cached_tokens"`
+	CacheCreationTokens int64      `json:"cache_creation_tokens"`
 }
 
 type ConfigAuditLog struct {
@@ -214,6 +217,7 @@ type McpAuditLog struct {
 	ErrorMsg   *string   `json:"error_msg"`
 	ClientIp   *string   `json:"client_ip"`
 	CreatedAt  time.Time `json:"created_at"`
+	Cost       *float64  `json:"cost"`
 }
 
 type McpGrant struct {
@@ -274,6 +278,13 @@ type McpTool struct {
 	CreatedAt   time.Time       `json:"created_at"`
 }
 
+type McpToolToggle struct {
+	ServerID  string   `json:"server_id"`
+	ToolName  string   `json:"tool_name"`
+	Enabled   int64    `json:"enabled"`
+	CostPer1k *float64 `json:"cost_per_1k"`
+}
+
 type Message struct {
 	ID               int64     `json:"id"`
 	ConversationID   string    `json:"conversation_id"`
@@ -295,22 +306,24 @@ type ModelConfig struct {
 }
 
 type OauthCode struct {
-	ID            string    `json:"id"`
-	ApiKey        string    `json:"api_key"`
-	RedirectUri   string    `json:"redirect_uri"`
-	CodeChallenge string    `json:"code_challenge"`
-	State         string    `json:"state"`
-	ExpiresAt     time.Time `json:"expires_at"`
-	Used          int64     `json:"used"`
+	ID              string    `json:"id"`
+	ApiKey          string    `json:"api_key"`
+	RedirectUri     string    `json:"redirect_uri"`
+	CodeChallenge   string    `json:"code_challenge"`
+	State           string    `json:"state"`
+	ExpiresAt       time.Time `json:"expires_at"`
+	Used            int64     `json:"used"`
+	ProtocolVersion string    `json:"protocol_version"`
 }
 
 type OauthRequest struct {
-	ID            string    `json:"id"`
-	ClientID      string    `json:"client_id"`
-	RedirectUri   string    `json:"redirect_uri"`
-	CodeChallenge string    `json:"code_challenge"`
-	State         string    `json:"state"`
-	CreatedAt     time.Time `json:"created_at"`
+	ID              string    `json:"id"`
+	ClientID        string    `json:"client_id"`
+	RedirectUri     string    `json:"redirect_uri"`
+	CodeChallenge   string    `json:"code_challenge"`
+	State           string    `json:"state"`
+	CreatedAt       time.Time `json:"created_at"`
+	ProtocolVersion string    `json:"protocol_version"`
 }
 
 type OpenapiSpec struct {
@@ -398,7 +411,7 @@ type ProviderModel struct {
 	Provider         string     `json:"provider"`
 	Model            string     `json:"model"`
 	Active           int64      `json:"active"`
-	Tier             string     `json:"tier"`
+	Category         string     `json:"category"`
 	CostIn           float64    `json:"cost_in"`
 	CostOut          float64    `json:"cost_out"`
 	DisplayName      *string    `json:"display_name"`
@@ -407,6 +420,8 @@ type ProviderModel struct {
 	Capabilities     *string    `json:"capabilities"`
 	DefaultBaseUrl   *string    `json:"default_base_url"`
 	DiscoveredAt     *time.Time `json:"discovered_at"`
+	CostCacheRead    float64    `json:"cost_cache_read"`
+	CostCacheWrite   float64    `json:"cost_cache_write"`
 }
 
 type RoutingRule struct {
@@ -455,17 +470,19 @@ type Trigger struct {
 }
 
 type UsageDaily struct {
-	ID               int64    `json:"id"`
-	KeyID            *string  `json:"key_id"`
-	Date             *string  `json:"date"`
-	Model            *string  `json:"model"`
-	Provider         *string  `json:"provider"`
-	Tokens           *int64   `json:"tokens"`
-	Cost             *float64 `json:"cost"`
-	RequestCount     *int64   `json:"request_count"`
-	PromptTokens     *int64   `json:"prompt_tokens"`
-	CompletionTokens *int64   `json:"completion_tokens"`
-	CacheHits        *int64   `json:"cache_hits"`
+	ID                  int64    `json:"id"`
+	KeyID               *string  `json:"key_id"`
+	Date                *string  `json:"date"`
+	Model               *string  `json:"model"`
+	Provider            *string  `json:"provider"`
+	Tokens              *int64   `json:"tokens"`
+	Cost                *float64 `json:"cost"`
+	RequestCount        *int64   `json:"request_count"`
+	PromptTokens        *int64   `json:"prompt_tokens"`
+	CompletionTokens    *int64   `json:"completion_tokens"`
+	CacheHits           *int64   `json:"cache_hits"`
+	CachedTokens        int64    `json:"cached_tokens"`
+	CacheCreationTokens int64    `json:"cache_creation_tokens"`
 }
 
 type User struct {

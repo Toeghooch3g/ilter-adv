@@ -36,6 +36,14 @@ func (r *Registry) Get(name string) (Provider, error) {
 	return p, nil
 }
 
+// Remove drops a provider from the registry by name. Deleting a name that is
+// not present is a no-op (matches map semantics).
+func (r *Registry) Remove(name string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.providers, name)
+}
+
 func (r *Registry) List() []Provider {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -94,6 +102,8 @@ func (r *Registry) InitFromConfig(cfg *config.Config) error {
 			r.Register(NewOpenAIProvider(pCfg))
 		case "openrouter":
 			r.Register(NewOpenRouterProvider(pCfg))
+		case "deepinfra":
+			r.Register(NewDeepInfraProvider(pCfg))
 		case "anthropic":
 			r.Register(NewAnthropicProvider(pCfg))
 		case "ollama":

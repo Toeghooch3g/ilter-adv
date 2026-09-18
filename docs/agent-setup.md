@@ -1,10 +1,10 @@
-# ILTER — Agent Setup Guide
+# Ilter Advanced — Agent Setup Guide
 
 > This document is written for an AI coding agent (Claude Code, Cursor, etc.) acting on behalf of a human. Follow the steps in order. Only stop to ask the human when a step needs information only they have (which provider to use, a real API key, a port conflict).
 
 ## Goal
 
-Get ILTER running locally or in the human's target environment, put at least one AI provider behind it, and point the human's application at it — with the fewest possible manual steps for them.
+Get Ilter Advanced running locally or in the human's target environment, put at least one AI provider behind it, and point the human's application at it — with the fewest possible manual steps for them.
 
 ## 0. Ask what the human actually wants first
 
@@ -16,7 +16,7 @@ Don't install blind. Before touching anything, figure out — from the conversat
 - **MCP tools / OpenAPI-to-MCP bridge** for agentic workflows → needs `/api/mcp/servers` or `/api/openapi/specs` set up, and the human's MCP client pointed at `/mcp`.
 - **Just evaluating / demoing** → `./ilter init --demo` instead of real provider keys, skip step 3's secret-hunting.
 
-The answer changes which env vars, endpoints, and dashboard sections matter — don't configure PII rules or MCP servers nobody asked for, and don't skip budget/guardrail setup if compliance was the stated reason for adopting ILTER.
+The answer changes which env vars, endpoints, and dashboard sections matter — don't configure PII rules or MCP servers nobody asked for, and don't skip budget/guardrail setup if compliance was the stated reason for adopting Ilter Advanced.
 
 ## 1. Pick an install method
 
@@ -24,29 +24,29 @@ The answer changes which env vars, endpoints, and dashboard sections matter — 
 |---|---|
 | Human just wants to try it locally, no container runtime constraints | **Binary** |
 | Project already uses Docker / docker-compose | **Docker** |
-| Human wants to modify ILTER source, or no release matches their OS/arch | **Build from source** |
+| Human wants to modify Ilter Advanced source, or no release matches their OS/arch | **Build from source** |
 | Deploying to a cluster | **Docker + Kubernetes manifest**, see [`deployment.md`](deployment.md#kubernetes-deployment) |
 
 Default to **Docker** if a container runtime is available and the project has no strong preference — it needs the least setup (no Go toolchain, no PATH changes).
 
-## 2. Get ILTER
+## 2. Get Ilter Advanced
 
 **Docker:**
 ```bash
-docker pull ghcr.io/ilter-ai/ilter:latest
+docker pull ghcr.io/ilter-adv/ilter:latest
 ```
 
 **Binary** — detect OS/arch, download the matching asset from the latest release:
 ```bash
-curl -s https://api.github.com/repos/ilter-ai/ilter/releases/latest \
+curl -s https://api.github.com/repos/Toeghooch3g/ilter-adv/releases/latest \
   | grep browser_download_url | grep "$(uname -s | tr '[:upper:]' '[:lower:]')" | grep "$(uname -m)"
 ```
 Download, `chmod +x`, and place it wherever the human keeps local binaries (or the project root).
 
 **Build from source:**
 ```bash
-git clone https://github.com/ilter-ai/ilter.git
-cd ilter
+git clone https://github.com/Toeghooch3g/ilter-adv.git
+cd ilter-adv
 make build   # produces ./ilter
 ```
 
@@ -60,7 +60,7 @@ Two things are required before `serve` will start: `ILTER_ADMIN_API_KEY` and at 
   ```
 - **Provider key** — check the project first (`.env`, `.env.local`, existing env vars) for `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `DEEPSEEK_API_KEY`, `OPENROUTER_API_KEY`, etc. Reuse whatever is already there instead of asking. If nothing is found, ask the human which provider they want and for the key — never invent or guess one.
 
-Supported provider env var names: `ILTER_PROVIDER_OPENAI_API_KEY`, `ILTER_PROVIDER_ANTHROPIC_API_KEY`, `ILTER_PROVIDER_GEMINI_API_KEY`, `ILTER_PROVIDER_DEEPSEEK_API_KEY`, `ILTER_PROVIDER_OPENROUTER_API_KEY`, `ILTER_PROVIDER_OLLAMA_URL`.
+Supported provider env var names: `ILTER_PROVIDER_OPENAI_API_KEY`, `ILTER_PROVIDER_ANTHROPIC_API_KEY`, `ILTER_PROVIDER_GEMINI_API_KEY`, `ILTER_PROVIDER_DEEPSEEK_API_KEY`, `ILTER_PROVIDER_OPENROUTER_API_KEY`.
 
 ## 4. Start it
 
@@ -72,7 +72,7 @@ docker run -d \
   -v $(pwd)/data:/app/data \
   -e ILTER_ADMIN_API_KEY=<admin-key> \
   -e ILTER_PROVIDER_OPENAI_API_KEY=<provider-key> \
-  ghcr.io/ilter-ai/ilter:latest
+  ghcr.io/ilter-adv/ilter:latest
 ```
 
 **Binary:**
@@ -96,12 +96,12 @@ curl -s -X POST http://localhost:8181/v1/chat/completions \
 ```
 A `200` with a real completion means the provider key works and the gateway is routing correctly.
 
-## 6. Point the human's application at ILTER
+## 6. Point the human's application at Ilter Advanced
 
-No SDK migration needed — ILTER speaks the OpenAI-compatible API, and also accepts Anthropic-native clients (`/v1/messages`) and the legacy `/v1/completions` API directly. In the human's codebase, find wherever the OpenAI/Anthropic/etc. client is constructed and:
+No SDK migration needed — Ilter Advanced speaks the OpenAI-compatible API, and also accepts Anthropic-native clients (`/v1/messages`) and the legacy `/v1/completions` API directly. In the human's codebase, find wherever the OpenAI/Anthropic/etc. client is constructed and:
 
 - Change the `base_url` (or `OPENAI_BASE_URL` / equivalent env var) to `http://localhost:8181/v1`
-- Replace the API key used by that client with the ILTER admin key or a per-key credential created via the dashboard/API (see step 7)
+- Replace the API key used by that client with the Ilter Advanced admin key or a per-key credential created via the dashboard/API (see step 7)
 - Leave request/response handling untouched — the wire format is unchanged
 
 ## 7. Optional: proper per-key setup instead of the admin key

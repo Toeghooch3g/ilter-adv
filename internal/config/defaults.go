@@ -20,6 +20,7 @@ var DefaultBaseURLs = map[string]string{
 	"openai":       "https://api.openai.com/v1",
 	"anthropic":    "https://api.anthropic.com/v1",
 	"deepseek":     "https://api.deepseek.com/v1",
+	"deepinfra":    "https://api.deepinfra.com/v1/openai",
 	"gemini":       "https://generativelanguage.googleapis.com/v1beta/openai",
 	"ollama":       "http://localhost:11434",
 	"openrouter":   "https://openrouter.ai/api/v1",
@@ -61,6 +62,7 @@ func DefaultConfig() Config {
 		Cache: CacheConfig{
 			Enabled:             true,
 			SimilarityThreshold: 0.70,
+			RerankTopK:          10,
 		},
 		RateLimit: RateLimitConfig{
 			Enabled:    true,
@@ -73,6 +75,7 @@ func DefaultConfig() Config {
 		},
 		Dashboard: DashboardConfig{
 			Enabled: true,
+			Host:    "",
 			Port:    DefaultDashboardPort,
 		},
 		Telemetry: TelemetryConfig{

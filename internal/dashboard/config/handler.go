@@ -254,7 +254,11 @@ func (h *ConfigAPIHandler) createRuntimeConfig(ctx context.Context, raw []byte) 
 	if h.rcStore() == nil {
 		return "", fmt.Errorf("runtime_config store not available")
 	}
-	var entry runtimeConfigEntry
+	var entry struct {
+		Section string          `json:"section"`
+		Key     string          `json:"key"`
+		Value   json.RawMessage `json:"value"`
+	}
 	if err := json.Unmarshal(raw, &entry); err != nil {
 		return "", fmt.Errorf("unmarshal runtime_config: %w", err)
 	}
@@ -265,12 +269,14 @@ func (h *ConfigAPIHandler) createRuntimeConfig(ctx context.Context, raw []byte) 
 		return "", fmt.Errorf("runtime_config: key is required")
 	}
 
+	valueStr := rawJSONValueToString(entry.Value)
+
 	// Schema validation.
-	if err := config.ValidateConfig(entry.Section, entry.Key, entry.Value); err != nil {
+	if err := config.ValidateConfig(entry.Section, entry.Key, valueStr); err != nil {
 		return "", err
 	}
 
-	if err := h.rcStore().UpsertRuntimeConfig(ctx, entry.Section, entry.Key, entry.Value, "admin-api"); err != nil {
+	if err := h.rcStore().UpsertRuntimeConfig(ctx, entry.Section, entry.Key, valueStr, "admin-api"); err != nil {
 		return "", err
 	}
 	return compositeKey(entry.Section, entry.Key), nil
@@ -286,22 +292,39 @@ func (h *ConfigAPIHandler) updateRuntimeConfig(ctx context.Context, composite st
 	}
 
 	var body struct {
-		Value   string `json:"value"`
-		Version int    `json:"version,omitempty"`
+		Value   json.RawMessage `json:"value"`
+		Version int             `json:"version,omitempty"`
 	}
 	if err := json.Unmarshal(raw, &body); err != nil {
 		return fmt.Errorf("unmarshal runtime_config update: %w", err)
 	}
 
+	valueStr := rawJSONValueToString(body.Value)
+
 	// Schema validation.
-	if err := config.ValidateConfig(section, key, body.Value); err != nil {
+	if err := config.ValidateConfig(section, key, valueStr); err != nil {
 		return err
 	}
 
-	if err := h.rcStore().UpsertRuntimeConfig(ctx, section, key, body.Value, "admin-api"); err != nil {
-		return err
+	return h.rcStore().UpsertRuntimeConfig(ctx, section, key, valueStr, "admin-api")
+}
+
+// rawJSONValueToString converts a runtime_config "value" field into the
+// string stored in the TEXT column. A JSON string literal is stored
+// unquoted (existing behavior for scalar keys like "0.70"); a JSON array or
+// object (e.g. blocked_tools' ["server__tool", ...]) is stored as its JSON
+// text, which loadStateFromStores unmarshals back into the structured form.
+func rawJSONValueToString(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
 	}
-	return nil
+	if raw[0] == '"' {
+		var s string
+		if err := json.Unmarshal(raw, &s); err == nil {
+			return s
+		}
+	}
+	return string(raw)
 }
 
 func (h *ConfigAPIHandler) deleteRuntimeConfig(ctx context.Context, composite string) error {
@@ -616,32 +639,35 @@ func (h *ConfigAPIHandler) createInStore(ctx context.Context, section string, ra
 
 // updateInStore dispatches updates to the appropriate store.
 func (h *ConfigAPIHandler) updateInStore(ctx context.Context, section, key string, rawBody []byte) error {
+	composite := compositeKey(section, key)
 	switch section {
 	case "runtime_config":
-		return h.updateRuntimeConfig(ctx, key, rawBody)
+		return h.updateRuntimeConfig(ctx, composite, rawBody)
 	default:
-		return h.updateRuntimeConfig(ctx, key, rawBody)
+		return h.updateRuntimeConfig(ctx, composite, rawBody)
 	}
 }
 
 // deleteFromStore dispatches deletion to the appropriate store.
 func (h *ConfigAPIHandler) deleteFromStore(ctx context.Context, section, key string) error {
+	composite := compositeKey(section, key)
 	switch section {
 	case "runtime_config":
-		return h.deleteRuntimeConfig(ctx, key)
+		return h.deleteRuntimeConfig(ctx, composite)
 	default:
-		return h.deleteRuntimeConfig(ctx, key)
+		return h.deleteRuntimeConfig(ctx, composite)
 	}
 }
 
 // getItem returns a single entry as a map for a given section and key.
 // Used by Update and Delete to capture old values for audit logging.
 func (h *ConfigAPIHandler) getItem(ctx context.Context, section, key string) (map[string]any, error) {
+	composite := compositeKey(section, key)
 	switch section {
 	case "runtime_config":
-		return h.getRuntimeConfigItem(ctx, key)
+		return h.getRuntimeConfigItem(ctx, composite)
 	default:
-		return h.getRuntimeConfigItem(ctx, key)
+		return h.getRuntimeConfigItem(ctx, composite)
 	}
 }
 

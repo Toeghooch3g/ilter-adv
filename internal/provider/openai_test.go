@@ -544,8 +544,8 @@ func TestOpenAIProvider_DiscoverModels_Success(t *testing.T) {
 	// Verify openai-specific heuristics
 	for _, m := range models {
 		if strings.Contains(m.ID, "gpt-4") {
-			assert.Equal(t, "openai", m.Provider)
-			assert.NotEmpty(t, m.Tier)
+			assert.Equal(t, "test-openai", m.Provider)
+			assert.NotEmpty(t, m.Category)
 			assert.Contains(t, m.Capabilities, "vision")
 		}
 	}
@@ -570,6 +570,62 @@ func TestOpenAIProvider_DiscoverModels_EmptyResponse(t *testing.T) {
 	models, err := p.DiscoverModels(context.Background())
 	require.NoError(t, err)
 	assert.Empty(t, models)
+}
+
+// TestOpenAIProvider_DiscoverModels_CustomInstancesIsolated proves that two
+// distinct custom (OpenAI-compatible) providers of the same type tag their
+// discovered models with their own unique name, not the shared type.
+//
+// provider_models / the catalog keys entries by this label, so two providers
+// both typed "openai" must not collide. Regression guard for instance-keyed
+// model rows (custom multiple-provider support).
+func TestOpenAIProvider_DiscoverModels_CustomInstancesIsolated(t *testing.T) {
+	serverA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"data": [{"id": "my-custom-model"}]}`))
+	}))
+	defer serverA.Close()
+
+	serverB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"data": [{"id": "my-custom-model"}]}`))
+	}))
+	defer serverB.Close()
+
+	// Two custom providers: same type, different names/base URLs, same model ID.
+	provA := NewOpenAIProvider(config.ProviderConfig{
+		Name:    "custom-a",
+		Type:    "openai",
+		BaseURL: serverA.URL,
+		APIKey:  "sk-a",
+	})
+	provB := NewOpenAIProvider(config.ProviderConfig{
+		Name:    "custom-b",
+		Type:    "openai",
+		BaseURL: serverB.URL,
+		APIKey:  "sk-b",
+	})
+
+	modelsA, err := provA.DiscoverModels(context.Background())
+	require.NoError(t, err)
+	require.Len(t, modelsA, 1)
+	assert.Equal(t, "custom-a", modelsA[0].Provider)
+	// The base URL is recorded per instance so each provider's model entry
+	// points at the correct upstream endpoint.
+	assert.Equal(t, serverA.URL, modelsA[0].DefaultBaseURL)
+
+	modelsB, err := provB.DiscoverModels(context.Background())
+	require.NoError(t, err)
+	require.Len(t, modelsB, 1)
+	assert.Equal(t, "custom-b", modelsB[0].Provider)
+	assert.Equal(t, serverB.URL, modelsB[0].DefaultBaseURL)
+
+	// Even though both serve the same model ID, the labels differ, so
+	// SaveDiscoveredModels(name, ...) upserts on (name, model) without
+	// overwriting the other provider's row.
+	assert.NotEqual(t, modelsA[0].Provider, modelsB[0].Provider)
 }
 
 func TestOpenAIProvider_DiscoverModels_ServerError(t *testing.T) {
@@ -654,4 +710,59 @@ func TestOpenAIProvider_ModelHeuristics_Gemini(t *testing.T) {
 
 	tier, _, _, _, _, _ = p.discoverModelHeuristics("gemini-2.0-pro")
 	assert.Equal(t, "premium", tier)
+}
+
+// TestOpenAIProvider_TransformResponse_CachedTokensPassthrough verifies
+// OpenAI prompt_tokens_details.cached_tokens is captured on the typed Usage
+// (for cost calc) AND that unknown provider usage fields survive the re-encode
+// (Raw passthrough: clients see everything the provider supplied plus
+// ilter_cost).
+func TestOpenAIProvider_TransformResponse_CachedTokensPassthrough(t *testing.T) {
+	responseJSON := `{
+		"id": "chatcmpl-1",
+		"object": "chat.completion",
+		"created": 1677652288,
+		"model": "gpt-4o",
+		"choices": [{"index": 0, "message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop"}],
+		"usage": {
+			"prompt_tokens": 100,
+			"completion_tokens": 20,
+			"total_tokens": 120,
+			"prompt_tokens_details": {"cached_tokens": 40},
+			"x_custom_usage": 42
+		}
+	}`
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(responseJSON))
+	}))
+	defer server.Close()
+
+	httpReq, _ := http.NewRequestWithContext(context.Background(), "POST", server.URL, nil)
+	resp, err := http.DefaultClient.Do(httpReq)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+
+	p := NewOpenAIProvider(config.ProviderConfig{Name: "test-openai", Type: "openai", APIKey: "sk-test"})
+	chatResp, err := p.TransformResponse(context.Background(), resp)
+	require.NoError(t, err)
+	require.NotNil(t, chatResp.Usage)
+
+	// Typed view: cached count captured for cost calc.
+	require.NotNil(t, chatResp.Usage.PromptTokensDetails)
+	assert.Equal(t, 40, chatResp.Usage.PromptTokensDetails.CachedTokens)
+
+	// Raw passthrough: re-encode the Usage and confirm both the unknown field
+	// and the typed cached_tokens survive.
+	out, err := json.Marshal(chatResp.Usage)
+	require.NoError(t, err)
+	var m map[string]any
+	require.NoError(t, json.Unmarshal(out, &m))
+	assert.Equal(t, float64(42), m["x_custom_usage"], "unknown provider usage field must pass through")
+	details, ok := m["prompt_tokens_details"].(map[string]any)
+	require.True(t, ok, "prompt_tokens_details must be present")
+	assert.Equal(t, float64(40), details["cached_tokens"])
+	assert.Equal(t, float64(100), m["prompt_tokens"])
 }

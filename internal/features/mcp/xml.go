@@ -12,16 +12,6 @@ import (
 	"github.com/ilter-ai/ilter/internal/model"
 )
 
-// Marker constants for tool call position tracking.
-const (
-	MarkerPrefix = "\ue000ilter:tool:"
-	MarkerSuffix = "\ue001"
-)
-
-func MarkerFor(i int) string {
-	return MarkerPrefix + strconv.Itoa(i) + MarkerSuffix
-}
-
 // FindToolCallsOpen finds an opening <tool_calls> tag starting from `from`.
 func FindToolCallsOpen(s string, from int) (start, contentStart int, ok bool) {
 	const prefix = "<tool_calls"
@@ -79,8 +69,10 @@ func countInvokes(inner string) int {
 }
 
 // stripToolCallsBlocks replaces every <tool_calls>...</tool_calls> block in
-// content with one position marker per <invoke> it contains (at least one,
-// even if none were found — a malformed block still consumed a turn).
+// content with one newline per <invoke> it contains (at least one, even if
+// none were found — a malformed block still consumed a turn). The markerIdx
+// still counts consumed tool calls so callers can keep per-turn offsets
+// unique; no position markers are emitted into client-visible text.
 func stripToolCallsBlocks(content string, markerIdx int) (string, int) {
 	tcOff := 0
 	for {
@@ -100,13 +92,8 @@ func stripToolCallsBlocks(content string, markerIdx int) (string, int) {
 		if invokeCount == 0 {
 			invokeCount = 1
 		}
-		var sb strings.Builder
-		sb.Grow(invokeCount * len(MarkerFor(0)))
-		for range invokeCount {
-			sb.WriteString(MarkerFor(markerIdx))
-			markerIdx++
-		}
-		replacement := sb.String()
+		markerIdx += invokeCount
+		replacement := strings.Repeat("\n", invokeCount)
 		content = content[:iStart] + replacement + content[fullEnd:]
 		tcOff = iStart + len(replacement)
 	}
@@ -114,7 +101,7 @@ func stripToolCallsBlocks(content string, markerIdx int) (string, int) {
 }
 
 // stripBareInvokes replaces every bare <invoke>...</invoke> block (not
-// already consumed inside a <tool_calls> block) with one position marker.
+// already consumed inside a <tool_calls> block) with a newline.
 func stripBareInvokes(content string, markerIdx int) (string, int) {
 	invokeOff := 0
 	for {
@@ -136,10 +123,9 @@ func stripBareInvokes(content string, markerIdx int) (string, int) {
 			invokeOff = 0
 			continue
 		}
-		marker := MarkerFor(markerIdx)
 		markerIdx++
-		content = content[:start] + marker + content[start+end+len("</invoke>"):]
-		invokeOff = start + len(marker)
+		content = content[:start] + "\n" + content[start+end+len("</invoke>"):]
+		invokeOff = start + 1
 	}
 	return content, markerIdx
 }
@@ -180,10 +166,9 @@ func stripDanglingCloseTags(content string) string {
 	return content
 }
 
-// StripToolCallXML replaces tool call XML blocks with position markers.
-// markerOffset is the starting index for emitted markers; callers that
-// need marker indices to be globally unique across turns (e.g. the
-// streaming handler that maps each marker to a toolEvents slot) must pass
+// StripToolCallXML removes tool call XML blocks, leaving clean text in
+// place of each block. markerOffset is the starting index for consumed tool
+// calls; callers that need indices to be globally unique across turns pass
 // their per-request toolOffset. Callers without offset tracking pass 0.
 func StripToolCallXML(content string, markerOffset int) (string, int) {
 	if content == "" {

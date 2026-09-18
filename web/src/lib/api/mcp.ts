@@ -121,6 +121,31 @@ export async function getServerTools(id: string): Promise<{ server_id: string; t
   return request<{ server_id: string; tools: MCPToolDefinition[] }>(`/mcp-servers/${id}/tools`)
 }
 
+export async function toggleServerTool(
+  serverId: string,
+  toolName: string,
+  enabled: boolean,
+): Promise<{ enabled: boolean }> {
+  return request<{ enabled: boolean }>(`/mcp-servers/${serverId}/tools/${encodeURIComponent(toolName)}/toggle`, {
+    method: 'PATCH',
+    body: JSON.stringify({ enabled }),
+  })
+}
+
+export async function setToolCost(
+  serverId: string,
+  toolName: string,
+  costPer1k: number | null,
+): Promise<{ cost_per_1k: number | null }> {
+  return request<{ cost_per_1k: number | null }>(
+    `/mcp-servers/${serverId}/tools/${encodeURIComponent(toolName)}/cost`,
+    {
+      method: 'PUT',
+      body: JSON.stringify({ cost_per_1k: costPer1k }),
+    },
+  )
+}
+
 export async function callServerTool(
   serverId: string,
   name: string,

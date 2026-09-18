@@ -10,6 +10,20 @@ import (
 	"encoding/json"
 )
 
+const deleteMCPToolToggle = `-- name: DeleteMCPToolToggle :exec
+DELETE FROM mcp_tool_toggles WHERE server_id = ? AND tool_name = ?
+`
+
+type DeleteMCPToolToggleParams struct {
+	ServerID string `json:"server_id"`
+	ToolName string `json:"tool_name"`
+}
+
+func (q *Queries) DeleteMCPToolToggle(ctx context.Context, arg DeleteMCPToolToggleParams) error {
+	_, err := q.db.ExecContext(ctx, deleteMCPToolToggle, arg.ServerID, arg.ToolName)
+	return err
+}
+
 const deleteMCPToolsByServer = `-- name: DeleteMCPToolsByServer :exec
 DELETE FROM mcp_tools WHERE server_id = ?
 `
@@ -17,6 +31,29 @@ DELETE FROM mcp_tools WHERE server_id = ?
 func (q *Queries) DeleteMCPToolsByServer(ctx context.Context, serverID string) error {
 	_, err := q.db.ExecContext(ctx, deleteMCPToolsByServer, serverID)
 	return err
+}
+
+const getMCPToolToggle = `-- name: GetMCPToolToggle :one
+SELECT enabled, cost_per_1k
+FROM mcp_tool_toggles
+WHERE server_id = ? AND tool_name = ?
+`
+
+type GetMCPToolToggleParams struct {
+	ServerID string `json:"server_id"`
+	ToolName string `json:"tool_name"`
+}
+
+type GetMCPToolToggleRow struct {
+	Enabled   int64    `json:"enabled"`
+	CostPer1k *float64 `json:"cost_per_1k"`
+}
+
+func (q *Queries) GetMCPToolToggle(ctx context.Context, arg GetMCPToolToggleParams) (GetMCPToolToggleRow, error) {
+	row := q.db.QueryRowContext(ctx, getMCPToolToggle, arg.ServerID, arg.ToolName)
+	var i GetMCPToolToggleRow
+	err := row.Scan(&i.Enabled, &i.CostPer1k)
+	return i, err
 }
 
 const listMCPServers = `-- name: ListMCPServers :many
@@ -71,6 +108,39 @@ func (q *Queries) ListMCPServers(ctx context.Context) ([]ListMCPServersRow, erro
 			&i.AuthType,
 			&i.AuthKeyEnv,
 			&i.ProtocolVersion,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listMCPToolToggles = `-- name: ListMCPToolToggles :many
+SELECT server_id, tool_name, enabled, cost_per_1k
+FROM mcp_tool_toggles
+`
+
+func (q *Queries) ListMCPToolToggles(ctx context.Context) ([]McpToolToggle, error) {
+	rows, err := q.db.QueryContext(ctx, listMCPToolToggles)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []McpToolToggle{}
+	for rows.Next() {
+		var i McpToolToggle
+		if err := rows.Scan(
+			&i.ServerID,
+			&i.ToolName,
+			&i.Enabled,
+			&i.CostPer1k,
 		); err != nil {
 			return nil, err
 		}
@@ -141,6 +211,31 @@ func (q *Queries) UpsertMCPTool(ctx context.Context, arg UpsertMCPToolParams) er
 		arg.Name,
 		arg.Description,
 		arg.Schema,
+	)
+	return err
+}
+
+const upsertMCPToolToggle = `-- name: UpsertMCPToolToggle :exec
+INSERT INTO mcp_tool_toggles (server_id, tool_name, enabled, cost_per_1k)
+VALUES (?, ?, ?, ?)
+ON CONFLICT(server_id, tool_name) DO UPDATE SET
+  enabled = excluded.enabled,
+  cost_per_1k = excluded.cost_per_1k
+`
+
+type UpsertMCPToolToggleParams struct {
+	ServerID  string   `json:"server_id"`
+	ToolName  string   `json:"tool_name"`
+	Enabled   int64    `json:"enabled"`
+	CostPer1k *float64 `json:"cost_per_1k"`
+}
+
+func (q *Queries) UpsertMCPToolToggle(ctx context.Context, arg UpsertMCPToolToggleParams) error {
+	_, err := q.db.ExecContext(ctx, upsertMCPToolToggle,
+		arg.ServerID,
+		arg.ToolName,
+		arg.Enabled,
+		arg.CostPer1k,
 	)
 	return err
 }

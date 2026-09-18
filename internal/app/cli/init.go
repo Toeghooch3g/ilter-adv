@@ -17,12 +17,16 @@ var providerDefaults = map[string]struct {
 	"openai":       {"https://api.openai.com/v1"},
 	"anthropic":    {"https://api.anthropic.com/v1"},
 	"deepseek":     {"https://api.deepseek.com"},
+	"deepinfra":    {"https://api.deepinfra.com/v1/openai"},
 	"gemini":       {"https://generativelanguage.googleapis.com/v1beta"},
 	"openrouter":   {"https://openrouter.ai/api/v1"},
 	"ollama":       {"http://localhost:11434"},
 	"qwen":         {"https://dashscope.aliyuncs.com/api/v1"},
 	"opencode_go":  {"https://opencode.ai/zen/go/v1"},
 	"opencode_zen": {"https://opencode.ai/zen/v1"},
+	// "custom" is an OpenAI-compatible endpoint with no default — the wizard
+	// prompts for its base URL. It is stored as an "openai"-type provider.
+	"custom": {""},
 }
 
 func RunInitWizard(dashboardPortDefault, metricsPortDefault int) (*seed.File, error) {
@@ -38,12 +42,14 @@ func RunInitWizard(dashboardPortDefault, metricsPortDefault int) (*seed.File, er
 					huh.NewOption("OpenAI", "openai"),
 					huh.NewOption("Anthropic", "anthropic"),
 					huh.NewOption("DeepSeek", "deepseek"),
+					huh.NewOption("DeepInfra", "deepinfra"),
 					huh.NewOption("Gemini", "gemini"),
 					huh.NewOption("OpenRouter", "openrouter"),
 					huh.NewOption("Ollama", "ollama"),
 					huh.NewOption("Qwen", "qwen"),
 					huh.NewOption("OpenCode Go", "opencode_go"),
 					huh.NewOption("OpenCode Zen", "opencode_zen"),
+					huh.NewOption("Custom (OpenAI-compatible)", "custom"),
 				).
 				Value(&selectedTypes),
 		),
@@ -165,9 +171,16 @@ func RunInitWizard(dashboardPortDefault, metricsPortDefault int) (*seed.File, er
 		// OpenCode Zen/Go serve public /models endpoints — no API key needed.
 		isPublic := pType == "opencode_zen" || pType == "opencode_go"
 
+		// "custom" is an OpenAI-compatible endpoint; register it as an
+		// "openai"-type provider so the full OpenAI provider stack applies.
+		storageType := pType
+		if pType == "custom" {
+			storageType = "openai"
+		}
+
 		providers = append(providers, seed.Provider{
 			Name:            provForms[i].name,
-			Provider:        pType,
+			Provider:        storageType,
 			BaseURL:         provForms[i].baseURL,
 			APISecretKey:    provForms[i].apiKey,
 			IsActive:        provForms[i].active,

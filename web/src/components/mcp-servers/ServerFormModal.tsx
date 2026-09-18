@@ -11,6 +11,8 @@ export interface ServerFormData {
   command?: string
   args?: string
   env?: string
+  authType?: string
+  authKey?: string
 }
 
 export function ServerFormModal({
@@ -39,6 +41,9 @@ export function ServerFormModal({
   })
   const [requiredVars, setRequiredVars] = useState<Record<string, string>>({})
   const [customVars, setCustomVars] = useState<Array<{ key: string; value: string }>>([])
+  const [authType, setAuthType] = useState(initial?.auth_type ?? '')
+  const [authKey, setAuthKey] = useState('')
+  const [authKeyTouched, setAuthKeyTouched] = useState(false)
 
   useEffect(() => {
     if (initial) {
@@ -59,6 +64,9 @@ export function ServerFormModal({
         setRequiredVars({})
       }
       setCustomVars([])
+      setAuthType(initial.auth_type ?? '')
+      setAuthKey(initial.auth_key_env ?? '')
+      setAuthKeyTouched(false)
     } else {
       setName('')
       setUrl('')
@@ -67,6 +75,9 @@ export function ServerFormModal({
       setArgs('')
       setRequiredVars({})
       setCustomVars([])
+      setAuthType('')
+      setAuthKey('')
+      setAuthKeyTouched(false)
     }
   }, [initial])
 
@@ -100,6 +111,7 @@ export function ServerFormModal({
                 className="w-full rounded-lg border border-surface-300 bg-white px-3 py-2 text-sm text-surface-900 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
               >
                 <option value="sse">SSE (Server-Sent Events)</option>
+                <option value="http">HTTP (Streamable)</option>
                 <option value="stdio">STDIO (Subprocess)</option>
                 <option value="inline">Inline (Built-in)</option>
               </select>
@@ -134,16 +146,49 @@ export function ServerFormModal({
                 />
               </>
             ) : (
-              <div>
-                <label className="block text-sm font-medium text-surface-700 mb-1">URL</label>
-                <input
-                  type="text"
-                  value={url}
-                  onChange={(e) => setUrl(e.target.value)}
-                  placeholder="https://mcp-server.example.com"
-                  className="w-full rounded-lg border border-surface-300 bg-white px-3 py-2 text-sm font-mono text-surface-900 placeholder-surface-400 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
-                />
-              </div>
+              <>
+                <div>
+                  <label className="block text-sm font-medium text-surface-700 mb-1">URL</label>
+                  <input
+                    type="text"
+                    value={url}
+                    onChange={(e) => setUrl(e.target.value)}
+                    placeholder="https://mcp-server.example.com"
+                    className="w-full rounded-lg border border-surface-300 bg-white px-3 py-2 text-sm font-mono text-surface-900 placeholder-surface-400 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-surface-700 mb-1">Auth</label>
+                  <select
+                    value={authType}
+                    onChange={(e) => setAuthType(e.target.value)}
+                    className="w-full rounded-lg border border-surface-300 bg-white px-3 py-2 text-sm text-surface-900 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+                  >
+                    <option value="">(none)</option>
+                    <option value="bearer">Bearer Token</option>
+                    <option value="basic">Basic Auth</option>
+                  </select>
+                  {authType !== '' && (
+                    <div className="mt-2">
+                      <input
+                        type="password"
+                        value={authKey}
+                        onChange={(e) => {
+                          setAuthKey(e.target.value)
+                          setAuthKeyTouched(true)
+                        }}
+                        placeholder={authType === 'basic' ? 'user:password' : 'token'}
+                        className="w-full rounded-lg border border-surface-300 bg-white px-3 py-2 text-sm font-mono text-surface-900 placeholder-surface-400 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+                      />
+                      <p className="text-xs text-surface-400 mt-1">
+                        {authType === 'basic'
+                          ? 'Basic auth sends the value as "Basic <base64(user:password)>". Leave blank to keep the current credential.'
+                          : 'Sent as "Authorization: Bearer <token>". Leave blank to keep the current token.'}
+                      </p>
+                    </div>
+                  )}
+                </div>
+              </>
             )}
             <div className="flex justify-end gap-3 pt-2">
               <Button variant="outline" onClick={onClose}>
@@ -162,6 +207,8 @@ export function ServerFormModal({
                     command,
                     args: JSON.stringify(args.split(' ').filter(Boolean)),
                     env: JSON.stringify(envObj),
+                    authType,
+                    authKey: authKeyTouched ? authKey : undefined,
                   })
                   onClose()
                 }}

@@ -5,8 +5,9 @@ import { AlertCircle, Download, Plus, RefreshCw, Search } from '../ui/icons'
 import { QueryProvider } from '../ui/query-provider'
 import { Skeleton } from '../ui/skeleton'
 import { AddModelModal } from './components/AddModelModal'
+import { CategoryManager } from './components/CategoryManager'
+import { CategorySelect } from './components/CategorySelect'
 import { ConfigModal } from './components/ConfigModal'
-import { TierBadge } from './components/TierBadge'
 import { useModels } from './useModels'
 
 function ModelsViewContent() {
@@ -18,8 +19,8 @@ function ModelsViewContent() {
     refetch,
     search,
     setSearch,
-    tierFilter,
-    setTierFilter,
+    categoryFilter,
+    setCategoryFilter,
     showAddModal,
     setShowAddModal,
     configModel,
@@ -27,11 +28,14 @@ function ModelsViewContent() {
     configForm,
     setConfigForm,
     toggleModel,
+    updateCategory,
     handleSaveConfig,
     handleAddProvider,
     exportModels,
     formatCost,
-    tiers,
+    categories,
+    addCategory,
+    removeCategory,
   } = useModels()
 
   return (
@@ -62,29 +66,32 @@ function ModelsViewContent() {
       </div>
 
       <div className="flex flex-wrap gap-2">
-        {[null, ...tiers].map((tier) => (
+        {[null, ...categories].map((category) => (
           <button
-            key={tier ?? 'all'}
+            key={category ?? 'all'}
             type="button"
-            onClick={() => setTierFilter(tier)}
+            onClick={() => setCategoryFilter(category)}
             className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
-              tierFilter === tier
-                ? tier === null
+              categoryFilter === category
+                ? category === null
                   ? 'bg-surface-800 text-white'
-                  : tier === 'premium'
+                  : category === 'premium'
                     ? 'bg-brand-600 text-white'
-                    : tier === 'standard'
+                    : category === 'standard'
                       ? 'bg-surface-600 text-white'
-                      : tier === 'economy'
+                      : category === 'economy'
                         ? 'bg-warning text-white'
                         : 'bg-success text-white'
                 : 'bg-surface-100 text-surface-600 hover:bg-surface-200'
             }`}
           >
-            {tier === null ? 'All' : tier.charAt(0).toUpperCase() + tier.slice(1)}
-            {tier !== null && <span className="ml-1 opacity-70">({models.filter((m) => m.tier === tier).length})</span>}
+            {category === null ? 'All' : category.charAt(0).toUpperCase() + category.slice(1)}
+            {category !== null && (
+              <span className="ml-1 opacity-70">({models.filter((m) => m.category === category).length})</span>
+            )}
           </button>
         ))}
+        <CategoryManager categories={categories} onAdd={addCategory} onRemove={removeCategory} />
       </div>
 
       {isLoading ? (
@@ -147,18 +154,43 @@ function ModelsViewContent() {
 
                 <div className="flex items-center gap-2 mb-3">
                   <span className="text-xs text-surface-500">{model.provider}</span>
-                  <TierBadge tier={model.tier} />
+                  <CategorySelect
+                    categories={categories}
+                    category={model.category}
+                    onChange={(category) => {
+                      // Key by the bare model id (model.model), not the
+                      // prettified display name (model.name): the backend
+                      // updates provider_models by bare model id, so sending
+                      // the display name updates nothing and the dropdown
+                      // snaps back after refetch.
+                      void updateCategory.mutateAsync({ name: model.model, category })
+                    }}
+                  />
                 </div>
 
                 <div className="text-xs text-surface-500 space-y-1">
                   <p className="flex justify-between">
                     <span>Input</span>
-                    <span className="font-mono text-surface-700">${formatCost(model.cost_per_1k_in)}/1K</span>
+                    <span className="font-mono text-surface-700">${formatCost(model.cost_per_1m_in)}/1M</span>
                   </p>
                   <p className="flex justify-between">
                     <span>Output</span>
-                    <span className="font-mono text-surface-700">${formatCost(model.cost_per_1k_out)}/1K</span>
+                    <span className="font-mono text-surface-700">${formatCost(model.cost_per_1m_out)}/1M</span>
                   </p>
+                  {model.cost_per_1m_cached_in > 0 && (
+                    <p className="flex justify-between">
+                      <span>Cached In</span>
+                      <span className="font-mono text-surface-700">${formatCost(model.cost_per_1m_cached_in)}/1M</span>
+                    </p>
+                  )}
+                  {model.cost_per_1m_cache_write > 0 && (
+                    <p className="flex justify-between">
+                      <span>Cache Write</span>
+                      <span className="font-mono text-surface-700">
+                        ${formatCost(model.cost_per_1m_cache_write)}/1M
+                      </span>
+                    </p>
+                  )}
                 </div>
 
                 <div className="mt-3 pt-3 border-t border-surface-100">
@@ -177,13 +209,13 @@ function ModelsViewContent() {
           name={configForm.name}
           provider={configForm.provider}
           modelId={configForm.model}
-          tier={configForm.tier}
+          category={configForm.category}
           costIn={configForm.cost_in}
           costOut={configForm.cost_out}
           onNameChange={(val) => setConfigForm({ ...configForm, name: val })}
           onProviderChange={(val) => setConfigForm({ ...configForm, provider: val })}
           onModelIdChange={(val) => setConfigForm({ ...configForm, model: val })}
-          onTierChange={(val) => setConfigForm({ ...configForm, tier: val })}
+          onCategoryChange={(val) => setConfigForm({ ...configForm, category: val })}
           onCostInChange={(val) => setConfigForm({ ...configForm, cost_in: val })}
           onCostOutChange={(val) => setConfigForm({ ...configForm, cost_out: val })}
           onSave={handleAddProvider}
@@ -194,7 +226,9 @@ function ModelsViewContent() {
       {configModel && (
         <ConfigModal
           model={configModel}
-          onTierChange={(tier) => setConfigModel({ ...configModel, tier: tier as typeof configModel.tier })}
+          onCategoryChange={(category) =>
+            setConfigModel({ ...configModel, category: category as typeof configModel.category })
+          }
           onToggleActive={() => setConfigModel({ ...configModel, is_active: !configModel.is_active })}
           onSave={handleSaveConfig}
           onClose={() => setConfigModel(null)}

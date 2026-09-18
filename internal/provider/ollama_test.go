@@ -599,12 +599,12 @@ func TestOllamaProvider_DiscoverModels_OpenAICompat(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, models)
 
-	// Models should be mapped to ollama provider with zero cost
+	// Models should be tagged with the provider name (instance), with zero cost
 	for _, m := range models {
-		assert.Equal(t, "ollama", m.Provider)
+		assert.Equal(t, "test-ollama", m.Provider)
 		assert.Equal(t, 0.0, m.CostPerInputToken)
 		assert.Equal(t, 0.0, m.CostPerOutputToken)
-		assert.Equal(t, "free", m.Tier)
+		assert.Equal(t, "free", m.Category)
 	}
 }
 
@@ -635,9 +635,9 @@ func TestOllamaProvider_DiscoverModels_Native(t *testing.T) {
 	require.Len(t, models, 2)
 
 	assert.Equal(t, "llama3:latest", models[0].ID)
-	assert.Equal(t, "ollama", models[0].Provider)
+	assert.Equal(t, "test-ollama", models[0].Provider)
 	assert.Equal(t, 0.0, models[0].CostPerInputToken)
-	assert.Equal(t, "free", models[0].Tier)
+	assert.Equal(t, "free", models[0].Category)
 	assert.Equal(t, 8192, models[0].MaxContextTokens)
 }
 

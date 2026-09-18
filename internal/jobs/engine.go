@@ -135,6 +135,13 @@ func (r *JobRunner) StopAccepting() {
 	r.accepting.Store(false)
 }
 
+// StartAccepting re-enables enqueueing new runs after StopAccepting (used by
+// the runtime jobs feature toggle: disabling pauses the runner, enabling
+// resumes it without a restart).
+func (r *JobRunner) StartAccepting() {
+	r.accepting.Store(true)
+}
+
 // Drain waits for all in-flight runs to complete, with a deadline.
 // Returns 0 if all goroutines completed, or 1 if the deadline was reached
 // (undrained goroutines will be caught by the reconciler on next boot).

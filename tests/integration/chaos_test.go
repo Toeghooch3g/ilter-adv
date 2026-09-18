@@ -162,8 +162,8 @@ func TestChaos_SemanticCacheRedisDown(t *testing.T) {
 	authMw, proxyHandler := newTestSetup(t)
 
 	cacheMw := middleware.NewSemanticCacheMiddleware(
-		config.CacheConfig{Enabled: true, Type: "exact"},
-		guard, nil,
+		config.CacheConfig{Enabled: true},
+		guard, nil, nil, nil,
 	)
 
 	r := chi.NewRouter()

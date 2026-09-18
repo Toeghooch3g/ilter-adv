@@ -51,9 +51,11 @@ thoughts/
 .agents/
 .hypothesis/
 .schemathesis/
-AGENTS.md
 
 # IDE
 .vscode/
 .idea/
 *~
+
+ilter-linux-amd64
+TODO.md

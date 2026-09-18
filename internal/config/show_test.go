@@ -40,6 +40,11 @@ func TestEnvVarForKey(t *testing.T) {
 		{"cache.enabled", "ILTER_CACHE_ENABLED"},
 		{"cache.type", "ILTER_CACHE_TYPE"},
 		{"cache.redis_url", "ILTER_CACHE_REDIS_URL"},
+		{"cache.postgres_dsn", "ILTER_CACHE_POSTGRES_DSN"},
+		{"cache.postgres_require_vectorscale", "ILTER_CACHE_POSTGRES_REQUIRE_VECTORSCALE"},
+		{"cache.embedding_model", "ILTER_CACHE_EMBEDDING_MODEL"},
+		{"cache.rerank_model", "ILTER_CACHE_RERANK_MODEL"},
+		{"cache.rerank_top_k", "ILTER_CACHE_RERANK_TOP_K"},
 		{"cache.similarity_threshold", "ILTER_CACHE_SIMILARITY_THRESHOLD"},
 		{"cache.ttl", "ILTER_CACHE_TTL"},
 		{"cache.ollama_url", "ILTER_CACHE_OLLAMA_URL"},
@@ -67,6 +72,7 @@ func TestEnvVarForKey(t *testing.T) {
 		{"mcp.injection.enabled", "ILTER_MCP_INJECTION_ENABLED"},
 		{"mcp.injection.default_tool_choice", "ILTER_MCP_INJECTION_DEFAULT_TOOL_CHOICE"},
 		{"dashboard.enabled", "ILTER_DASHBOARD_ENABLED"},
+		{"dashboard.host", "ILTER_DASHBOARD_HOST"},
 		{"dashboard.port", "ILTER_DASHBOARD_PORT"},
 		{"dashboard.auth_token", "ILTER_DASHBOARD_AUTH_TOKEN"},
 		{"dashboard.user_auth_jwt_secret", "ILTER_DASHBOARD_USER_AUTH_JWT_SECRET"},
@@ -144,7 +150,9 @@ var expectedShowKeys = []string{
 	// Logging
 	"logging.level", "logging.format", "logging.output", "logging.file_path",
 	// Cache
-	"cache.enabled", "cache.type", "cache.redis_url", "cache.similarity_threshold",
+	"cache.enabled", "cache.type", "cache.redis_url", "cache.postgres_dsn",
+	"cache.postgres_require_vectorscale", "cache.embedding_model", "cache.rerank_model",
+	"cache.rerank_top_k", "cache.similarity_threshold",
 	"cache.ttl", "cache.ollama_url", "cache.max_entries",
 	// Rate Limit
 	"rate_limit.enabled", "rate_limit.admin_bypass", "rate_limit.default_rpm",
@@ -160,7 +168,7 @@ var expectedShowKeys = []string{
 	"mcp.enabled", "mcp.endpoint", "mcp.hub_endpoint", "mcp.default_policy",
 	"mcp.injection.enabled", "mcp.injection.default_tool_choice",
 	// Dashboard
-	"dashboard.enabled", "dashboard.port", "dashboard.auth_token", "dashboard.user_auth_jwt_secret",
+	"dashboard.enabled", "dashboard.host", "dashboard.port", "dashboard.auth_token", "dashboard.user_auth_jwt_secret",
 	// Jobs
 	"jobs.enabled", "jobs.api_key", "jobs.default_billing_key_id", "jobs.proxy_url",
 	"jobs.max_concurrent_jobs", "jobs.default_timeout_ms", "jobs.redis_lock_enabled",
@@ -279,6 +287,44 @@ func TestShowConfig_EnvSource(t *testing.T) {
 		assert.Equal(t, "default", e.Source,
 			"server.host should remain 'default' when env is not set")
 		assert.Equal(t, "0.0.0.0", e.Value)
+	})
+}
+
+func TestShowConfig_EnvSource_DashboardAndMetrics(t *testing.T) {
+	resetForTest()
+
+	t.Setenv("ILTER_DASHBOARD_HOST", "127.0.0.1")
+	t.Setenv("ILTER_DASHBOARD_PORT", "9292")
+	t.Setenv("ILTER_METRICS_LISTEN_ADDR", "127.0.0.1:9293")
+
+	cfg := DefaultConfig()
+	ApplyEnvOverrides(&cfg)
+	entries := ShowConfig(&cfg, nil)
+
+	byKey := make(map[string]Entry, len(entries))
+	for _, e := range entries {
+		byKey[e.Key] = e
+	}
+
+	t.Run("dashboard.host source and value", func(t *testing.T) {
+		e, ok := byKey["dashboard.host"]
+		require.True(t, ok)
+		assert.Equal(t, "env", e.Source, "dashboard.host should be sourced from env")
+		assert.Equal(t, "127.0.0.1", e.Value)
+	})
+
+	t.Run("dashboard.port source and value", func(t *testing.T) {
+		e, ok := byKey["dashboard.port"]
+		require.True(t, ok)
+		assert.Equal(t, "env", e.Source, "dashboard.port should be sourced from env")
+		assert.Equal(t, 9292, e.Value)
+	})
+
+	t.Run("metrics.listen_addr source and value", func(t *testing.T) {
+		e, ok := byKey["metrics.listen_addr"]
+		require.True(t, ok)
+		assert.Equal(t, "env", e.Source, "metrics.listen_addr should be sourced from env")
+		assert.Equal(t, "127.0.0.1:9293", e.Value)
 	})
 }
 
@@ -486,7 +532,8 @@ func TestShowConfig_ValueTypes(t *testing.T) {
 		"auth.admin_key", "auth.key_hash_algorithm",
 		"db.type", "db.sqlite_path",
 		"logging.level", "logging.format", "logging.output", "logging.file_path",
-		"cache.type", "cache.redis_url", "cache.ollama_url",
+		"cache.type", "cache.redis_url", "cache.postgres_dsn", "cache.embedding_model",
+		"cache.rerank_model", "cache.ollama_url",
 		"pii.mode",
 		"guardrails.mode",
 		"mcp.endpoint", "mcp.hub_endpoint", "mcp.default_policy",
@@ -502,7 +549,7 @@ func TestShowConfig_ValueTypes(t *testing.T) {
 	// Int values
 	for _, k := range []string{
 		"server.port",
-		"cache.max_entries",
+		"cache.max_entries", "cache.rerank_top_k",
 		"rate_limit.default_rpm", "rate_limit.default_tpm",
 		"dashboard.port",
 		"jobs.max_concurrent_jobs", "jobs.default_timeout_ms",
@@ -515,7 +562,7 @@ func TestShowConfig_ValueTypes(t *testing.T) {
 
 	// Bool values
 	for _, k := range []string{
-		"cache.enabled", "rate_limit.enabled", "rate_limit.admin_bypass",
+		"cache.enabled", "cache.postgres_require_vectorscale", "rate_limit.enabled", "rate_limit.admin_bypass",
 		"budget.enabled",
 		"pii.enabled",
 		"guardrails.enabled",

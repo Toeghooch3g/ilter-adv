@@ -231,6 +231,27 @@ var (
 		strconv.Atoi,
 	)
 
+	DashboardPortEnv = RegisterEnv(
+		"ILTER_DASHBOARD_PORT",
+		"Dashboard listen port",
+		DefaultDashboardPort,
+		strconv.Atoi,
+	)
+
+	DashboardHostEnv = RegisterEnv(
+		"ILTER_DASHBOARD_HOST",
+		"Dashboard listen host/IP (empty = all interfaces)",
+		"",
+		func(s string) (string, error) { return s, nil },
+	)
+
+	MetricsListenAddrEnv = RegisterEnv(
+		"ILTER_METRICS_LISTEN_ADDR",
+		"Metrics listen address in host:port form",
+		DefaultMetricsListenAddr,
+		func(s string) (string, error) { return s, nil },
+	)
+
 	StoragePathEnv = RegisterEnv(
 		"ILTER_STORAGE_PATH",
 		"SQLite database path",
@@ -257,6 +278,48 @@ var (
 		"Redis URL shared by cache, rate limiting, and PII backends",
 		"",
 		func(s string) (string, error) { return s, nil },
+	)
+
+	CacheTypeEnv = RegisterEnv(
+		"ILTER_CACHE_TYPE",
+		"Semantic cache backend: redis (default) | postgres | disabled",
+		"",
+		func(s string) (string, error) { return s, nil },
+	)
+
+	CachePGDSNEnv = RegisterEnv(
+		"ILTER_CACHE_PG_DSN",
+		"Postgres DSN for the semantic cache backend",
+		"",
+		func(s string) (string, error) { return s, nil },
+	)
+
+	CachePGRequireVectorscaleEnv = RegisterEnv(
+		"ILTER_CACHE_PG_REQUIRE_VECTORSCALE",
+		"Require pgvectorscale extension (true/false, default true)",
+		true,
+		strconv.ParseBool,
+	)
+
+	CacheEmbeddingModelEnv = RegisterEnv(
+		"ILTER_CACHE_EMBEDDING_MODEL",
+		"Provider:model for cache embeddings (e.g. openai:text-embedding-3-small); empty = legacy Ollama",
+		"",
+		func(s string) (string, error) { return s, nil },
+	)
+
+	CacheRerankModelEnv = RegisterEnv(
+		"ILTER_CACHE_RERANK_MODEL",
+		"Provider:model for cache rerank (e.g. cohere:rerank-english-v3.0); empty = no rerank",
+		"",
+		func(s string) (string, error) { return s, nil },
+	)
+
+	CacheRerankTopKEnv = RegisterEnv(
+		"ILTER_CACHE_RERANK_TOPK",
+		"KNN top-K candidates before rerank (default 10)",
+		10,
+		strconv.Atoi,
 	)
 )
 
@@ -288,4 +351,13 @@ func ApplyEnvOverrides(cfg *Config) {
 		cfg.RateLimit.RedisURL = v
 		cfg.PII.RedisURL = v
 	})
+	applyEnvOverride(DashboardPortEnv, "ILTER_DASHBOARD_PORT", func(v int) { cfg.Dashboard.Port = v })
+	applyEnvOverride(DashboardHostEnv, "ILTER_DASHBOARD_HOST", func(v string) { cfg.Dashboard.Host = v })
+	applyEnvOverride(MetricsListenAddrEnv, "ILTER_METRICS_LISTEN_ADDR", func(v string) { cfg.Metrics.ListenAddr = v })
+	applyEnvOverride(CacheTypeEnv, "ILTER_CACHE_TYPE", func(v string) { cfg.Cache.Type = v })
+	applyEnvOverride(CachePGDSNEnv, "ILTER_CACHE_PG_DSN", func(v string) { cfg.Cache.PostgresDSN = v })
+	applyEnvOverride(CachePGRequireVectorscaleEnv, "ILTER_CACHE_PG_REQUIRE_VECTORSCALE", func(v bool) { cfg.Cache.PostgresRequireVectorscale = v })
+	applyEnvOverride(CacheEmbeddingModelEnv, "ILTER_CACHE_EMBEDDING_MODEL", func(v string) { cfg.Cache.EmbeddingModel = v })
+	applyEnvOverride(CacheRerankModelEnv, "ILTER_CACHE_RERANK_MODEL", func(v string) { cfg.Cache.RerankModel = v })
+	applyEnvOverride(CacheRerankTopKEnv, "ILTER_CACHE_RERANK_TOPK", func(v int) { cfg.Cache.RerankTopK = v })
 }

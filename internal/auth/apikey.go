@@ -18,6 +18,7 @@ type APIKey struct {
 	AllowedModels       []string          `json:"allowed_models"`
 	AllowedProviders    []string          `json:"allowed_providers"`
 	Enabled             bool              `json:"enabled"`
+	MCPInjectionEnabled bool              `json:"mcp_injection_enabled"`
 	CreatedAt           time.Time         `json:"created_at"`
 	UpdatedAt           time.Time         `json:"updated_at"`
 }

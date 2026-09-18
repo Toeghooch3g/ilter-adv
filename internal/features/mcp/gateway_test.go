@@ -193,7 +193,7 @@ func TestGateway_Dispatch_ToolsCall_Unauthorized(t *testing.T) {
 		JSONRPC: JSONRPCVersion,
 		ID:      testID("7"),
 		Method:  "tools/call",
-		Params:  json.RawMessage(`{"name":"restricted-tool","arguments":{}}`),
+		Params:  json.RawMessage(`{"name":"s1-restricted-tool","arguments":{}}`),
 	}, emptyRctx())
 	if resp.Error == nil {
 		t.Fatal("expected error for unauthorized tool")
@@ -258,8 +258,8 @@ func TestGateway_Dispatch_ToolsList_AuthFilteredByKey(t *testing.T) {
 	if err := json.Unmarshal(respA.Result, &listA); err != nil {
 		t.Fatal(err)
 	}
-	if len(listA.Tools) != 1 || listA.Tools[0].Name != "tool-a" {
-		t.Fatalf("key-a: expected [tool-a], got %v", toolNames(listA.Tools))
+	if len(listA.Tools) != 1 || listA.Tools[0].Name != "s1-tool-a" {
+		t.Fatalf("key-a: expected [s1-tool-a], got %v", toolNames(listA.Tools))
 	}
 
 	// Key B sees only tool-b.
@@ -275,8 +275,8 @@ func TestGateway_Dispatch_ToolsList_AuthFilteredByKey(t *testing.T) {
 	if err := json.Unmarshal(respB.Result, &listB); err != nil {
 		t.Fatal(err)
 	}
-	if len(listB.Tools) != 1 || listB.Tools[0].Name != "tool-b" {
-		t.Fatalf("key-b: expected [tool-b], got %v", toolNames(listB.Tools))
+	if len(listB.Tools) != 1 || listB.Tools[0].Name != "s1-tool-b" {
+		t.Fatalf("key-b: expected [s1-tool-b], got %v", toolNames(listB.Tools))
 	}
 
 	// Default-deny (no matching key) sees nothing.
@@ -320,7 +320,7 @@ func TestGateway_Dispatch_ToolsCall_KeyAuth(t *testing.T) {
 		JSONRPC: JSONRPCVersion,
 		ID:      testID("1"),
 		Method:  MethodToolsCall,
-		Params:  json.RawMessage(`{"name":"shared-tool","arguments":{}}`),
+		Params:  json.RawMessage(`{"name":"s1-shared-tool","arguments":{}}`),
 	}, &RequestContext{KeyID: "key-a"})
 	if resp.Error == nil || resp.Error.Code == ErrorCodeToolNotFound {
 		t.Fatalf("key-a: expected auth to pass, got 'tool not found' (code=%d)", resp.Error.Code)
@@ -331,7 +331,7 @@ func TestGateway_Dispatch_ToolsCall_KeyAuth(t *testing.T) {
 		JSONRPC: JSONRPCVersion,
 		ID:      testID("2"),
 		Method:  MethodToolsCall,
-		Params:  json.RawMessage(`{"name":"shared-tool","arguments":{}}`),
+		Params:  json.RawMessage(`{"name":"s1-shared-tool","arguments":{}}`),
 	}, emptyRctx())
 	if respN.Error == nil || respN.Error.Code != ErrorCodeToolNotFound {
 		t.Fatal("no-key: expected 'tool not found'")
@@ -386,23 +386,22 @@ func TestGateway_Dispatch_ToolsList_DuplicateNames(t *testing.T) {
 		got[tool.Name] = true
 	}
 
-	// Duplicate tool-a should be namespaced.
-	if !got["s1__tool-a"] {
-		t.Fatalf("expected namespaced 's1__tool-a', got: %v", toolNames(list.Tools))
+	// Every tool is exposed under its server-prefixed name.
+	if !got["s1-tool-a"] {
+		t.Fatalf("expected 's1-tool-a', got: %v", toolNames(list.Tools))
 	}
-	if !got["s2__tool-a"] {
-		t.Fatalf("expected namespaced 's2__tool-a', got: %v", toolNames(list.Tools))
+	if !got["s2-tool-a"] {
+		t.Fatalf("expected 's2-tool-a', got: %v", toolNames(list.Tools))
 	}
-	// Unique tools should remain bare.
-	if !got["tool-b"] {
-		t.Fatalf("expected bare 'tool-b', got: %v", toolNames(list.Tools))
+	if !got["s1-tool-b"] {
+		t.Fatalf("expected 's1-tool-b', got: %v", toolNames(list.Tools))
 	}
-	if !got["tool-c"] {
-		t.Fatalf("expected bare 'tool-c', got: %v", toolNames(list.Tools))
+	if !got["s2-tool-c"] {
+		t.Fatalf("expected 's2-tool-c', got: %v", toolNames(list.Tools))
 	}
 }
 
-func TestGateway_Dispatch_ToolsCall_NamespacedName(t *testing.T) {
+func TestGateway_Dispatch_ToolsCall_PrefixedName(t *testing.T) {
 	servers := map[string]*ServerInfo{
 		"s1": {
 			ID: "s1",
@@ -429,18 +428,18 @@ func TestGateway_Dispatch_ToolsCall_NamespacedName(t *testing.T) {
 		{Tools: []string{"*/*"}},
 	})
 
-	// Call with namespaced name s1__tool-a — should resolve to s1, pass auth, fail on nil executor.
+	// Call with prefixed name s1-tool-a — should resolve to s1, pass auth, fail on nil executor.
 	resp := gw.Dispatch(&JSONRPCRequest{
 		JSONRPC: JSONRPCVersion,
 		ID:      testID("1"),
 		Method:  MethodToolsCall,
-		Params:  json.RawMessage(`{"name":"s1__tool-a","arguments":{}}`),
+		Params:  json.RawMessage(`{"name":"s1-tool-a","arguments":{}}`),
 	}, &RequestContext{KeyID: "key-a"})
 	if resp.Error == nil {
 		t.Fatal("expected error (nil executor)")
 	}
 	if resp.Error.Code == ErrorCodeToolNotFound {
-		t.Fatalf("namespaced tool call got 'tool not found' (code=%d) — means resolution failed", resp.Error.Code)
+		t.Fatalf("prefixed tool call got 'tool not found' (code=%d) — means resolution failed", resp.Error.Code)
 	}
 }
 
@@ -494,62 +493,15 @@ func TestGateway_Dispatch_ToolsList_DuplicateNames_PartialAuth(t *testing.T) {
 	for _, tool := range list.Tools {
 		got[tool.Name] = true
 	}
-	// Duplicate tool-a should always be namespaced (count on allTools).
-	if !got["s1__tool-a"] && !got["s2__tool-a"] {
-		t.Fatalf("expected namespaced tool-a variant, got: %v", toolNames(list.Tools))
+	// Every tool is server-prefixed, regardless of auth scope.
+	if !got["s1-tool-a"] && !got["s2-tool-a"] {
+		t.Fatalf("expected prefixed tool-a variant, got: %v", toolNames(list.Tools))
 	}
 }
 
-func TestSanitizeToolName(t *testing.T) {
-	tests := []struct {
-		serverID string
-		toolName string
-		want     string
-	}{
-		{"s1", "tool-a", "s1__tool-a"},
-		{"server-id", "my_tool", "server-id__my_tool"},
-		{"srv", "abc", "srv__abc"},
-	}
-	for _, tt := range tests {
-		got := SanitizeToolName(tt.serverID, tt.toolName)
-		if got != tt.want {
-			t.Errorf("SanitizeToolName(%q, %q) = %q, want %q", tt.serverID, tt.toolName, got, tt.want)
-		}
-		if len(got) > maxToolNameLen {
-			t.Errorf("SanitizeToolName(%q, %q) = %q (len=%d), exceeds max %d", tt.serverID, tt.toolName, got, len(got), maxToolNameLen)
-		}
-	}
-}
-
-func TestSanitizeToolName_Truncation(t *testing.T) {
-	longServerID := "a-really-really-long-server-identifier"
-	longToolName := "a-tool-name-that-is-also-quite-long-and-should-exceed-64-characters-when-combined"
-	got := SanitizeToolName(longServerID, longToolName)
-	if len(got) > maxToolNameLen {
-		t.Errorf("SanitizeToolName(%q, %q) = %q (len=%d), exceeds max %d", longServerID, longToolName, got, len(got), maxToolNameLen)
-	}
-	if len(got) == 0 {
-		t.Fatal("SanitizeToolName returned empty string")
-	}
-}
-
-func TestSanitizeToolName_InvalidChars(t *testing.T) {
-	// Server ID is sanitized (→ _), tool name is NOT modified (round-trip).
-	got := SanitizeToolName("srv.one", "my tool:foo")
-	if len(got) > maxToolNameLen {
-		t.Errorf("SanitizeToolName returned %q (len=%d), exceeds max %d", got, len(got), maxToolNameLen)
-	}
-	if !strings.HasPrefix(got, "srv_one__") {
-		t.Errorf("expected server ID part to be sanitized, got %q", got)
-	}
-	if !strings.Contains(got, "my tool:foo") {
-		t.Errorf("expected tool name part to be unchanged, got %q", got)
-	}
-}
-
-func TestSanitizeToolName_RoundTrip_ToolWithDelimiter(t *testing.T) {
-	// Tool name containing __ should survive a list→call round-trip.
-	// Need 2 servers with the same tool name to trigger namespacing.
+func TestExposedToolName_RoundTrip_ToolWithDelimiter(t *testing.T) {
+	// Tool name containing __ should survive a list→call round-trip via
+	// forward derivation (exposed names are never split).
 	servers := map[string]*ServerInfo{
 		"s1": {
 			ID: "s1",
@@ -572,7 +524,7 @@ func TestSanitizeToolName_RoundTrip_ToolWithDelimiter(t *testing.T) {
 	}
 	gw := newTestGateway(servers, []config.MCPAccessRule{{Tools: []string{"*/*"}}})
 
-	// List tools → should contain s1__foo__bar (splitN handles __ in tool name).
+	// List tools → should contain s1-foo__bar and s2-foo__bar.
 	respList := gw.Dispatch(&JSONRPCRequest{
 		JSONRPC: JSONRPCVersion, ID: testID("1"), Method: MethodToolsList,
 	}, emptyRctx())
@@ -583,19 +535,18 @@ func TestSanitizeToolName_RoundTrip_ToolWithDelimiter(t *testing.T) {
 	if err := json.Unmarshal(respList.Result, &list); err != nil {
 		t.Fatal(err)
 	}
-	// Both s1__foo__bar and s2__foo__bar should exist (map iteration order varies).
 	hasS1 := false
 	hasS2 := false
 	for _, tool := range list.Tools {
-		if tool.Name == "s1__foo__bar" {
+		if tool.Name == "s1-foo__bar" {
 			hasS1 = true
 		}
-		if tool.Name == "s2__foo__bar" {
+		if tool.Name == "s2-foo__bar" {
 			hasS2 = true
 		}
 	}
 	if !hasS1 || !hasS2 {
-		t.Fatalf("expected s1__foo__bar and s2__foo__bar, got %v", toolNames(list.Tools))
+		t.Fatalf("expected s1-foo__bar and s2-foo__bar, got %v", toolNames(list.Tools))
 	}
 
 	// Call with each exposed name (forward derivation resolves it).
@@ -613,9 +564,8 @@ func TestSanitizeToolName_RoundTrip_ToolWithDelimiter(t *testing.T) {
 	}
 }
 
-func TestSanitizeToolName_RoundTrip_Truncated(t *testing.T) {
+func TestExposedToolName_RoundTrip_Truncated(t *testing.T) {
 	// Very long tool name triggers truncation; forward derivation must still resolve.
-	// Need 2 servers with same tool name to trigger namespacing (which applies SanitizeToolName).
 	longTool := "a-very-long-tool-name-that-exceeds-sixty-four-characters-when-combined-with-server-prefix"
 	servers := map[string]*ServerInfo{
 		"s1": {
@@ -658,8 +608,8 @@ func TestSanitizeToolName_RoundTrip_Truncated(t *testing.T) {
 		if len(tool.Name) > maxToolNameLen {
 			t.Fatalf("tool %q exceeds %d chars", tool.Name, maxToolNameLen)
 		}
-		if !strings.HasPrefix(tool.Name, "s1__") && !strings.HasPrefix(tool.Name, "s2__") {
-			t.Fatalf("expected prefix s1__ or s2__, got %q", tool.Name)
+		if !strings.HasPrefix(tool.Name, "s1-") && !strings.HasPrefix(tool.Name, "s2-") {
+			t.Fatalf("expected prefix s1- or s2-, got %q", tool.Name)
 		}
 	}
 
@@ -696,7 +646,7 @@ func TestGateway_Dispatch_ToolsCall_UnsupportedTransport(t *testing.T) {
 		JSONRPC: JSONRPCVersion,
 		ID:      testID("9"),
 		Method:  "tools/call",
-		Params:  json.RawMessage(`{"name":"inline-tool","arguments":{}}`),
+		Params:  json.RawMessage(`{"name":"s1-inline-tool","arguments":{}}`),
 	}, emptyRctx())
 	if resp.Error == nil {
 		t.Fatal("expected error for unsupported transport")

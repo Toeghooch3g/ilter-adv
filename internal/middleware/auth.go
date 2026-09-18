@@ -115,6 +115,7 @@ func (am *AuthMiddleware) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		token, ok := extractBearerToken(r)
 		if !ok {
+			am.logMCPAuth(r, "rejected_missing_credentials", "")
 			am.authError(w, r, http.StatusUnauthorized, "authentication_error", "Missing or invalid Authorization header")
 			return
 		}
@@ -124,20 +125,24 @@ func (am *AuthMiddleware) Handler(next http.Handler) http.Handler {
 			var billErr error
 			ctx, billErr = am.resolveBillingKey(ctx, r)
 			if billErr != nil {
+				am.logMCPAuth(r, "rejected_invalid_billing_key", "admin")
 				am.authError(w, r, http.StatusForbidden, "invalid_billing_key", billErr.Error())
 				return
 			}
+			am.logMCPAuth(r, "authenticated_admin", "admin")
 			next.ServeHTTP(w, r.WithContext(ctx))
 			return
 		}
 
 		vk, err := am.store.GetActiveKeyByHash(r.Context(), token)
 		if err != nil {
+			am.logMCPAuth(r, "rejected_invalid_key", keyPrefixHint(token))
 			am.authError(w, r, http.StatusUnauthorized, "authentication_error", "Invalid API key")
 			return
 		}
 
 		if !vk.Enabled {
+			am.logMCPAuth(r, "rejected_disabled_key", vk.ID)
 			am.authError(w, r, http.StatusForbidden, "key_disabled", "Key is disabled")
 			return
 		}
@@ -145,8 +150,38 @@ func (am *AuthMiddleware) Handler(next http.Handler) http.Handler {
 		ctx := context.WithValue(r.Context(), reqmeta.KeyIDContextKey, vk.ID)
 		ctx = am.loadKeyContext(ctx, vk)
 
+		am.logMCPAuth(r, "authenticated_key", vk.ID)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// logMCPAuth records the outcome of authenticating an MCP gateway request.
+// Scoped to the configured MCP endpoint path so the proxy's other routes
+// are not flooded; the token is never logged — only a non-secret key prefix
+// hint on failure and the resolved key ID on success.
+func (am *AuthMiddleware) logMCPAuth(r *http.Request, outcome, keyID string) {
+	if am.mcpEndpoint == "" || !strings.HasPrefix(r.URL.Path, am.mcpEndpoint) {
+		return
+	}
+	attrs := []any{
+		"endpoint", r.URL.Path,
+		"method", r.Method,
+		"client_ip", r.RemoteAddr,
+		"outcome", outcome,
+	}
+	if keyID != "" {
+		attrs = append(attrs, "key_id", keyID)
+	}
+	slog.Info("mcp gateway auth", attrs...)
+}
+
+// keyPrefixHint returns the non-secret 12-char key prefix (the key ID) for
+// a token, for failure diagnostics. Tokens are never logged in full.
+func keyPrefixHint(token string) string {
+	if len(token) > 12 {
+		return token[:12]
+	}
+	return token
 }
 
 // authError writes a JSON error response and adds WWW-Authenticate header

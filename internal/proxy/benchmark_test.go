@@ -51,17 +51,19 @@ func benchLoadBalancer(b *testing.B, models []config.ModelConfig) *smartrouter.L
 
 func BenchmarkCalculateCost(b *testing.B) {
 	mc := config.ModelConfig{Name: "gpt-4o", CostPerInputToken: 0.0025, CostPerOutputToken: 0.01}
+	u := &model.Usage{PromptTokens: 1000, CompletionTokens: 500, CacheReadIncludedInPrompt: true}
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_ = CalculateCost(mc, 1000, 500)
+	for b.Loop() {
+		_ = CalculateCost(mc, u)
 	}
 }
 
 func BenchmarkCalculateCost_ZeroTokens(b *testing.B) {
 	mc := config.ModelConfig{Name: "gpt-4o", CostPerInputToken: 0.0025, CostPerOutputToken: 0.01}
+	u := &model.Usage{PromptTokens: 0, CompletionTokens: 0, CacheReadIncludedInPrompt: true}
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_ = CalculateCost(mc, 0, 0)
+	for b.Loop() {
+		_ = CalculateCost(mc, u)
 	}
 }
 
@@ -208,12 +210,11 @@ func BenchmarkModelCostCalculation(b *testing.B) {
 		{Name: "gpt-4o-mini", CostPerInputToken: 0.00015, CostPerOutputToken: 0.0006},
 		{Name: "deepseek-chat", CostPerInputToken: 0.00027, CostPerOutputToken: 0.0011},
 	}
-	prompt := 1500
-	completion := 800
+	u := &model.Usage{PromptTokens: 1500, CompletionTokens: 800, CacheReadIncludedInPrompt: true}
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		for _, m := range models {
-			_ = CalculateCost(m, prompt, completion)
+			_ = CalculateCost(m, u)
 		}
 	}
 }

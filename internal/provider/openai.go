@@ -45,6 +45,23 @@ func (p *OpenAIProvider) Type() string {
 	return "openai"
 }
 
+// modelLabel returns the value used to tag discovered models with their owning
+// provider. This is the provider's unique name (the instance), not its type —
+// several providers may share a type (e.g. multiple custom OpenAI-compatible
+// endpoints) but each is a distinct instance, and provider_models / catalog
+// entries must be keyed per instance to avoid collisions. Falls back to the
+// type when no name is configured (e.g. unit tests constructing the provider
+// directly), which preserves the historical label for that edge case.
+func (p *OpenAIProvider) modelLabel() string {
+	if p.config.Name != "" {
+		return p.config.Name
+	}
+	if p.provType != "" {
+		return p.provType
+	}
+	return "openai"
+}
+
 func (p *OpenAIProvider) TransformRequest(ctx context.Context, req *model.ChatCompletionRequest) (*http.Request, error) {
 	outReq := req
 	if req != nil {
@@ -58,6 +75,13 @@ func (p *OpenAIProvider) TransformRequest(ctx context.Context, req *model.ChatCo
 			// Always ask upstream for usage on streamed responses so cost accounting
 			// doesn't fall back to the char/4 estimate in internal/proxy/streaming.go.
 			reqCopy.StreamOptions = &model.StreamOptions{IncludeUsage: true}
+		}
+		// Provider-level default service tier: injected only when the client
+		// did not send its own (client wins), and only for providers with a
+		// configured tier. Covered by this path for every OpenAI-compatible
+		// type (openai, deepseek, deepinfra, custom openai, ...).
+		if reqCopy.ServiceTier == "" && p.config.ServiceTier != "" {
+			reqCopy.ServiceTier = p.config.ServiceTier
 		}
 		outReq = &reqCopy
 	}
@@ -323,8 +347,10 @@ type openRouterModelEntry struct {
 	Name          string `json:"name"`
 	ContextLength int    `json:"context_length"`
 	Pricing       struct {
-		Prompt     string `json:"prompt"`
-		Completion string `json:"completion"`
+		Prompt           string `json:"prompt"`
+		Completion       string `json:"completion"`
+		PromptCacheRead  string `json:"prompt_cache_read"`
+		PromptCacheWrite string `json:"prompt_cache_write"`
 	} `json:"pricing"`
 	SupportedParameters []string `json:"supported_parameters"`
 }
@@ -382,60 +408,189 @@ func (p *OpenAIProvider) DiscoverModels(ctx context.Context) ([]catalog.ModelInf
 	}
 
 	var models []catalog.ModelInfo
-	for _, entry := range modelsResp.Data {
-		if entry.ID == "" {
-			continue
+
+	// When the provider has no manual overrides, keep the historical fast path:
+	// reuse metadata already cached in catalog.Models for known IDs (avoids
+	// re-deriving heuristics/costs on every discovery) and only derive new IDs.
+	// When overrides ARE set, we always build from the fresh endpoint response
+	// so the merge below can correctly overlay them.
+	if len(p.config.ModelOverrides) == 0 {
+		for _, entry := range modelsResp.Data {
+			if entry.ID == "" {
+				continue
+			}
+
+			catalog.ModelsMu.RLock()
+			existing, exists := catalog.Models[entry.ID]
+			catalog.ModelsMu.RUnlock()
+
+			if exists && len(existing) > 0 {
+				regInfo := existing[0]
+				regInfo.Provider = p.modelLabel()
+				regInfo.DefaultBaseURL = p.config.BaseURL
+				if p.config.Type == "opencode_zen" || p.config.Type == "opencode_go" {
+					idLower := strings.ToLower(entry.ID)
+					if strings.Contains(idLower, "free") {
+						regInfo.CostPerInputToken = 0.0
+						regInfo.CostPerOutputToken = 0.0
+						regInfo.Category = "free"
+					}
+				}
+				models = append(models, regInfo)
+				continue
+			}
+
+			models = append(models, p.discoveredModel(entry.ID))
 		}
-		models = append(models, p.openAIModelInfoFromEntry(entry.ID))
+		return models, nil
+	}
+
+	// Overrides present: build raw endpoint entries (ID + instance identity
+	// only; no heuristics yet), merge the manual overrides (lowest priority),
+	// then fill any still-unset metadata from heuristics (highest = whatever
+	// the endpoint itself reported, then the override, then heuristics).
+	raw := make([]catalog.ModelInfo, 0, len(modelsResp.Data))
+	for _, entry := range modelsResp.Data {
+		if entry.ID != "" {
+			raw = append(raw, catalog.ModelInfo{
+				ID:             entry.ID,
+				Provider:       p.modelLabel(),
+				DefaultBaseURL: p.config.BaseURL,
+				// DisplayName left empty: a standard /v1/models response does
+				// not report one, so a manual override's display name (if any)
+				// wins; fillModelDefaults falls back to the model ID.
+			})
+		}
+	}
+	models = applyModelOverrides(raw, p.modelLabel(), p.config.BaseURL, p.config.ModelOverrides)
+	for i := range models {
+		p.fillModelDefaults(&models[i])
 	}
 	return models, nil
 }
 
-// openAIModelInfoFromEntry returns the registered catalog.ModelInfo for
-// modelID if one is already known (adjusted for this provider's type, and for
-// the opencode_zen/opencode_go free-tier naming convention), or a
-// heuristically-estimated one otherwise.
-func (p *OpenAIProvider) openAIModelInfoFromEntry(modelID string) catalog.ModelInfo {
-	catalog.ModelsMu.RLock()
-	existing, exists := catalog.Models[modelID]
-	catalog.ModelsMu.RUnlock()
-
-	if exists && len(existing) > 0 {
-		regInfo := existing[0]
-		regInfo.Provider = p.provType
-		if p.provType == "" {
-			regInfo.Provider = "openai"
-		}
-		regInfo.DefaultBaseURL = p.config.BaseURL
-		if p.config.Type == "opencode_zen" || p.config.Type == "opencode_go" {
-			idLower := strings.ToLower(modelID)
-			if strings.Contains(idLower, "free") {
-				regInfo.CostPerInputToken = 0.0
-				regInfo.CostPerOutputToken = 0.0
-				regInfo.Tier = "free"
-			}
-		}
-		return regInfo
-	}
-
-	tier, costIn, costOut, maxCtx, maxOut, caps := p.discoverModelHeuristics(modelID)
-
-	provType := p.provType
-	if provType == "" {
-		provType = "openai"
-	}
+// discoveredModel builds a catalog.ModelInfo for an endpoint model ID using
+// naming-convention heuristics for pricing/context/capabilities. Used for
+// providers without manual overrides.
+func (p *OpenAIProvider) discoveredModel(id string) catalog.ModelInfo {
+	tier, costIn, costOut, maxCtx, maxOut, caps := p.discoverModelHeuristics(id)
 	return catalog.ModelInfo{
-		ID:                 modelID,
-		Provider:           provType,
-		DisplayName:        modelID,
+		ID:                 id,
+		Provider:           p.modelLabel(),
+		DisplayName:        id,
 		MaxContextTokens:   maxCtx,
 		MaxOutputTokens:    maxOut,
 		CostPerInputToken:  costIn,
 		CostPerOutputToken: costOut,
-		Tier:               tier,
+		Category:           tier,
 		Capabilities:       caps,
 		DefaultBaseURL:     p.config.BaseURL,
 	}
+}
+
+// fillModelDefaults applies discoverModelHeuristics to any metadata field that
+// is still unset. It never overwrites values already present (whether reported
+// by the endpoint or supplied by a manual override), preserving the priority
+// endpoint-reported > manual override > heuristic.
+func (p *OpenAIProvider) fillModelDefaults(m *catalog.ModelInfo) {
+	tier, costIn, costOut, maxCtx, maxOut, caps := p.discoverModelHeuristics(m.ID)
+	if m.DisplayName == "" {
+		m.DisplayName = m.ID
+	}
+	if m.Category == "" {
+		m.Category = tier
+	}
+	if m.CostPerInputToken == 0 {
+		m.CostPerInputToken = costIn
+	}
+	if m.CostPerOutputToken == 0 {
+		m.CostPerOutputToken = costOut
+	}
+	if m.MaxContextTokens == 0 {
+		m.MaxContextTokens = maxCtx
+	}
+	if m.MaxOutputTokens == 0 {
+		m.MaxOutputTokens = maxOut
+	}
+	if len(m.Capabilities) == 0 {
+		m.Capabilities = caps
+	}
+}
+
+// applyModelOverrides overlays manual ModelOverride entries (the lowest
+// priority model source) onto the models reported by a provider's /v1/models
+// endpoint (the highest priority source). providerLabel and baseURL identify
+// the owning provider instance and are stamped onto any override-only models
+// so they remain routable and instance-tagged.
+//
+// For each model ID reported by the endpoint, endpoint-reported values win
+// per field and the override fills any gaps (endpoint-reported > override).
+// Models present only in the overrides are kept, since a custom provider's
+// manual list may include models its endpoint does not report, or may be the
+// sole source when discovery is off.
+func applyModelOverrides(endpoint []catalog.ModelInfo, providerLabel, baseURL string, overrides []config.ModelOverride) []catalog.ModelInfo {
+	over := make(map[string]config.ModelOverride, len(overrides))
+	for _, o := range overrides {
+		if o.ID != "" {
+			over[o.ID] = o
+		}
+	}
+
+	out := make([]catalog.ModelInfo, 0, len(endpoint)+len(overrides))
+	seen := make(map[string]bool, len(endpoint))
+	for _, em := range endpoint {
+		seen[em.ID] = true
+		if ov, ok := over[em.ID]; ok {
+			// Endpoint wins: only fill fields the endpoint left unset.
+			if em.DisplayName == "" {
+				em.DisplayName = ov.DisplayName
+			}
+			if em.Category == "" {
+				em.Category = ov.Category
+			}
+			if em.CostPerInputToken == 0 {
+				em.CostPerInputToken = ov.CostPerInputToken
+			}
+			if em.CostPerOutputToken == 0 {
+				em.CostPerOutputToken = ov.CostPerOutputToken
+			}
+			if em.MaxContextTokens == 0 {
+				em.MaxContextTokens = ov.MaxContextTokens
+			}
+			if em.MaxOutputTokens == 0 {
+				em.MaxOutputTokens = ov.MaxOutputTokens
+			}
+			if len(em.Capabilities) == 0 {
+				em.Capabilities = ov.Capabilities
+			}
+		}
+		out = append(out, em)
+	}
+
+	for id, ov := range over {
+		if seen[id] {
+			continue
+		}
+		// Present only in the manual list — keep it, stamped with the
+		// provider instance so it still routes back to this provider.
+		display := ov.DisplayName
+		if display == "" {
+			display = ov.ID
+		}
+		out = append(out, catalog.ModelInfo{
+			ID:                 id,
+			Provider:           providerLabel,
+			DisplayName:        display,
+			MaxContextTokens:   ov.MaxContextTokens,
+			MaxOutputTokens:    ov.MaxOutputTokens,
+			CostPerInputToken:  ov.CostPerInputToken,
+			CostPerOutputToken: ov.CostPerOutputToken,
+			Category:           ov.Category,
+			Capabilities:       ov.Capabilities,
+			DefaultBaseURL:     baseURL,
+		})
+	}
+	return out
 }
 
 func (p *OpenAIProvider) UpdateConfig(baseURL string, apiKey string) {

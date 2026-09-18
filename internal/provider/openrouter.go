@@ -88,7 +88,7 @@ func (p *OpenRouterProvider) DiscoverModels(ctx context.Context) ([]catalog.Mode
 		if entry.ID == "" {
 			continue
 		}
-		models = append(models, openRouterModelInfoFromEntry(entry, p.config.BaseURL))
+		models = append(models, openRouterModelInfoFromEntry(entry, p.config.BaseURL, p.modelLabel()))
 	}
 	return models, nil
 }
@@ -96,7 +96,7 @@ func (p *OpenRouterProvider) DiscoverModels(ctx context.Context) ([]catalog.Mode
 // openRouterModelInfoFromEntry converts one OpenRouter /models catalog entry
 // into a catalog.ModelInfo, estimating tier from price-per-token and
 // capabilities from the entry's supported_parameters and ID naming.
-func openRouterModelInfoFromEntry(entry openRouterModelEntry, baseURL string) catalog.ModelInfo {
+func openRouterModelInfoFromEntry(entry openRouterModelEntry, baseURL, provider string) catalog.ModelInfo {
 	costIn := parseOpenRouterPrice(entry.Pricing.Prompt)
 	costOut := parseOpenRouterPrice(entry.Pricing.Completion)
 
@@ -116,16 +116,18 @@ func openRouterModelInfoFromEntry(entry openRouterModelEntry, baseURL string) ca
 	}
 
 	return catalog.ModelInfo{
-		ID:                 entry.ID,
-		Provider:           "openrouter",
-		DisplayName:        entry.Name,
-		MaxContextTokens:   ctxLen,
-		MaxOutputTokens:    4096,
-		CostPerInputToken:  costIn,
-		CostPerOutputToken: costOut,
-		Tier:               tier,
-		Capabilities:       openRouterCapabilities(entry),
-		DefaultBaseURL:     baseURL,
+		ID:                      entry.ID,
+		Provider:                provider,
+		DisplayName:             entry.Name,
+		MaxContextTokens:        ctxLen,
+		MaxOutputTokens:         4096,
+		CostPerInputToken:       costIn,
+		CostPerOutputToken:      costOut,
+		CostPerCachedInputToken: parseOpenRouterPrice(entry.Pricing.PromptCacheRead),
+		CostPerCacheWriteToken:  parseOpenRouterPrice(entry.Pricing.PromptCacheWrite),
+		Category:                tier,
+		Capabilities:            openRouterCapabilities(entry),
+		DefaultBaseURL:          baseURL,
 	}
 }
 

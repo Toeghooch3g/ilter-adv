@@ -62,10 +62,10 @@ func setupSmartRouterE2EMultiProvider(t *testing.T, cfg *config.Config) *chi.Mux
 	t.Helper()
 
 	catalog.ModelsMu.Lock()
-	catalog.Models["gpt-4o-mini"] = []catalog.ModelInfo{{ID: "gpt-4o-mini", Provider: "openai", Tier: "economy"}}
-	catalog.Models["gpt-4o"] = []catalog.ModelInfo{{ID: "gpt-4o", Provider: "openai", Tier: "standard"}}
-	catalog.Models["gpt-4.1"] = []catalog.ModelInfo{{ID: "gpt-4.1", Provider: "openai", Tier: "premium"}}
-	catalog.Models["deepseek-chat"] = []catalog.ModelInfo{{ID: "deepseek-chat", Provider: "deepseek", Tier: "economy"}}
+	catalog.Models["gpt-4o-mini"] = []catalog.ModelInfo{{ID: "gpt-4o-mini", Provider: "openai", Category: "economy"}}
+	catalog.Models["gpt-4o"] = []catalog.ModelInfo{{ID: "gpt-4o", Provider: "openai", Category: "standard"}}
+	catalog.Models["gpt-4.1"] = []catalog.ModelInfo{{ID: "gpt-4.1", Provider: "openai", Category: "premium"}}
+	catalog.Models["deepseek-chat"] = []catalog.ModelInfo{{ID: "deepseek-chat", Provider: "deepseek", Category: "economy"}}
 	catalog.ModelsMu.Unlock()
 
 	t.Cleanup(func() {

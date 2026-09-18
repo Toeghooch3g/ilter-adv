@@ -56,6 +56,7 @@ const statusTabs: { key: StatusTab; label: string }[] = [
 
 const transportLabels: Record<string, string> = {
   sse: 'SSE',
+  http: 'HTTP',
   stdio: 'STDIO',
   inline: 'Inline',
 }
@@ -88,7 +89,7 @@ function ConnectGuidePanel({ onClose }: { onClose: () => void }) {
       <div className="fixed inset-0 z-50 bg-black/30 backdrop-blur-sm" onClick={onClose} />
       <div className="fixed right-0 top-0 z-50 flex h-full w-[480px] max-w-full flex-col border-l border-surface-200 bg-white shadow-2xl">
         <div className="flex items-center justify-between border-b border-surface-200 px-6 py-5">
-          <h3 className="text-lg font-semibold text-surface-900">Connect to ILTER MCP Hub</h3>
+          <h3 className="text-lg font-semibold text-surface-900">Connect to Ilter Advanced MCP Hub</h3>
           <Button variant="ghost" size="icon-sm" onClick={onClose} aria-label="Close">
             <X size={16} />
           </Button>
@@ -97,8 +98,8 @@ function ConnectGuidePanel({ onClose }: { onClose: () => void }) {
         <div className="flex-1 overflow-y-auto px-6 py-6">
           <div className="space-y-6">
             <p className="text-sm leading-relaxed text-surface-600">
-              You can connect external MCP clients (like Claude Desktop, Cursor, or VSCode) directly to ILTER. ILTER
-              acts as a centralized MCP Hub, exposing all your authorized tools.
+              You can connect external MCP clients (like Claude Desktop, Cursor, or VSCode) directly to Ilter Advanced.
+              Ilter Advanced acts as a centralized MCP Hub, exposing all your authorized tools.
             </p>
 
             <div>
@@ -253,6 +254,8 @@ export function McpServersView({ onNavigate }: { onNavigate?: (path: string) => 
         command: data.command,
         args: data.args,
         env: data.env ?? '',
+        auth_type: data.authType,
+        auth_key_env: data.authKey,
       })
       .then((res) => {
         const newServer: MCPServer = {
@@ -263,6 +266,8 @@ export function McpServersView({ onNavigate }: { onNavigate?: (path: string) => 
           command: data.command,
           args: data.args,
           env: data.env ?? '',
+          auth_type: data.authType,
+          auth_key_env: data.authKey,
           enabled: true,
           status: 'offline',
           tools_count: 0,
@@ -290,6 +295,8 @@ export function McpServersView({ onNavigate }: { onNavigate?: (path: string) => 
               command: data.command,
               args: data.args,
               env: data.env ?? '',
+              auth_type: data.authType,
+              auth_key_env: data.authKey,
             }
           : s,
       ),
@@ -303,6 +310,8 @@ export function McpServersView({ onNavigate }: { onNavigate?: (path: string) => 
         command: data.command,
         args: data.args,
         env: data.env ?? '',
+        auth_type: data.authType,
+        auth_key_env: data.authKey,
       })
       .then(() => toast.success('Server updated'))
       .catch(() => {

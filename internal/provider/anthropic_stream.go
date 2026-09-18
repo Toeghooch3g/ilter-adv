@@ -62,8 +62,15 @@ func anthropicMessageStartChunk(event *anthropicSSEEvent) *model.ChatCompletionC
 	}
 	if event.Message.Usage != nil && event.Message.Usage.InputTokens > 0 {
 		chunk.Usage = &model.Usage{
-			PromptTokens: event.Message.Usage.InputTokens,
-			TotalTokens:  event.Message.Usage.InputTokens,
+			PromptTokens:              event.Message.Usage.InputTokens,
+			TotalTokens:               event.Message.Usage.InputTokens,
+			CacheCreationInputTokens:  event.Message.Usage.CacheCreationInputTokens,
+			CacheReadIncludedInPrompt: false, // Anthropic input_tokens excludes cache read/write
+		}
+		if event.Message.Usage.CacheReadInputTokens > 0 {
+			chunk.Usage.PromptTokensDetails = &model.PromptTokensDetails{
+				CachedTokens: event.Message.Usage.CacheReadInputTokens,
+			}
 		}
 	}
 	return chunk
@@ -253,7 +260,7 @@ func (p *AnthropicProvider) anthropicModelInfoFromID(id string) catalog.ModelInf
 		MaxOutputTokens:    maxOut,
 		CostPerInputToken:  costIn,
 		CostPerOutputToken: costOut,
-		Tier:               tier,
+		Category:           tier,
 		Capabilities:       caps,
 		DefaultBaseURL:     p.config.BaseURL,
 	}

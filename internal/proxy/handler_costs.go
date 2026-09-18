@@ -18,7 +18,7 @@ func (h *Handler) recordPostResponse(r *http.Request, chatResp *model.ChatComple
 
 	meta := reqmeta.GetRequestMetadata(r.Context())
 	keyID := reqmeta.GetKeyID(r.Context())
-	cost := CalculateCost(route.Model, chatResp.Usage.PromptTokens, chatResp.Usage.CompletionTokens)
+	cost := CalculateCost(route.Model, chatResp.Usage)
 
 	if meta != nil {
 		meta.SetTokensAndCost(chatResp.Usage.PromptTokens, chatResp.Usage.CompletionTokens, cost)
@@ -37,6 +37,10 @@ func (h *Handler) recordPostResponse(r *http.Request, chatResp *model.ChatComple
 		if meta != nil && meta.CacheHit != nil && *meta.CacheHit {
 			cacheHits = 1
 		}
+		cachedTokens := 0
+		if chatResp.Usage.PromptTokensDetails != nil {
+			cachedTokens = chatResp.Usage.PromptTokensDetails.CachedTokens
+		}
 		if err := h.store.RecordDailyUsage(
 			r.Context(),
 			keyID,
@@ -46,6 +50,8 @@ func (h *Handler) recordPostResponse(r *http.Request, chatResp *model.ChatComple
 			chatResp.Usage.PromptTokens,
 			chatResp.Usage.CompletionTokens,
 			cacheHits,
+			cachedTokens,
+			chatResp.Usage.CacheCreationInputTokens,
 			cost,
 		); err != nil {
 			slog.Error("Failed to record daily usage", "error", err)

@@ -5,6 +5,7 @@ import { getAuthHeaders } from '../../lib/auth'
 import { logger } from '../../lib/logger'
 import { cn } from '../../lib/utils'
 import { Button } from '../ui/button'
+import { FeatureGate } from '../ui/FeatureGate'
 import {
   AlertTriangle,
   Bot,
@@ -44,6 +45,14 @@ interface ChatThread {
 const MODEL_KEY = 'ilter-chat-model'
 
 export function ChatView() {
+  return (
+    <FeatureGate featureKey="chat">
+      <ChatViewContent />
+    </FeatureGate>
+  )
+}
+
+function ChatViewContent() {
   const [models, setModels] = useState<ModelProvider[]>([])
   const [loading, setLoading] = useState(true)
   const [sending, setSending] = useState(false)
@@ -154,7 +163,7 @@ export function ChatView() {
         if (active.length > 0) {
           setSelectedModel((prev) => {
             if (prev && active.some((m) => m.id === prev)) return prev
-            return active.find((m) => m.tier === 'economy')?.id || active[0].id
+            return active.find((m) => m.category === 'economy')?.id || active[0].id
           })
         }
         setLoading(false)
@@ -402,7 +411,7 @@ export function ChatView() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream', ...getAuthHeaders() },
         body: JSON.stringify({
-          model: selectedModelObj?.model || selectedModel,
+          model: selectedModelObj ? selectedModelObj.id : selectedModel,
           messages: [
             ...(systemPrompt ? [{ role: 'system', content: stripRawXML(stripMarkers(systemPrompt)) }] : []),
             ...[...messages, userMsg].map((m) => ({ role: m.role, content: stripRawXML(stripMarkers(m.content)) })),

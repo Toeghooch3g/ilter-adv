@@ -25,9 +25,9 @@ type FeatureItem = features.FeatureItem
 // ModelResponseItem and related request types re-export the models
 // package's types for test compilation.
 type (
-	ModelResponseItem      = models.ModelResponseItem
-	ToggleModelRequest     = models.ToggleModelRequest
-	UpdateModelTierRequest = models.UpdateModelTierRequest
+	ModelResponseItem          = models.ModelResponseItem
+	ToggleModelRequest         = models.ToggleModelRequest
+	UpdateModelCategoryRequest = models.UpdateModelCategoryRequest
 )
 
 // ProviderSummary re-exports the providers package's summary type for test

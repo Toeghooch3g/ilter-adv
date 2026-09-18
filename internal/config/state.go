@@ -28,6 +28,15 @@ type StateConfig struct {
 	Routing      RoutingConfig       `json:"routing"`
 	OpenAPITools []OpenAPISpecConfig `json:"openapi_tools"`
 
+	// MCPBlockedTools is the set of tool names hidden from every MCP surface
+	// (chat-injection, native gateway tools/list, hub tools/list) and rejected
+	// at execution. Each entry must match a tool's server-prefixed exposed
+	// name (ExposedToolName: "{server_name}-{tool_name}") as shown by
+	// tools/list; bare-name and legacy "server__tool" entries no longer match.
+	// Loaded from the runtime_config key "mcp:blocked_tools" (a JSON array of
+	// strings); a parse error degrades to an empty list.
+	MCPBlockedTools []string `json:"mcp_blocked_tools,omitempty"`
+
 	// ── Override pointers ──
 	// When non-nil, these values supersede the corresponding BootConfig
 	// defaults at runtime. Nil means "keep the boot default."
@@ -79,6 +88,11 @@ type RuntimeConfigSnapshot struct {
 	AuditLogPrompts    bool
 	AuditLogBodies     bool
 	AuditRetentionDays int64
+	// RequestLogEnabled gates whether request *contents* (prompt preview,
+	// request/response bodies) are written to the audit log. Aggregate rows
+	// (tokens, cost, latency, status) are always written so stats keep
+	// working; this flag only blanks content fields when disabled.
+	RequestLogEnabled bool
 
 	GuardrailsEnabled       bool
 	GuardrailsMode          string
@@ -92,6 +106,13 @@ type RuntimeConfigSnapshot struct {
 
 	Jobs JobsConfig
 
+	// ChatEnabled / JobsEnabled are runtime toggles (feature:chat /
+	// feature:jobs) that disable the chat playground view + its backend and
+	// the jobs view + its backend respectively. Default ON (chat has no boot
+	// config; jobs defaults from boot cfg.Jobs.Enabled).
+	ChatEnabled bool
+	JobsEnabled bool
+
 	// ── From State ──
 	Providers    []ProviderConfig
 	MCPServers   []MCPServerConfig
@@ -100,6 +121,11 @@ type RuntimeConfigSnapshot struct {
 	CustomRules  []CustomRuleConfig
 	Routing      RoutingConfig
 	OpenAPITools []OpenAPISpecConfig
+
+	// MCPBlockedTools hides the listed tools from every MCP surface and
+	// rejects them at execution (see Registry.SetBlockedToolsFn). Entries
+	// match a bare tool name (all servers) or server__tool (one server).
+	MCPBlockedTools []string
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -139,9 +165,10 @@ func ResolveRuntime(boot *BootConfig, state *StateConfig) *RuntimeConfigSnapshot
 			return 0.70
 		}(),
 
-		AuditEnabled:    boot.Audit.Enabled,
-		AuditLogPrompts: boot.Audit.LogPrompts,
-		AuditLogBodies:  boot.Audit.LogBodies,
+		AuditEnabled:      boot.Audit.Enabled,
+		AuditLogPrompts:   boot.Audit.LogPrompts,
+		AuditLogBodies:    boot.Audit.LogBodies,
+		RequestLogEnabled: boot.Audit.Enabled,
 		AuditRetentionDays: func() int64 {
 			if v, ok := boot.Audit.RetentionDays.Value(); ok {
 				return v
@@ -159,7 +186,9 @@ func ResolveRuntime(boot *BootConfig, state *StateConfig) *RuntimeConfigSnapshot
 		MCPHubEndpoint:   boot.MCP.HubEndpoint,
 		OpenAPIEnabled:   true,
 
-		Jobs: boot.Jobs,
+		Jobs:        boot.Jobs,
+		ChatEnabled: true,
+		JobsEnabled: boot.Jobs.Enabled,
 	}
 
 	if state != nil {
@@ -170,6 +199,7 @@ func ResolveRuntime(boot *BootConfig, state *StateConfig) *RuntimeConfigSnapshot
 		snap.CustomRules = state.CustomRules
 		snap.Routing = state.Routing
 		snap.OpenAPITools = state.OpenAPITools
+		snap.MCPBlockedTools = state.MCPBlockedTools
 
 		// Generic runtime_config value overrides (parsed from stringly-typed
 		// DB rows).  These provide the baseline for config keys that do not
@@ -293,6 +323,9 @@ func mergeFeatureFlagOverrides(snap *RuntimeConfigSnapshot, values map[string]st
 		"feature:openapi":        &snap.OpenAPIEnabled,
 		"feature:smart_router":   &snap.Routing.Enabled,
 		"feature:semantic_cache": &snap.CacheEnabled,
+		"feature:request_log":    &snap.RequestLogEnabled,
+		"feature:chat":           &snap.ChatEnabled,
+		"feature:jobs":           &snap.JobsEnabled,
 	}
 	for sectionKey, ptr := range featureBools {
 		if v, ok := values[sectionKey]; ok {

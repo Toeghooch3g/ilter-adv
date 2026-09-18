@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"encoding/json"
+	"regexp"
 	"testing"
 )
 
@@ -142,5 +143,50 @@ func TestErrorCodeConstants(t *testing.T) {
 		if tc.code >= 0 {
 			t.Errorf("%s: expected negative error code, got %d", tc.name, tc.code)
 		}
+	}
+}
+
+func TestExposedToolName(t *testing.T) {
+	tests := []struct {
+		name       string
+		serverName string
+		serverID   string
+		toolName   string
+		want       string
+	}{
+		{"basic", "Kagi", "kagi", "search", "kagi-search"},
+		{"spaces to underscores", "Kagi Search", "kagi-search", "fast_search", "kagi_search-fast_search"},
+		{"invalid chars sanitized", "Kagi (Pro)", "kagi-pro", "search", "kagi__pro_-search"},
+		{"empty name falls back to server ID", "", "kagi", "search", "kagi-search"},
+		{"hyphen separator preserved", "my-server", "my-server", "tool", "my-server-tool"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ExposedToolName(tt.serverName, tt.serverID, tt.toolName)
+			if got != tt.want {
+				t.Errorf("ExposedToolName(%q, %q, %q) = %q, want %q", tt.serverName, tt.serverID, tt.toolName, got, tt.want)
+			}
+			if len(got) > maxToolNameLen {
+				t.Errorf("ExposedToolName(%q, %q, %q) = %q (len=%d), exceeds max %d", tt.serverName, tt.serverID, tt.toolName, got, len(got), maxToolNameLen)
+			}
+			if !regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`).MatchString(got) {
+				t.Errorf("ExposedToolName(%q, %q, %q) = %q does not match ^[a-zA-Z0-9_-]{1,64}$", tt.serverName, tt.serverID, tt.toolName, got)
+			}
+		})
+	}
+}
+
+func TestExposedToolName_Truncation(t *testing.T) {
+	longName := "a-really-long-server-name-that-pushes-things-over"
+	longTool := "a-tool-name-that-is-also-quite-long-and-should-exceed-sixty-four-characters-when-combined"
+	got := ExposedToolName(longName, "server", longTool)
+	if len(got) > maxToolNameLen {
+		t.Errorf("ExposedToolName = %q (len=%d), exceeds max %d", got, len(got), maxToolNameLen)
+	}
+	if len(got) == 0 {
+		t.Fatal("ExposedToolName returned empty string")
+	}
+	if !regexp.MustCompile(`^[a-zA-Z0-9_-]+$`).MatchString(got) {
+		t.Errorf("ExposedToolName = %q contains invalid chars", got)
 	}
 }

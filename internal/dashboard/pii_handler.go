@@ -16,10 +16,29 @@ import (
 type PIIHandler struct {
 	store       *db.SQLiteStore
 	configCache *config.Cache
+	// refreshPatterns re-snapshots the runtime masker's enabled pattern set
+	// after any pattern CRUD, so edits apply to live traffic immediately.
+	// Set by the app via SetMaskerRefresh; nil-safe in tests/boot.
+	refreshPatterns func()
 }
 
 func NewPIIHandler(store *db.SQLiteStore, configCache *config.Cache) *PIIHandler {
 	return &PIIHandler{store: store, configCache: configCache}
+}
+
+// SetMaskerRefresh installs the closure that re-syncs the runtime masker's
+// enabled patterns from the DB after pattern mutations. Nil-safe.
+func (h *PIIHandler) SetMaskerRefresh(fn func()) {
+	h.refreshPatterns = fn
+}
+
+// refreshAfterPatternChange re-snapshots the runtime masker's enabled pattern
+// set after any pattern CRUD, so edits apply to live traffic immediately
+// (no ilter restart). Nil-safe when no masker is wired (tests, PII disabled).
+func (h *PIIHandler) refreshAfterPatternChange() {
+	if h.refreshPatterns != nil {
+		h.refreshPatterns()
+	}
 }
 
 // ── Types ──

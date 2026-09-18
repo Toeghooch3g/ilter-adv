@@ -2,6 +2,7 @@ import { ArrowLeft } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
+import { FeatureGate } from '@/components/ui/FeatureGate'
 import { QueryProvider } from '@/components/ui/query-provider'
 import { Skeleton } from '@/components/ui/skeleton'
 import { createJob, getJob, updateJob } from '@/lib/api'
@@ -108,6 +109,14 @@ function EditJob({
 }
 
 export function JobsView() {
+  return (
+    <FeatureGate featureKey="jobs">
+      <JobsViewContent />
+    </FeatureGate>
+  )
+}
+
+function JobsViewContent() {
   const [path, setPath] = useState(() => window.location.pathname)
   // Triggers created by this Create/Edit action, queued to show their
   // one-time-fresh credentials via WebhookInvokePanel — the same panel

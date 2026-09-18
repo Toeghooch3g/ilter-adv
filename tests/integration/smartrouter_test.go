@@ -295,9 +295,9 @@ func TestSmartRouterE2E_CostEstimateHeaders(t *testing.T) {
 
 func TestSmartRouterE2E_AuditLogRecordsRouting(t *testing.T) {
 	catalog.ModelsMu.Lock()
-	catalog.Models["gpt-4o-mini"] = []catalog.ModelInfo{{ID: "gpt-4o-mini", Provider: "openai", Tier: "economy"}}
-	catalog.Models["gpt-4o"] = []catalog.ModelInfo{{ID: "gpt-4o", Provider: "openai", Tier: "standard"}}
-	catalog.Models["gpt-4.1"] = []catalog.ModelInfo{{ID: "gpt-4.1", Provider: "openai", Tier: "premium"}}
+	catalog.Models["gpt-4o-mini"] = []catalog.ModelInfo{{ID: "gpt-4o-mini", Provider: "openai", Category: "economy"}}
+	catalog.Models["gpt-4o"] = []catalog.ModelInfo{{ID: "gpt-4o", Provider: "openai", Category: "standard"}}
+	catalog.Models["gpt-4.1"] = []catalog.ModelInfo{{ID: "gpt-4.1", Provider: "openai", Category: "premium"}}
 	catalog.ModelsMu.Unlock()
 	t.Cleanup(func() {
 		catalog.ModelsMu.Lock()

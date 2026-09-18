@@ -1,8 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { useMemo } from 'react'
-import { toast } from 'sonner'
 import { api } from '../../lib/api'
-import { ApiError } from '../../lib/api/request'
 import { qk } from '../../lib/query'
 
 export interface ProviderStatus {
@@ -32,7 +30,7 @@ export function useOverview() {
     queryFn: () => api.costs.getCostSummary('7d'),
   })
 
-  const { data: features, refetch: refetchFeatures } = useQuery({
+  const { data: features } = useQuery({
     queryKey: qk.features,
     queryFn: api.features.getFeatures,
   })
@@ -49,22 +47,6 @@ export function useOverview() {
     }))
   }, [providerInfos])
 
-  const toggleFeature = async (featureKey: string) => {
-    const feature = features?.find((f) => f.feature_key === featureKey)
-    if (!feature) return
-    const newEnabled = !feature.enabled
-    try {
-      await api.features.toggleFeature(featureKey, newEnabled)
-      await refetchFeatures()
-      toast.success(newEnabled ? `${feature.feature_key} enabled` : `${feature.feature_key} disabled`, {
-        description: `${feature.feature_key} is now ${newEnabled ? 'active' : 'disabled'}.`,
-      })
-    } catch (err) {
-      const msg = err instanceof ApiError ? err.message : `Could not update ${feature.feature_key}.`
-      toast.error('Toggle failed', { description: msg })
-    }
-  }
-
   return {
     stats: stats ?? null,
     statsLoading,
@@ -72,7 +54,6 @@ export function useOverview() {
     providersLoading,
     costSummary: costSummary ?? null,
     features: features ?? [],
-    toggleFeature,
     loading: statsLoading,
   }
 }

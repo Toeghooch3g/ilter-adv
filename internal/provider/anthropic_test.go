@@ -117,8 +117,8 @@ func TestAnthropicProvider_DiscoverModels_Success(t *testing.T) {
 	for _, m := range models {
 		if m.ID == "claude-3-5-sonnet-20241022" {
 			sonnetFound = true
-			if m.Tier != "standard" {
-				t.Errorf("expected standard tier for sonnet, got %s", m.Tier)
+			if m.Category != "standard" {
+				t.Errorf("expected standard tier for sonnet, got %s", m.Category)
 			}
 			if m.CostPerInputToken != 0.000003 {
 				t.Errorf("expected 0.000003 input cost for sonnet, got %f", m.CostPerInputToken)
@@ -126,8 +126,8 @@ func TestAnthropicProvider_DiscoverModels_Success(t *testing.T) {
 		}
 		if m.ID == "claude-3-opus-20240229" {
 			opusFound = true
-			if m.Tier != "premium" {
-				t.Errorf("expected premium tier for opus, got %s", m.Tier)
+			if m.Category != "premium" {
+				t.Errorf("expected premium tier for opus, got %s", m.Category)
 			}
 			if m.CostPerInputToken != 0.000015 {
 				t.Errorf("expected 0.000015 input cost for opus, got %f", m.CostPerInputToken)
@@ -449,4 +449,22 @@ func TestAnthropicProvider_TransformStreamChunk_MessageDeltaMaxTokens(t *testing
 	if chunk.Usage.CompletionTokens != 4096 {
 		t.Errorf("expected 4096 completion tokens, got %d", chunk.Usage.CompletionTokens)
 	}
+}
+
+// TestAnthropicProvider_TransformStreamChunk_MessageStartCache verifies
+// Anthropic cache_read/cache_creation counts map onto the normalized Usage
+// fields (typed view for cost calc), with CacheReadIncludedInPrompt=false
+// (input_tokens excludes cache).
+func TestAnthropicProvider_TransformStreamChunk_MessageStartCache(t *testing.T) {
+	p := NewAnthropicProvider(config.ProviderConfig{Name: "anthropic", Type: "anthropic"})
+
+	chunk, done, err := p.TransformStreamChunk([]byte(`{"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"claude-sonnet-4-20250514","stop_reason":null,"usage":{"input_tokens":100,"output_tokens":0,"cache_read_input_tokens":80,"cache_creation_input_tokens":20}}}`))
+	require.NoError(t, err)
+	require.False(t, done)
+	require.NotNil(t, chunk.Usage)
+	assert.Equal(t, 100, chunk.Usage.PromptTokens)
+	assert.Equal(t, 20, chunk.Usage.CacheCreationInputTokens)
+	assert.False(t, chunk.Usage.CacheReadIncludedInPrompt, "Anthropic input_tokens excludes cache")
+	require.NotNil(t, chunk.Usage.PromptTokensDetails)
+	assert.Equal(t, 80, chunk.Usage.PromptTokensDetails.CachedTokens)
 }

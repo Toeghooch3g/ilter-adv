@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
 import { api, type McpAuditEntry } from '../../lib/api'
-import { formatMs } from '../../lib/format'
+import { formatCost, formatMs } from '../../lib/format'
 import { logger } from '../../lib/logger'
 import { qk } from '../../lib/query'
 import { cn } from '../../lib/utils'
@@ -32,6 +32,7 @@ function DetailPanel({ entry, onClose }: { entry: McpAuditEntry; onClose: () => 
         <DetailField label="Server" value={entry.server_id} mono />
         <DetailField label="Status" value={<StatusBadge code={entry.status_code ?? (entry.success ? 200 : 500)} />} />
         <DetailField label="Duration" value={formatMs(entry.duration_ms)} mono />
+        <DetailField label="Cost" value={entry.cost != null && entry.cost > 0 ? formatCost(entry.cost) : '—'} mono />
         <DetailField label="User/Key" value={entry.key?.key_prefix || 'system'} mono />
         <DetailField label="Key Name" value={entry.key?.key_name || '—'} />
         {entry.api_key_id != null && <DetailField label="API Key ID" value={entry.api_key_id} mono />}
@@ -146,6 +147,7 @@ function McpAuditViewContent() {
       success: e.success,
       status_code: e.status_code,
       duration_ms: e.duration_ms,
+      cost: e.cost ?? 0,
       user: e.key?.key_prefix || 'system',
       key_name: e.key?.key_name || '',
       error: e.error_msg || '',
@@ -163,6 +165,7 @@ function McpAuditViewContent() {
       Success: e.success ? 'Yes' : 'No',
       StatusCode: e.status_code ?? '',
       DurationMs: e.duration_ms,
+      Cost: e.cost ?? 0,
       User: e.key?.key_prefix || 'system',
       KeyName: e.key?.key_name || '',
       Error: e.error_msg || '',
@@ -176,6 +179,7 @@ function McpAuditViewContent() {
       { key: 'Success', header: 'Success' },
       { key: 'StatusCode', header: 'Status Code' },
       { key: 'DurationMs', header: 'Duration (ms)' },
+      { key: 'Cost', header: 'Cost (USD)' },
       { key: 'User', header: 'User' },
       { key: 'KeyName', header: 'Key Name' },
       { key: 'Error', header: 'Error' },
@@ -371,10 +375,11 @@ function McpAuditViewContent() {
               <div className="grid grid-cols-12 gap-3 px-4 py-3 text-xs font-medium text-surface-500 uppercase tracking-wider bg-surface-50 rounded-t-xl">
                 <span className="col-span-2">Time</span>
                 <span className="col-span-1">Status</span>
-                <span className="col-span-3">Tool</span>
+                <span className="col-span-2">Tool</span>
                 <span className="col-span-1">Method</span>
                 <span className="col-span-2">Server</span>
                 <span className="col-span-2">User/Key</span>
+                <span className="col-span-1">Cost</span>
                 <span className="col-span-1">Duration</span>
               </div>
               {filtered.map((entry) => (
@@ -395,7 +400,7 @@ function McpAuditViewContent() {
                   <span className="col-span-1">
                     <StatusBadge code={entry.status_code ?? (entry.success ? 200 : 500)} />
                   </span>
-                  <span className="col-span-3 font-mono text-sm text-brand-600 truncate">{entry.tool}</span>
+                  <span className="col-span-2 font-mono text-sm text-brand-600 truncate">{entry.tool}</span>
                   <span className="col-span-1">
                     <span
                       className={cn(
@@ -436,6 +441,9 @@ function McpAuditViewContent() {
                     ) : (
                       <span className="text-surface-400 italic">system</span>
                     )}
+                  </span>
+                  <span className="col-span-1 font-mono text-xs text-surface-600">
+                    {entry.cost != null && entry.cost > 0 ? formatCost(entry.cost) : '—'}
                   </span>
                   <span className="col-span-1 font-mono text-xs text-surface-600">{formatMs(entry.duration_ms)}</span>
                 </button>

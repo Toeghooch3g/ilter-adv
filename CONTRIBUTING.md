@@ -30,6 +30,8 @@ make dev
 
 > **`make dev`** starts Air (Go hot-reload) + Vite (dashboard HMR) concurrently. Make changes, see them live.
 
+> **AI agents:** before editing, read [`AGENTS.md`](AGENTS.md) — it documents the repo layout, the non-negotiable middleware chain order, the config model (how to add env vars), and the feature/middleware boundary.
+
 ---
 
 ## The Architecture in One Paragraph

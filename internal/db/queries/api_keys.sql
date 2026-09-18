@@ -5,13 +5,13 @@ INSERT INTO api_keys (
     id, name, hashed_key, salt, key_prefix, group_id, user_id, tags,
     monthly_budget_usd, monthly_budget_tokens,
     rate_limit_rpm, rate_limit_tpm, rate_limit_retry_after,
-    allowed_models, allowed_providers, enabled,
+    allowed_models, allowed_providers, enabled, mcp_injection_enabled,
     created_at, updated_at
 ) VALUES (
     ?, ?, ?, ?, ?, ?, ?, ?,
     ?, ?,
     ?, ?, ?,
-    ?, ?, ?,
+    ?, ?, ?, ?,
     ?, ?
 );
 
@@ -19,7 +19,7 @@ INSERT INTO api_keys (
 SELECT id, name, group_id, user_id, tags,
     monthly_budget_usd, monthly_budget_tokens,
     rate_limit_rpm, rate_limit_tpm, rate_limit_retry_after,
-    allowed_models, allowed_providers, enabled,
+    allowed_models, allowed_providers, enabled, mcp_injection_enabled,
     created_at, updated_at
 FROM api_keys
 WHERE id = ?;
@@ -28,7 +28,7 @@ WHERE id = ?;
 SELECT id, name, group_id, user_id, tags,
     monthly_budget_usd, monthly_budget_tokens,
     rate_limit_rpm, rate_limit_tpm, rate_limit_retry_after,
-    allowed_models, allowed_providers, enabled,
+    allowed_models, allowed_providers, enabled, mcp_injection_enabled,
     created_at, updated_at
 FROM api_keys
 WHERE hashed_key = ?;
@@ -37,7 +37,7 @@ WHERE hashed_key = ?;
 SELECT id, name, group_id, user_id, tags,
     monthly_budget_usd, monthly_budget_tokens,
     rate_limit_rpm, rate_limit_tpm, rate_limit_retry_after,
-    allowed_models, allowed_providers, enabled,
+    allowed_models, allowed_providers, enabled, mcp_injection_enabled,
     created_at, updated_at, hashed_key, salt
 FROM api_keys
 WHERE key_prefix = ? AND salt != 'sha256' AND salt IS NOT NULL AND salt != '';
@@ -46,7 +46,7 @@ WHERE key_prefix = ? AND salt != 'sha256' AND salt IS NOT NULL AND salt != '';
 SELECT id, name, group_id, user_id, tags,
     monthly_budget_usd, monthly_budget_tokens,
     rate_limit_rpm, rate_limit_tpm, rate_limit_retry_after,
-    allowed_models, allowed_providers, enabled,
+    allowed_models, allowed_providers, enabled, mcp_injection_enabled,
     created_at, updated_at, hashed_key, salt
 FROM api_keys
 WHERE (key_prefix IS NULL OR key_prefix = '') AND salt != 'sha256' AND salt IS NOT NULL AND salt != '';
@@ -55,7 +55,7 @@ WHERE (key_prefix IS NULL OR key_prefix = '') AND salt != 'sha256' AND salt IS N
 SELECT id, name, group_id, user_id, tags,
     monthly_budget_usd, monthly_budget_tokens,
     rate_limit_rpm, rate_limit_tpm, rate_limit_retry_after,
-    allowed_models, allowed_providers, enabled,
+    allowed_models, allowed_providers, enabled, mcp_injection_enabled,
     created_at, updated_at
 FROM api_keys
 ORDER BY created_at DESC;
@@ -64,7 +64,7 @@ ORDER BY created_at DESC;
 SELECT id, name, group_id, user_id, tags,
     monthly_budget_usd, monthly_budget_tokens,
     rate_limit_rpm, rate_limit_tpm, rate_limit_retry_after,
-    allowed_models, allowed_providers, enabled,
+    allowed_models, allowed_providers, enabled, mcp_injection_enabled,
     created_at, updated_at
 FROM api_keys
 WHERE group_id = ?
@@ -76,7 +76,7 @@ UPDATE api_keys SET
     monthly_budget_usd = ?, monthly_budget_tokens = ?,
     rate_limit_rpm = ?, rate_limit_tpm = ?,
     allowed_models = ?, allowed_providers = ?,
-    enabled = ?, updated_at = ?
+    enabled = ?, mcp_injection_enabled = ?, updated_at = ?
 WHERE id = ?;
 
 -- name: SetKeyRateLimit :exec

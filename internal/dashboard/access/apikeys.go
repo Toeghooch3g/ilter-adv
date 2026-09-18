@@ -30,15 +30,16 @@ type CreateAPIKeyRequest struct {
 }
 
 type UpdateAPIKeyRequest struct {
-	Name             *string            `json:"name,omitempty"`
-	GroupID          *int               `json:"group_id,omitempty"`
-	UserID           *int               `json:"user_id,omitempty"`
-	Tags             *map[string]string `json:"tags,omitempty"`
-	RateLimitRPM     *int               `json:"rate_limit_rpm,omitempty"`
-	RateLimitTPM     *int64             `json:"rate_limit_tpm,omitempty"`
-	AllowedModels    *[]string          `json:"allowed_models,omitempty"`
-	AllowedProviders *[]string          `json:"allowed_providers,omitempty"`
-	Enabled          *bool              `json:"enabled,omitempty"`
+	Name                *string            `json:"name,omitempty"`
+	GroupID             *int               `json:"group_id,omitempty"`
+	UserID              *int               `json:"user_id,omitempty"`
+	Tags                *map[string]string `json:"tags,omitempty"`
+	RateLimitRPM        *int               `json:"rate_limit_rpm,omitempty"`
+	RateLimitTPM        *int64             `json:"rate_limit_tpm,omitempty"`
+	AllowedModels       *[]string          `json:"allowed_models,omitempty"`
+	AllowedProviders    *[]string          `json:"allowed_providers,omitempty"`
+	Enabled             *bool              `json:"enabled,omitempty"`
+	MCPInjectionEnabled *bool              `json:"mcp_injection_enabled,omitempty"`
 }
 
 func (h *Handler) ListAPIKeys(w http.ResponseWriter, r *http.Request) {
@@ -61,35 +62,37 @@ func (h *Handler) ListAPIKeys(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type akResponse struct {
-		ID               string            `json:"id"`
-		Name             string            `json:"name"`
-		GroupID          *int              `json:"group_id,omitempty"`
-		UserID           *int              `json:"user_id,omitempty"`
-		Tags             map[string]string `json:"tags"`
-		RateLimitRPM     int               `json:"rate_limit_rpm"`
-		RateLimitTPM     int64             `json:"rate_limit_tpm"`
-		AllowedModels    []string          `json:"allowed_models"`
-		AllowedProviders []string          `json:"allowed_providers"`
-		Enabled          bool              `json:"enabled"`
-		CreatedAt        string            `json:"created_at"`
-		UpdatedAt        string            `json:"updated_at"`
+		ID                  string            `json:"id"`
+		Name                string            `json:"name"`
+		GroupID             *int              `json:"group_id,omitempty"`
+		UserID              *int              `json:"user_id,omitempty"`
+		Tags                map[string]string `json:"tags"`
+		RateLimitRPM        int               `json:"rate_limit_rpm"`
+		RateLimitTPM        int64             `json:"rate_limit_tpm"`
+		AllowedModels       []string          `json:"allowed_models"`
+		AllowedProviders    []string          `json:"allowed_providers"`
+		Enabled             bool              `json:"enabled"`
+		MCPInjectionEnabled bool              `json:"mcp_injection_enabled"`
+		CreatedAt           string            `json:"created_at"`
+		UpdatedAt           string            `json:"updated_at"`
 	}
 
 	items := make([]akResponse, 0, len(keys))
 	for _, k := range keys {
 		items = append(items, akResponse{
-			ID:               k.ID,
-			Name:             k.Name,
-			GroupID:          k.GroupID,
-			UserID:           k.UserID,
-			Tags:             k.Tags,
-			RateLimitRPM:     k.RateLimitRPM,
-			RateLimitTPM:     k.RateLimitTPM,
-			AllowedModels:    k.AllowedModels,
-			AllowedProviders: k.AllowedProviders,
-			Enabled:          k.Enabled,
-			CreatedAt:        k.CreatedAt.Format(time.RFC3339),
-			UpdatedAt:        k.UpdatedAt.Format(time.RFC3339),
+			ID:                  k.ID,
+			Name:                k.Name,
+			GroupID:             k.GroupID,
+			UserID:              k.UserID,
+			Tags:                k.Tags,
+			RateLimitRPM:        k.RateLimitRPM,
+			RateLimitTPM:        k.RateLimitTPM,
+			AllowedModels:       k.AllowedModels,
+			AllowedProviders:    k.AllowedProviders,
+			Enabled:             k.Enabled,
+			MCPInjectionEnabled: k.MCPInjectionEnabled,
+			CreatedAt:           k.CreatedAt.Format(time.RFC3339),
+			UpdatedAt:           k.UpdatedAt.Format(time.RFC3339),
 		})
 	}
 
@@ -198,16 +201,17 @@ func (h *Handler) GetAPIKey(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := map[string]any{
-		"id":                vk.ID,
-		"name":              vk.Name,
-		"tags":              vk.Tags,
-		"rate_limit_rpm":    vk.RateLimitRPM,
-		"rate_limit_tpm":    vk.RateLimitTPM,
-		"allowed_models":    vk.AllowedModels,
-		"allowed_providers": vk.AllowedProviders,
-		"enabled":           vk.Enabled,
-		"created_at":        vk.CreatedAt.Format(time.RFC3339),
-		"updated_at":        vk.UpdatedAt.Format(time.RFC3339),
+		"id":                    vk.ID,
+		"name":                  vk.Name,
+		"tags":                  vk.Tags,
+		"rate_limit_rpm":        vk.RateLimitRPM,
+		"rate_limit_tpm":        vk.RateLimitTPM,
+		"allowed_models":        vk.AllowedModels,
+		"allowed_providers":     vk.AllowedProviders,
+		"enabled":               vk.Enabled,
+		"mcp_injection_enabled": vk.MCPInjectionEnabled,
+		"created_at":            vk.CreatedAt.Format(time.RFC3339),
+		"updated_at":            vk.UpdatedAt.Format(time.RFC3339),
 	}
 	if vk.GroupID != nil {
 		resp["group_id"] = *vk.GroupID
@@ -299,6 +303,9 @@ func (h *Handler) applyAPIKeyUpdate(ctx context.Context, existing *auth.APIKey, 
 	if req.Enabled != nil {
 		existing.Enabled = *req.Enabled
 	}
+	if req.MCPInjectionEnabled != nil {
+		existing.MCPInjectionEnabled = *req.MCPInjectionEnabled
+	}
 	return "", ""
 }
 
@@ -306,13 +313,14 @@ func (h *Handler) applyAPIKeyUpdate(ctx context.Context, existing *auth.APIKey, 
 // diffing in the audit log.
 func apiKeyAuditVals(vk *auth.APIKey) map[string]any {
 	vals := map[string]any{
-		"name":              vk.Name,
-		"rate_limit_rpm":    vk.RateLimitRPM,
-		"rate_limit_tpm":    vk.RateLimitTPM,
-		"allowed_models":    vk.AllowedModels,
-		"allowed_providers": vk.AllowedProviders,
-		"enabled":           vk.Enabled,
-		"tags":              vk.Tags,
+		"name":                  vk.Name,
+		"rate_limit_rpm":        vk.RateLimitRPM,
+		"rate_limit_tpm":        vk.RateLimitTPM,
+		"allowed_models":        vk.AllowedModels,
+		"allowed_providers":     vk.AllowedProviders,
+		"enabled":               vk.Enabled,
+		"mcp_injection_enabled": vk.MCPInjectionEnabled,
+		"tags":                  vk.Tags,
 	}
 	if vk.GroupID != nil {
 		vals["group_id"] = *vk.GroupID

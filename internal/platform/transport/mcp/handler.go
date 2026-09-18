@@ -55,6 +55,9 @@ func (h *GatewayHandler) SetConfigCache(c *config.Cache) {
 
 func (h *GatewayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if h.cfgCache != nil && !config.IsEnabled(h.cfgCache, "mcp") && !config.IsEnabled(h.cfgCache, "openapi") {
+		transportLog.Warn("mcp gateway request rejected: feature disabled",
+			"endpoint", r.URL.Path, "method", r.Method,
+			"key_id", reqmeta.GetKeyID(r.Context()), "client_ip", extractClientIP(r))
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusServiceUnavailable)
 		if err := json.NewEncoder(w).Encode(map[string]string{"error": "feature_disabled"}); err != nil {
@@ -63,12 +66,18 @@ func (h *GatewayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	transportLog.Debug("mcp gateway request",
+		"endpoint", r.URL.Path, "method", r.Method,
+		"key_id", reqmeta.GetKeyID(r.Context()), "client_ip", extractClientIP(r))
+
 	switch r.Method {
 	case http.MethodGet:
 		h.handleSSE(w, r)
 	case http.MethodPost:
 		h.handleMessage(w, r)
 	default:
+		transportLog.Warn("mcp gateway request rejected: method not allowed",
+			"endpoint", r.URL.Path, "method", r.Method)
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
 }
@@ -157,10 +166,16 @@ func (h *GatewayHandler) handleSSE(w http.ResponseWriter, r *http.Request) {
 	h.sessions[sessionID] = &gatewaySession{ch: ch}
 	h.mu.Unlock()
 
+	transportLog.Info("mcp sse session opened",
+		"key_id", reqmeta.GetKeyID(r.Context()),
+		"client_ip", extractClientIP(r),
+		"session_id", sessionID)
+
 	defer func() {
 		h.mu.Lock()
 		delete(h.sessions, sessionID)
 		h.mu.Unlock()
+		transportLog.Debug("mcp sse session closed", "session_id", sessionID)
 	}()
 
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -260,6 +275,9 @@ func (h *GatewayHandler) handleMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if errResp := checkTransportHeaders(&req, rctx, r); errResp != nil {
+		transportLog.Warn("mcp json-rpc request rejected by transport header check",
+			"key_id", keyID, "method", req.Method, "session_id", sessionID,
+			"error", errResp.Error.Message)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		if err := json.NewEncoder(w).Encode(errResp); err != nil {
@@ -273,11 +291,27 @@ func (h *GatewayHandler) handleMessage(w http.ResponseWriter, r *http.Request) {
 	// rather than through Gateway.Dispatch (which always returns a single
 	// *mcp.JSONRPCResponse).
 	if req.Method == v20260728.MethodSubscriptionsListen {
+		transportLog.Info("mcp subscriptions/listen stream opened",
+			"key_id", keyID, "session_id", sessionID, "client_ip", clientIP)
 		h.handleSubscriptionsListen(w, r, &req)
 		return
 	}
 
+	transportLog.Debug("mcp json-rpc request",
+		"key_id", keyID, "method", req.Method, "session_id", sessionID, "client_ip", clientIP)
+
 	resp := h.gateway.Dispatch(&req, rctx) //nolint:contextcheck // Dispatch has no context.Context param (takes *RequestContext instead); its metric recording is intentionally fire-and-forget, see Gateway.finishDispatch
+
+	if resp != nil {
+		if resp.Error != nil {
+			transportLog.Warn("mcp json-rpc request failed",
+				"key_id", keyID, "method", req.Method, "session_id", sessionID,
+				"error_code", resp.Error.Code, "error", resp.Error.Message)
+		} else {
+			transportLog.Debug("mcp json-rpc request succeeded",
+				"key_id", keyID, "method", req.Method, "session_id", sessionID)
+		}
+	}
 
 	// Persist whatever version Dispatch negotiated (set on a successful
 	// initialize; unchanged otherwise) back onto the session so the next

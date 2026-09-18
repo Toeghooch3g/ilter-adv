@@ -18,9 +18,11 @@ type ProviderModel struct {
 	Provider         string    `json:"provider"`
 	Model            string    `json:"model"`
 	Active           bool      `json:"active"`
-	Tier             string    `json:"tier"`
+	Category         string    `json:"category"`
 	CostIn           float64   `json:"cost_in"`
 	CostOut          float64   `json:"cost_out"`
+	CostCacheRead    float64   `json:"cost_cache_read"`
+	CostCacheWrite   float64   `json:"cost_cache_write"`
 	DisplayName      string    `json:"display_name"`
 	MaxContextTokens int       `json:"max_context_tokens"`
 	MaxOutputTokens  int       `json:"max_output_tokens"`
@@ -35,9 +37,11 @@ func sqlcProviderModelToDB(m sqlc.ProviderModel) ProviderModel {
 		Provider:         m.Provider,
 		Model:            m.Model,
 		Active:           m.Active != 0,
-		Tier:             m.Tier,
+		Category:         m.Category,
 		CostIn:           m.CostIn,
 		CostOut:          m.CostOut,
+		CostCacheRead:    m.CostCacheRead,
+		CostCacheWrite:   m.CostCacheWrite,
 		DisplayName:      strDeref(m.DisplayName),
 		MaxContextTokens: int(int64Deref(m.MaxContextTokens)),
 		MaxOutputTokens:  int(int64Deref(m.MaxOutputTokens)),
@@ -71,12 +75,14 @@ func (s *SQLiteStore) SaveDiscoveredModels(ctx context.Context, provider string,
 	defer func() { _ = tx.Rollback() }()
 
 	stmt, err := tx.Prepare(`INSERT INTO provider_models
-		(provider, model, active, tier, cost_in, cost_out, display_name, max_context_tokens, max_output_tokens, capabilities, default_base_url, discovered_at)
-		VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+		(provider, model, active, category, cost_in, cost_out, cost_cache_read, cost_cache_write, display_name, max_context_tokens, max_output_tokens, capabilities, default_base_url, discovered_at)
+		VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
 		ON CONFLICT(provider, model) DO UPDATE SET
-			tier=COALESCE(NULLIF(excluded.tier, ''), tier),
+			category=COALESCE(NULLIF(excluded.category, ''), category),
 			cost_in=excluded.cost_in,
 			cost_out=excluded.cost_out,
+			cost_cache_read=excluded.cost_cache_read,
+			cost_cache_write=excluded.cost_cache_write,
 			display_name=excluded.display_name,
 			max_context_tokens=excluded.max_context_tokens,
 			max_output_tokens=excluded.max_output_tokens,
@@ -108,7 +114,8 @@ func upsertDiscoveredModel(stmt *sql.Stmt, provider string, m catalog.ModelInfo)
 			capsJSON = string(b)
 		}
 	}
-	if _, execErr := stmt.Exec(provider, m.ID, m.Tier, m.CostPerInputToken, m.CostPerOutputToken,
+	if _, execErr := stmt.Exec(provider, m.ID, m.Category, m.CostPerInputToken, m.CostPerOutputToken,
+		m.CostPerCachedInputToken, m.CostPerCacheWriteToken,
 		m.DisplayName, m.MaxContextTokens, m.MaxOutputTokens, capsJSON, m.DefaultBaseURL); execErr != nil {
 		return fmt.Errorf("upsert model %s: %w", m.ID, execErr)
 	}
@@ -143,8 +150,8 @@ func (s *SQLiteStore) ProviderModelCount(provider string) (int, error) {
 }
 
 // GetAllProviderModels returns all rows from provider_models ordered by provider, model.
-func (s *SQLiteStore) GetAllProviderModels() ([]ProviderModel, error) {
-	models, err := s.queries.GetAllProviderModels(context.Background())
+func (s *SQLiteStore) GetAllProviderModels(ctx context.Context) ([]ProviderModel, error) {
+	models, err := s.queries.GetAllProviderModels(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -198,8 +205,8 @@ func (s *SQLiteStore) GetLatestDiscovery(provider string) (time.Time, error) {
 }
 
 // GetProviderModels returns all rows for a given provider.
-func (s *SQLiteStore) GetProviderModels(provider string) ([]ProviderModel, error) {
-	models, err := s.queries.GetProviderModels(context.Background(), provider)
+func (s *SQLiteStore) GetProviderModels(ctx context.Context, provider string) ([]ProviderModel, error) {
+	models, err := s.queries.GetProviderModels(ctx, provider)
 	if err != nil {
 		return nil, err
 	}
@@ -223,7 +230,7 @@ func providerModelsToModelInfo(pms []ProviderModel) []catalog.ModelInfo {
 			MaxOutputTokens:    pm.MaxOutputTokens,
 			CostPerInputToken:  pm.CostIn,
 			CostPerOutputToken: pm.CostOut,
-			Tier:               pm.Tier,
+			Category:           pm.Category,
 			Capabilities:       caps,
 			DefaultBaseURL:     pm.DefaultBaseURL,
 		})
@@ -231,36 +238,25 @@ func providerModelsToModelInfo(pms []ProviderModel) []catalog.ModelInfo {
 	return models
 }
 
-func (s *SQLiteStore) GetInactiveModels() ([]string, error) {
-	return s.queries.GetInactiveModels(context.Background())
+func (s *SQLiteStore) GetInactiveModels(ctx context.Context) ([]string, error) {
+	return s.queries.GetInactiveModels(ctx)
 }
 
-func (s *SQLiteStore) GetModelStatuses() (map[string]bool, error) {
-	rows, err := s.queries.GetModelStatuses(context.Background())
-	if err != nil {
-		return nil, err
-	}
-	res := make(map[string]bool, len(rows))
-	for _, r := range rows {
-		res[r.Model] = r.Active != 0
-	}
-	return res, nil
-}
-
-func (s *SQLiteStore) SaveModelStatus(name string, active bool) error {
+func (s *SQLiteStore) SaveModelStatus(ctx context.Context, provider, name string, active bool) error {
 	actVal := int64(0)
 	if active {
 		actVal = 1
 	}
-	return s.queries.SaveModelStatus(context.Background(), sqlc.SaveModelStatusParams{
-		Active: actVal,
-		Model:  name,
+	return s.queries.SaveModelStatus(ctx, sqlc.SaveModelStatusParams{
+		Active:   actVal,
+		Provider: provider,
+		Model:    name,
 	})
 }
 
-func (s *SQLiteStore) SaveModelTier(modelName string, tier string) error {
-	return s.queries.SaveModelTier(context.Background(), sqlc.SaveModelTierParams{
-		Tier:  tier,
-		Model: modelName,
+func (s *SQLiteStore) SaveModelCategory(ctx context.Context, modelName string, category string) error {
+	return s.queries.SaveModelCategory(ctx, sqlc.SaveModelCategoryParams{
+		Category: category,
+		Model:    modelName,
 	})
 }

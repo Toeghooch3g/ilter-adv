@@ -13,15 +13,17 @@ export interface Model {
   provider: string
   model: string
   is_active: boolean
-  tier: 'free' | 'economy' | 'standard' | 'premium'
-  cost_per_1k_in: number
-  cost_per_1k_out: number
+  category: string
+  cost_per_1m_in: number
+  cost_per_1m_out: number
+  cost_per_1m_cached_in: number
+  cost_per_1m_cache_write: number
 }
 
-export const tiers = ['free', 'economy', 'standard', 'premium'] as const
-export type ModelTier = (typeof tiers)[number]
+export const categories = ['free', 'economy', 'standard', 'premium'] as const
+export type ModelCategory = (typeof categories)[number]
 
-/** Formats small cost values (per-1K) concisely.
+/** Formats cost values (dollars per 1M tokens) concisely.
  *  - $0 → "0"
  *  - $0.0000014 → "0.000001" (strips trailing zeros)
  *  - $0.001 → "0.001"
@@ -56,34 +58,46 @@ export function useModels() {
           provider: item.provider,
           model: item.model,
           is_active: item.is_active,
-          tier: (item.tier || 'standard') as Model['tier'],
-          cost_per_1k_in: item.cost_per_1k_in || 0,
-          cost_per_1k_out: item.cost_per_1k_out || 0,
+          category: (item.category || 'standard') as Model['category'],
+          cost_per_1m_in: item.cost_per_1m_in || 0,
+          cost_per_1m_out: item.cost_per_1m_out || 0,
+          cost_per_1m_cached_in: item.cost_per_1m_cached_in || 0,
+          cost_per_1m_cache_write: item.cost_per_1m_cache_write || 0,
         })),
       ),
   })
 
+  // User-manageable category list (defaults + user-added). Falls back to the
+  // out-of-box defaults if the API call fails so the view stays usable.
+  const staticCategories = [...categories] as string[]
+  const { data: categoryList = staticCategories } = useQuery({
+    queryKey: qk.categories,
+    queryFn: () => api.models.getCategories(),
+  })
+  const effectiveCategories = categoryList.length > 0 ? categoryList : staticCategories
+
   const [search, setSearch] = useState('')
-  const [tierFilter, setTierFilter] = useState<string | null>(null)
+  const [categoryFilter, setCategoryFilter] = useState<string | null>(null)
   const [showAddModal, setShowAddModal] = useState(false)
   const [configModel, setConfigModel] = useState<Model | null>(null)
   const [configForm, setConfigForm] = useState({
     name: '',
     provider: '',
     model: '',
-    tier: 'standard' as Model['tier'],
+    category: 'standard' as Model['category'],
     cost_in: 0,
     cost_out: 0,
   })
 
   const filtered = models.filter((m) => {
-    if (tierFilter && m.tier !== tierFilter) return false
+    if (categoryFilter && m.category !== categoryFilter) return false
     const q = search.toLowerCase()
     return m.name.toLowerCase().includes(q) || m.provider.toLowerCase().includes(q) || m.model.toLowerCase().includes(q)
   })
 
   const toggleModelMutation = useApiMutation(
-    ({ name, active }: { name: string; active: boolean }) => api.models.toggleModel(name, active),
+    ({ provider, name, active }: { provider: string; name: string; active: boolean }) =>
+      api.models.toggleModel(provider, name, active),
     { invalidate: [qk.models] },
   )
 
@@ -95,7 +109,10 @@ export function useModels() {
       (old || []).map((m) => (m.id === id ? { ...m, is_active: newActive } : m)),
     )
     try {
-      await toggleModelMutation.mutateAsync({ name: model.name, active: newActive })
+      // Key by the bare model id + provider (model.model/model.provider), not
+      // the prettified display name (model.name): the backend updates the
+      // provider_models row by (provider, model) composite key.
+      await toggleModelMutation.mutateAsync({ provider: model.provider, name: model.model, active: newActive })
       toast.success(newActive ? 'Model enabled' : 'Model disabled', {
         description: `${model.name} is now ${newActive ? 'active' : 'disabled'}.`,
       })
@@ -108,26 +125,45 @@ export function useModels() {
     }
   }
 
-  const updateTier = useApiMutation(
-    ({ name, tier }: { name: string; tier: string }) => api.models.updateModelTier(name, tier),
+  const updateCategory = useApiMutation(
+    ({ name, category }: { name: string; category: string }) => api.models.updateModelCategory(name, category),
     { invalidate: [qk.models] },
   )
+
+  const addCategoryMutation = useApiMutation((name: string) => api.models.createCategory(name), {
+    invalidate: [qk.categories],
+  })
+
+  const removeCategoryMutation = useApiMutation((name: string) => api.models.deleteCategory(name), {
+    invalidate: [qk.categories],
+  })
 
   const handleSaveConfig = async () => {
     if (!configModel) return
     try {
-      await updateTier.mutateAsync({ name: configModel.name, tier: configModel.tier })
-      toast.success('Model updated', { description: `${configModel.name} tier set to ${configModel.tier}.` })
+      // Persist the active toggle from the Config modal first (the modal only
+      // flips local state; the backend updates provider_models by
+      // (provider, model) composite key), then the category.
+      await api.models.toggleModel(configModel.provider, configModel.model, configModel.is_active)
+      // Key by the bare model id (configModel.model), not the prettified
+      // display name (configModel.name): the backend updates provider_models
+      // by bare model id.
+      await updateCategory.mutateAsync({ name: configModel.model, category: configModel.category })
+      toast.success('Model updated', { description: `${configModel.name} category set to ${configModel.category}.` })
       setConfigModel(null)
     } catch (e) {
-      logger.error('Failed to update model tier', { name: configModel.name, tier: configModel.tier, error: e })
+      logger.error('Failed to update model category', {
+        name: configModel.model,
+        category: configModel.category,
+        error: e,
+      })
       toast.error('Update failed', { description: `Could not update ${configModel.name}.` })
     }
   }
 
   const addModel = useApiMutation(
-    (data: { name: string; provider: string; model: string; tier: string; cost_in: number; cost_out: number }) =>
-      api.models.updateModelTier(data.name, data.tier),
+    (data: { name: string; provider: string; model: string; category: string; cost_in: number; cost_out: number }) =>
+      api.models.updateModelCategory(data.name, data.category),
     { invalidate: [qk.models] },
   )
 
@@ -139,19 +175,21 @@ export function useModels() {
       provider: configForm.provider,
       model: configForm.model,
       is_active: true,
-      tier: configForm.tier,
-      cost_per_1k_in: configForm.cost_in,
-      cost_per_1k_out: configForm.cost_out,
+      category: configForm.category,
+      cost_per_1m_in: configForm.cost_in,
+      cost_per_1m_out: configForm.cost_out,
+      cost_per_1m_cached_in: 0,
+      cost_per_1m_cache_write: 0,
     }
     queryClient.setQueryData(qk.models, (old: Model[] | undefined) => [...(old || []), newModel])
     setShowAddModal(false)
-    setConfigForm({ name: '', provider: '', model: '', tier: 'standard', cost_in: 0, cost_out: 0 })
+    setConfigForm({ name: '', provider: '', model: '', category: 'standard', cost_in: 0, cost_out: 0 })
     toast.success('Model added', { description: `"${name}" has been added to the registry.` })
     addModel.mutate({
       name: configForm.name,
       provider: configForm.provider,
       model: configForm.model,
-      tier: configForm.tier,
+      category: configForm.category,
       cost_in: configForm.cost_in,
       cost_out: configForm.cost_out,
     })
@@ -164,18 +202,18 @@ export function useModels() {
         Provider: m.provider,
         Model: m.model,
         Status: m.is_active ? 'Active' : 'Disabled',
-        Tier: m.tier,
-        'Cost/1K In': m.cost_per_1k_in,
-        'Cost/1K Out': m.cost_per_1k_out,
+        Category: m.category,
+        'Cost/1M In': m.cost_per_1m_in,
+        'Cost/1M Out': m.cost_per_1m_out,
       })),
       [
         { key: 'Name' as const, header: 'Name' },
         { key: 'Provider' as const, header: 'Provider' },
         { key: 'Model' as const, header: 'Model' },
         { key: 'Status' as const, header: 'Status' },
-        { key: 'Tier' as const, header: 'Tier' },
-        { key: 'Cost/1K In' as const, header: 'Cost/1K In' },
-        { key: 'Cost/1K Out' as const, header: 'Cost/1K Out' },
+        { key: 'Category' as const, header: 'Category' },
+        { key: 'Cost/1M In' as const, header: 'Cost/1M In' },
+        { key: 'Cost/1M Out' as const, header: 'Cost/1M Out' },
       ],
       'models.csv',
     )
@@ -189,8 +227,8 @@ export function useModels() {
     refetch,
     search,
     setSearch,
-    tierFilter,
-    setTierFilter,
+    categoryFilter,
+    setCategoryFilter,
     showAddModal,
     setShowAddModal,
     configModel,
@@ -198,10 +236,13 @@ export function useModels() {
     configForm,
     setConfigForm,
     toggleModel,
+    updateCategory,
     handleSaveConfig,
     handleAddProvider,
     exportModels,
     formatCost,
-    tiers,
+    categories: effectiveCategories,
+    addCategory: addCategoryMutation.mutateAsync,
+    removeCategory: removeCategoryMutation.mutateAsync,
   }
 }

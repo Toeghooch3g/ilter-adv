@@ -213,6 +213,11 @@ type PIIMaskerMiddleware struct {
 func (m *PIIMaskerMiddleware) SetEnabled(on bool) { m.enabled.Store(on) }
 func (m *PIIMaskerMiddleware) IsEnabled() bool    { return m.enabled.Load() }
 
+// RefreshPatterns re-snapshots the masker's enabled-pattern set from the
+// current LoadedPatterns. Called by dashboard pattern CRUD so new/changed
+// patterns apply to live traffic immediately (no restart).
+func (m *PIIMaskerMiddleware) RefreshPatterns() { m.masker.RefreshEnabledPatterns() }
+
 // NewPIIMasker creates a new PIIMaskerMiddleware. Pass an optional PIIRedisStore for cross-request unmask.
 // When cfgCache is provided, the enabled state is controlled by the "pii" feature flag
 // and automatically updated on config refresh via OnChange callback.

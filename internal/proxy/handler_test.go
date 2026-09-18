@@ -118,7 +118,9 @@ func TestCalculateCost(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := CalculateCost(tt.model, tt.promptTokens, tt.completionTokens)
+			u := &model.Usage{PromptTokens: tt.promptTokens, CompletionTokens: tt.completionTokens}
+			u.CacheReadIncludedInPrompt = true
+			got := CalculateCost(tt.model, u)
 			if got != tt.want {
 				t.Errorf("CalculateCost(%+v, %d, %d) = %v, want %v",
 					tt.model, tt.promptTokens, tt.completionTokens, got, tt.want)
@@ -332,8 +334,8 @@ func TestChatCompletionsQuotaErrorReturns429(t *testing.T) {
 func TestChatCompletionsSmartRouting(t *testing.T) {
 	// Populate catalog.Models so the smart router can categorize by tier.
 	catalog.ModelsMu.Lock()
-	catalog.Models["gpt-4o-mini"] = []catalog.ModelInfo{{ID: "gpt-4o-mini", Provider: "openai", Tier: "economy"}}
-	catalog.Models["gpt-4o"] = []catalog.ModelInfo{{ID: "gpt-4o", Provider: "openai", Tier: "standard"}}
+	catalog.Models["gpt-4o-mini"] = []catalog.ModelInfo{{ID: "gpt-4o-mini", Provider: "openai", Category: "economy"}}
+	catalog.Models["gpt-4o"] = []catalog.ModelInfo{{ID: "gpt-4o", Provider: "openai", Category: "standard"}}
 	catalog.ModelsMu.Unlock()
 	t.Cleanup(func() {
 		catalog.ModelsMu.Lock()
@@ -445,7 +447,7 @@ func TestResolveRequestedModel_StripsProviderPrefix(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			req := &model.ChatCompletionRequest{Model: tt.model}
-			got, _, ok := h.resolveRequestedModel(httptest.NewRecorder(), httptest.NewRequestWithContext(context.Background(), "POST", "/", nil), req, nil)
+			got, _, _, ok := h.resolveRequestedModel(httptest.NewRecorder(), httptest.NewRequestWithContext(context.Background(), "POST", "/", nil), req, nil)
 			if !ok {
 				t.Fatal("resolveRequestedModel returned ok=false unexpectedly")
 			}
@@ -460,7 +462,7 @@ func TestResolveRequestedModel_PreservesWithoutConfig(t *testing.T) {
 	h := NewHandler(nil, nil, nil, nil)
 
 	req := &model.ChatCompletionRequest{Model: "opencode_zen/deepseek-v4-flash-free"}
-	got, _, ok := h.resolveRequestedModel(httptest.NewRecorder(), httptest.NewRequestWithContext(context.Background(), "POST", "/", nil), req, nil)
+	got, _, _, ok := h.resolveRequestedModel(httptest.NewRecorder(), httptest.NewRequestWithContext(context.Background(), "POST", "/", nil), req, nil)
 	if !ok {
 		t.Fatal("resolveRequestedModel returned ok=false unexpectedly")
 	}
@@ -470,27 +472,180 @@ func TestResolveRequestedModel_PreservesWithoutConfig(t *testing.T) {
 	}
 }
 
-// If a provider named "anthropic" exists and a user sends "anthropic/claude-opus"
-// (intending OpenRouter's vendor/model syntax), the prefix is stripped and routing
-// goes to the configured Anthropic provider, not OpenRouter. This is by design.
+// If a provider named "anthropic" exists but does NOT serve the requested
+// model, "anthropic/claude-opus" is not a valid pin: the prefix is stripped
+// and routing falls back to whatever provider serves "claude-opus". This
+// preserves the pre-pinning behavior for vendor/model syntax collisions.
 func TestResolveRequestedModel_ConfiguredPrefixCollision(t *testing.T) {
 	cfg := &config.Config{
 		Providers: []config.ProviderConfig{
-			{Name: "anthropic", BaseURL: "https://api.anthropic.com", APIKey: "sk-test"},
-			{Name: "openrouter", BaseURL: "https://openrouter.ai/api/v1", APIKey: "sk-test"},
+			{Name: "anthropic", BaseURL: "https://api.anthropic.com", APIKey: "sk-test", Type: "anthropic", Models: []config.ModelConfig{{Name: "claude-sonnet-4"}}},
+			{Name: "openrouter", BaseURL: "https://openrouter.ai/api/v1", APIKey: "sk-test", Type: "openai", Models: []config.ModelConfig{{Name: "claude-opus"}}},
 		},
 	}
-	h := NewHandler(nil, nil, nil, nil)
+	reg := provider.NewRegistry()
+	reg.Register(&chainMockProvider{MockProvider: provider.NewMockProvider("anthropic")})
+	reg.Register(&chainMockProvider{MockProvider: provider.NewMockProvider("openrouter")})
+
+	lb, err := smartrouter.NewLoadBalancer(cfg, reg, nil)
+	require.NoError(t, err)
+
+	h := NewHandler(lb, nil, nil, nil)
 	h.SetConfig(cfg)
 
 	req := &model.ChatCompletionRequest{Model: "anthropic/claude-opus"}
-	got, _, ok := h.resolveRequestedModel(httptest.NewRecorder(), httptest.NewRequestWithContext(context.Background(), "POST", "/", nil), req, nil)
+	got, _, pinned, ok := h.resolveRequestedModel(httptest.NewRecorder(), httptest.NewRequestWithContext(context.Background(), "POST", "/", nil), req, nil)
 	if !ok {
 		t.Fatal("resolveRequestedModel returned ok=false unexpectedly")
 	}
 	if got != "claude-opus" {
 		t.Errorf("expected prefix-stripped model %q, got %q", "claude-opus", got)
 	}
+	if pinned != "" {
+		t.Errorf("expected no pin (anthropic does not serve claude-opus), got pin %q", pinned)
+	}
+}
+
+// TestResolveRequestedModel_PinsProvider verifies "provider/model" pins a
+// request to exactly that provider when the provider serves the model, and
+// that unknown prefixes still degrade to the old strip behavior.
+func TestResolveRequestedModel_PinsProvider(t *testing.T) {
+	cfg := &config.Config{
+		Providers: []config.ProviderConfig{
+			{Name: "deepinfra", Type: "openai", Models: []config.ModelConfig{{Name: "DeepSeek-V4.1-Flash"}}},
+			{Name: "other", Type: "openai", Models: []config.ModelConfig{{Name: "DeepSeek-V4.1-Flash"}}},
+		},
+	}
+	reg := provider.NewRegistry()
+	reg.Register(&chainMockProvider{MockProvider: provider.NewMockProvider("deepinfra")})
+	reg.Register(&chainMockProvider{MockProvider: provider.NewMockProvider("other")})
+
+	lb, err := smartrouter.NewLoadBalancer(cfg, reg, nil)
+	require.NoError(t, err)
+
+	h := NewHandler(lb, nil, nil, nil)
+	h.SetConfig(cfg)
+
+	// Valid pin: deepinfra serves the model → pinned, model returned bare.
+	req := &model.ChatCompletionRequest{Model: "deepinfra/DeepSeek-V4.1-Flash"}
+	got, _, pinned, ok := h.resolveRequestedModel(httptest.NewRecorder(), httptest.NewRequestWithContext(context.Background(), "POST", "/", nil), req, nil)
+	if !ok {
+		t.Fatal("resolveRequestedModel returned ok=false unexpectedly")
+	}
+	if got != "DeepSeek-V4.1-Flash" {
+		t.Errorf("expected bare model %q, got %q", "DeepSeek-V4.1-Flash", got)
+	}
+	if pinned != "deepinfra" {
+		t.Errorf("expected pin %q, got %q", "deepinfra", pinned)
+	}
+
+	// Unknown provider prefix → strip, no pin.
+	req = &model.ChatCompletionRequest{Model: "nope/DeepSeek-V4.1-Flash"}
+	got, _, pinned, ok = h.resolveRequestedModel(httptest.NewRecorder(), httptest.NewRequestWithContext(context.Background(), "POST", "/", nil), req, nil)
+	if !ok {
+		t.Fatal("resolveRequestedModel returned ok=false unexpectedly")
+	}
+	if got != "DeepSeek-V4.1-Flash" {
+		t.Errorf("expected stripped model %q, got %q", "DeepSeek-V4.1-Flash", got)
+	}
+	if pinned != "" {
+		t.Errorf("expected no pin for unknown prefix, got %q", pinned)
+	}
+}
+
+// TestChatCompletions_PinsProvider verifies end-to-end that a
+// "provider/model" request dispatches to exactly that provider's route: the
+// response content comes from the pinned provider, not a competing one
+// serving the same model id, and X-Ilter-Model-Actual reports
+// provider/model.
+func TestChatCompletions_PinsProvider(t *testing.T) {
+	cfg := &config.Config{
+		Providers: []config.ProviderConfig{
+			{Name: "deepinfra", Type: "openai", Models: []config.ModelConfig{{Name: "DeepSeek-V4.1-Flash"}}},
+			{Name: "other", Type: "openai", Models: []config.ModelConfig{{Name: "DeepSeek-V4.1-Flash"}}},
+		},
+	}
+
+	deepinfra := provider.NewMockProvider("deepinfra")
+	deepinfra.SetCannedResponse("deepinfra-served")
+	other := provider.NewMockProvider("other")
+	other.SetCannedResponse("other-served")
+
+	reg := provider.NewRegistry()
+	reg.Register(&pinnedMockProvider{MockProvider: deepinfra})
+	reg.Register(&pinnedMockProvider{MockProvider: other})
+
+	lb, err := smartrouter.NewLoadBalancer(cfg, reg, nil)
+	require.NoError(t, err)
+
+	h := NewHandler(lb, nil, nil, nil)
+	h.SetConfig(cfg)
+
+	reqBody := model.ChatCompletionRequest{
+		Model:    "deepinfra/DeepSeek-V4.1-Flash",
+		Messages: []model.Message{{Role: "user", Content: "hello"}},
+	}
+	bodyBytes, _ := json.Marshal(reqBody)
+
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "/v1/chat/completions", bytes.NewReader(bodyBytes))
+	rr := httptest.NewRecorder()
+	h.ChatCompletions(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d. Body: %s", http.StatusOK, rr.Code, rr.Body.String())
+	}
+	if got := rr.Body.String(); !strings.Contains(got, "deepinfra-served") {
+		t.Fatalf("expected response from pinned provider deepinfra, got: %s", got)
+	}
+	if got := rr.Body.String(); strings.Contains(got, "other-served") {
+		t.Fatalf("response must not come from the non-pinned provider, got: %s", got)
+	}
+	if got := rr.Header().Get("X-Ilter-Model-Actual"); got != "deepinfra/DeepSeek-V4.1-Flash" {
+		t.Errorf("expected X-Ilter-Model-Actual %q, got %q", "deepinfra/DeepSeek-V4.1-Flash", got)
+	}
+}
+
+// TestModels_ReturnsProviderPrefixedIDs verifies /v1/models lists ids as
+// "provider/model" so clients can echo an id straight into a chat request
+// and pin the provider.
+func TestModels_ReturnsProviderPrefixedIDs(t *testing.T) {
+	cfg := &config.Config{
+		Providers: []config.ProviderConfig{
+			{Name: "deepinfra", Type: "openai", Models: []config.ModelConfig{{Name: "DeepSeek-V4.1-Flash"}}},
+			{Name: "ollama", Type: "ollama", Models: []config.ModelConfig{{Name: "llama3"}}},
+		},
+	}
+	reg := provider.NewRegistry()
+	reg.Register(provider.NewMockProvider("deepinfra"))
+	reg.Register(provider.NewMockProvider("ollama"))
+
+	lb, err := smartrouter.NewLoadBalancer(cfg, reg, nil)
+	require.NoError(t, err)
+
+	h := NewHandler(lb, nil, nil, nil)
+	h.SetConfig(cfg)
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	h.Models(rr, req)
+
+	require.Equal(t, http.StatusOK, rr.Code)
+	var body struct {
+		Data []map[string]any `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &body))
+
+	ids := make(map[string]bool, len(body.Data))
+	for _, m := range body.Data {
+		id, ok := m["id"].(string)
+		if !ok {
+			t.Fatalf("model id is not a string: %T", m["id"])
+		}
+		ids[id] = true
+	}
+	assert.True(t, ids["deepinfra/DeepSeek-V4.1-Flash"], "expected deepinfra/DeepSeek-V4.1-Flash in model list, got %v", ids)
+	assert.True(t, ids["ollama/llama3"], "expected ollama/llama3 in model list, got %v", ids)
+	assert.False(t, ids["DeepSeek-V4.1-Flash"], "bare ids must not appear in /v1/models, got %v", ids)
 }
 
 func TestEstimateInputTokens(t *testing.T) {
@@ -569,14 +724,14 @@ func TestChatCompletionsCostEstimateHeaders(t *testing.T) {
 	catalog.ModelsMu.Lock()
 	catalog.Models["test-model-a"] = []catalog.ModelInfo{{
 		ID:                 "test-model-a",
-		Tier:               "internal-test-tier",
+		Category:           "internal-test-tier",
 		Provider:           "test-provider",
 		CostPerInputToken:  0.00015,
 		CostPerOutputToken: 0.0006,
 	}}
 	catalog.Models["test-model-b"] = []catalog.ModelInfo{{
 		ID:                 "test-model-b",
-		Tier:               "internal-test-tier",
+		Category:           "internal-test-tier",
 		Provider:           "test-provider",
 		CostPerInputToken:  0.00010,
 		CostPerOutputToken: 0.0004,
@@ -817,6 +972,20 @@ func (m *chainMockProvider) TransformResponse(_ context.Context, _ *http.Respons
 	}, nil
 }
 
+// pinnedMockProvider returns a response tagged with its provider name so a
+// test can distinguish which provider actually served a request.
+type pinnedMockProvider struct {
+	*provider.MockProvider
+}
+
+func (m *pinnedMockProvider) TransformResponse(_ context.Context, _ *http.Response) (*model.ChatCompletionResponse, error) {
+	return &model.ChatCompletionResponse{
+		ID:      "pin-" + m.Name(),
+		Model:   "DeepSeek-V4.1-Flash",
+		Choices: []model.Choice{{Message: model.ChoiceMessage{Content: m.Name() + "-served"}}},
+	}, nil
+}
+
 func TestChatCompletionsFullChainWithPII(t *testing.T) {
 	store := dbtest.NewFile(t)
 
@@ -1037,4 +1206,101 @@ func TestCostEstimateHeadersConsistency(t *testing.T) {
 			t.Errorf("savings potential should not exceed 100%%, got %d%%", savingsPct)
 		}
 	}
+}
+
+// cachedUsageMockProvider returns an OpenAI-style usage with cached tokens and
+// an unknown provider field, to prove client-side passthrough + cached billing.
+type cachedUsageMockProvider struct {
+	*provider.MockProvider
+}
+
+func (m *cachedUsageMockProvider) TransformResponse(_ context.Context, _ *http.Response) (*model.ChatCompletionResponse, error) {
+	return &model.ChatCompletionResponse{
+		ID:      "cached-mock-id",
+		Model:   "cached-model",
+		Choices: []model.Choice{{Message: model.ChoiceMessage{Content: "mock"}}},
+		Usage: &model.Usage{
+			PromptTokens:              100,
+			CompletionTokens:          50,
+			TotalTokens:               150,
+			PromptTokensDetails:       &model.PromptTokensDetails{CachedTokens: 60},
+			CacheReadIncludedInPrompt: true, // OpenAI: prompt_tokens includes cached
+			Raw: map[string]any{
+				"prompt_tokens":         100.0,
+				"completion_tokens":     50.0,
+				"total_tokens":          150.0,
+				"prompt_tokens_details": map[string]any{"cached_tokens": 60.0},
+				"x_provider_extra":      "keep-me",
+			},
+		},
+	}, nil
+}
+
+// TestChatCompletionsCachedTokenPassthrough verifies the end-to-end path:
+// the client-visible usage carries cached-token fields plus ilter_cost and
+// any unknown provider usage field; X-Request-Pricing carries the cost
+// breakdown; and the cached portion bills at the cache-read price.
+func TestChatCompletionsCachedTokenPassthrough(t *testing.T) {
+	store := dbtest.NewFile(t)
+	cfg := &config.Config{
+		Providers: []config.ProviderConfig{{
+			Name: "test-provider",
+			Type: "openai",
+			Models: []config.ModelConfig{{
+				Name:                    "cached-model",
+				Weight:                  1,
+				CostPerInputToken:       0.0001,
+				CostPerOutputToken:      0.0002,
+				CostPerCachedInputToken: 0.00004,
+				CostPerCacheWriteToken:  0.0,
+			}},
+		}},
+		Headers: config.HeadersConfig{EmitStandard: true},
+	}
+
+	reg := provider.NewRegistry()
+	reg.Register(&cachedUsageMockProvider{MockProvider: provider.NewMockProvider("test-provider")})
+	lb, err := smartrouter.NewLoadBalancer(cfg, reg, nil)
+	require.NoError(t, err)
+
+	h := NewHandler(lb, nil, nil, nil)
+	h.SetConfig(cfg)
+	h.SetStore(store)
+
+	reqBody := model.ChatCompletionRequest{Model: "cached-model", Messages: []model.Message{{Role: "user", Content: "Hi"}}}
+	bodyBytes, _ := json.Marshal(reqBody)
+
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "/v1/chat/completions", bytes.NewReader(bodyBytes))
+	rr := httptest.NewRecorder()
+	h.ChatCompletions(rr, req)
+	require.Equal(t, http.StatusOK, rr.Code)
+
+	// Client-visible usage: raw provider fields + normalized cached + ilter_cost.
+	var resp model.ChatCompletionResponse
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &resp))
+	require.NotNil(t, resp.Usage)
+	require.NotNil(t, resp.Usage.PromptTokensDetails)
+	assert.Equal(t, 60, resp.Usage.PromptTokensDetails.CachedTokens)
+	// Cost: 40*0.0001 + 60*0.00004 + 50*0.0002 = 0.004 + 0.0024 + 0.01 = 0.0164
+	assert.InDelta(t, 0.0164, resp.Usage.IlterCost, 1e-9)
+	// Unknown provider field survives (Raw merge).
+	body := rr.Body.String()
+	assert.Contains(t, body, "x_provider_extra")
+	assert.Contains(t, body, "keep-me")
+
+	// X-Request-Pricing breakdown carries the cached fields + split costs.
+	pricingRaw := rr.Header().Get("X-Request-Pricing")
+	require.NotEmpty(t, pricingRaw)
+	var pricing map[string]any
+	require.NoError(t, json.Unmarshal([]byte(pricingRaw), &pricing))
+	assert.Equal(t, float64(60), pricing["cached_tokens"])
+	costUSD, ok := pricing["cost_usd"].(float64)
+	require.True(t, ok, "cost_usd is not a number")
+	assert.InDelta(t, 0.0164, costUSD, 1e-9)
+	inputCost, ok := pricing["input_cost"].(float64)
+	require.True(t, ok, "input_cost is not a number")
+	assert.InDelta(t, 0.004, inputCost, 1e-9)
+	cachedCost, ok := pricing["cached_cost"].(float64)
+	require.True(t, ok, "cached_cost is not a number")
+	assert.InDelta(t, 0.0024, cachedCost, 1e-9)
 }

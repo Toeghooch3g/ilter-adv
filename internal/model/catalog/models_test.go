@@ -22,7 +22,7 @@ func TestLoadFromDB(t *testing.T) {
 				MaxContextTokens:   128000,
 				CostPerInputToken:  0.0000025,
 				CostPerOutputToken: 0.00001,
-				Tier:               "standard",
+				Category:           "standard",
 			},
 			{
 				ID:                 "claude-sonnet-4-20250514",
@@ -31,7 +31,7 @@ func TestLoadFromDB(t *testing.T) {
 				MaxContextTokens:   200000,
 				CostPerInputToken:  0.000003,
 				CostPerOutputToken: 0.000015,
-				Tier:               "standard",
+				Category:           "standard",
 			},
 		}, nil
 	}

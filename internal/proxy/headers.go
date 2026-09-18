@@ -15,10 +15,16 @@ type preRequest struct {
 }
 
 type postResponse struct {
-	Model            string
-	PromptTokens     int
-	CompletionTokens int
-	ActualCost       float64
+	Model               string
+	PromptTokens        int
+	CompletionTokens    int
+	CachedTokens        int
+	CacheCreationTokens int
+	InputCost           float64
+	CachedCost          float64
+	CacheWriteCost      float64
+	OutputCost          float64
+	ActualCost          float64
 }
 
 func setPreRequest(w http.ResponseWriter, p preRequest, emitStandard bool) {
@@ -44,10 +50,16 @@ func setPostResponse(w http.ResponseWriter, p postResponse, emitStandard bool) {
 		return
 	}
 	pricing := map[string]any{
-		"model":             p.Model,
-		"prompt_tokens":     p.PromptTokens,
-		"completion_tokens": p.CompletionTokens,
-		"cost_usd":          p.ActualCost,
+		"model":                 p.Model,
+		"prompt_tokens":         p.PromptTokens,
+		"completion_tokens":     p.CompletionTokens,
+		"cached_tokens":         p.CachedTokens,
+		"cache_creation_tokens": p.CacheCreationTokens,
+		"input_cost":            p.InputCost,
+		"cached_cost":           p.CachedCost,
+		"cache_write_cost":      p.CacheWriteCost,
+		"output_cost":           p.OutputCost,
+		"cost_usd":              p.ActualCost,
 	}
 	b, err := json.Marshal(pricing)
 	if err != nil {

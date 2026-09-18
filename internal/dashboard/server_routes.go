@@ -7,6 +7,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/ilter-ai/ilter/internal/config"
+	"github.com/ilter-ai/ilter/internal/model"
 	"github.com/ilter-ai/ilter/web"
 )
 
@@ -24,7 +26,10 @@ func (s *Server) registerCoreAnalyticsRoutes(r chi.Router) {
 	r.Get("/costs/by-key", s.statsHandler.HandleCostsByKey)
 	r.Get("/models", s.delegateHandler(s.modelsHandler.HandleModels, "Models"))
 	r.Post("/models/toggle", s.delegateHandler(s.modelsHandler.HandleToggleModel, "Models"))
-	r.Post("/models/tier", s.delegateHandler(s.modelsHandler.HandleUpdateModelTier, "Models"))
+	r.Post("/models/category", s.delegateHandler(s.modelsHandler.HandleUpdateModelCategory, "Models"))
+	r.Get("/models/categories", s.delegateHandler(s.modelsHandler.HandleListCategories, "Models"))
+	r.Post("/models/categories", s.delegateHandler(s.modelsHandler.HandleCreateCategory, "Models"))
+	r.Delete("/models/categories/{name}", s.delegateHandler(s.modelsHandler.HandleDeleteCategory, "Models"))
 	r.Patch("/models/{id}", s.modelsHandler.HandleUpdateModelByID)
 	r.Get("/loops", s.delegateHandler(s.piiHandler.HandleLoops, "PII"))
 	r.Get("/loop-export", s.delegateHandler(s.piiHandler.HandleLoopExport, "PII"))
@@ -42,6 +47,10 @@ func (s *Server) registerCoreAnalyticsRoutes(r chi.Router) {
 	r.Post("/pii/patterns/reload", s.delegateHandler(s.piiHandler.HandleReloadPatterns, "PII"))
 	r.Get("/providers", s.providersHandler.HandleProviders)
 	r.Post("/providers", s.smartrouterHandler.HandleUpdateProvider)
+	r.Post("/providers/create", s.providersHandler.HandleCreateProvider)
+	r.Delete("/providers/{name}", s.providersHandler.HandleDeleteProvider)
+	r.Get("/providers/{name}/models-overrides", s.providersHandler.HandleGetModelOverrides)
+	r.Put("/providers/{name}/models-overrides", s.providersHandler.HandlePutModelOverrides)
 	r.Post("/optimize", s.delegateHandler(s.smartrouterHandler.HandleOptimize, "Smart router"))
 	r.Get("/insights/top-expensive", s.statsHandler.HandleTopExpensiveRequests)
 	r.Get("/insights/cost-trend", s.statsHandler.HandleCostTrend)
@@ -105,6 +114,8 @@ func (s *Server) registerMCProutes(r chi.Router) {
 	r.Patch("/mcp-servers/{id}/toggle", s.mcpHandler.ToggleServer)
 	r.Get("/mcp-servers/{id}/tools", s.mcpHandler.ListServerTools)
 	r.Post("/mcp-servers/{id}/sync", s.mcpHandler.SyncServerTools)
+	r.Patch("/mcp-servers/{id}/tools/{toolName}/toggle", s.mcpHandler.ToggleServerTool)
+	r.Put("/mcp-servers/{id}/tools/{toolName}/cost", s.mcpHandler.SetToolCostHandler)
 	r.Post("/mcp-servers/{id}/tools/call", s.mcpHandler.CallServerTool)
 	r.Get("/mcp/stats", s.mcpHandler.GetStats)
 	r.Get("/mcp/audit", s.mcpHandler.GetAuditLog)
@@ -223,23 +234,39 @@ func (s *Server) registerAccessRoutes(r chi.Router) {
 	r.Get("/access/audit", s.accessHandler.ListConfigAuditLog)
 }
 
+// jobsEnabledMw rejects /api/jobs/* requests when the jobs feature is
+// disabled at runtime. Routes stay registered so the SPA page shell doesn't
+// 404; the UI shows a disabled notice instead.
+func (s *Server) jobsEnabledMw(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !config.IsEnabled(s.configCache, "jobs") {
+			model.WriteJSONError(w, http.StatusNotFound, "jobs_disabled", "Jobs are disabled")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 func (s *Server) registerJobsRoutes(r chi.Router) {
 	if s.jobsHandler == nil {
 		return
 	}
-	r.Get("/jobs", s.jobsHandler.ListJobs)
-	r.Post("/jobs", s.jobsHandler.CreateJob)
-	r.Get("/jobs/{id}", s.jobsHandler.GetJob)
-	r.Put("/jobs/{id}", s.jobsHandler.UpdateJob)
-	r.Delete("/jobs/{id}", s.jobsHandler.DeleteJob)
-	r.Post("/jobs/{id}/trigger", s.jobsHandler.TriggerJob)
-	r.Get("/jobs/{id}/runs", s.jobsHandler.ListRuns)
-	r.Get("/jobs/{id}/runs/{runId}", s.jobsHandler.GetRun)
-	r.Get("/jobs/stats", s.jobsHandler.GetStats)
-	r.Get("/jobs/{id}/triggers", s.jobsHandler.ListTriggers)
-	r.Post("/jobs/{id}/triggers", s.jobsHandler.CreateTrigger)
-	r.Get("/jobs/{id}/triggers/{triggerId}/reveal", s.jobsHandler.RevealTrigger)
-	r.Delete("/triggers/{id}", s.jobsHandler.DeleteTrigger)
+	r.Group(func(jobsR chi.Router) {
+		jobsR.Use(s.jobsEnabledMw)
+		jobsR.Get("/jobs", s.jobsHandler.ListJobs)
+		jobsR.Post("/jobs", s.jobsHandler.CreateJob)
+		jobsR.Get("/jobs/{id}", s.jobsHandler.GetJob)
+		jobsR.Put("/jobs/{id}", s.jobsHandler.UpdateJob)
+		jobsR.Delete("/jobs/{id}", s.jobsHandler.DeleteJob)
+		jobsR.Post("/jobs/{id}/trigger", s.jobsHandler.TriggerJob)
+		jobsR.Get("/jobs/{id}/runs", s.jobsHandler.ListRuns)
+		jobsR.Get("/jobs/{id}/runs/{runId}", s.jobsHandler.GetRun)
+		jobsR.Get("/jobs/stats", s.jobsHandler.GetStats)
+		jobsR.Get("/jobs/{id}/triggers", s.jobsHandler.ListTriggers)
+		jobsR.Post("/jobs/{id}/triggers", s.jobsHandler.CreateTrigger)
+		jobsR.Get("/jobs/{id}/triggers/{triggerId}/reveal", s.jobsHandler.RevealTrigger)
+		jobsR.Delete("/triggers/{id}", s.jobsHandler.DeleteTrigger)
+	})
 }
 
 func (s *Server) registerChatRoutes(r chi.Router) {
@@ -248,13 +275,16 @@ func (s *Server) registerChatRoutes(r chi.Router) {
 	}
 	r.Post("/chat/completions", s.handleChatCompletions)
 	if s.chatHandler != nil {
-		r.Get("/chat/threads", s.chatHandler.ListThreads)
-		r.Post("/chat/threads", s.chatHandler.CreateThread)
-		r.Get("/chat/threads/{id}", s.chatHandler.GetThread)
-		r.Put("/chat/threads/{id}", s.chatHandler.UpdateThread)
-		r.Delete("/chat/threads/{id}", s.chatHandler.DeleteThread)
-		r.Post("/chat/threads/{id}/messages", s.chatHandler.AddMessage)
-		r.Get("/chat/threads/{id}/messages", s.chatHandler.ListMessages)
+		r.Group(func(chatR chi.Router) {
+			chatR.Use(s.chatEnabledMw)
+			chatR.Get("/chat/threads", s.chatHandler.ListThreads)
+			chatR.Post("/chat/threads", s.chatHandler.CreateThread)
+			chatR.Get("/chat/threads/{id}", s.chatHandler.GetThread)
+			chatR.Put("/chat/threads/{id}", s.chatHandler.UpdateThread)
+			chatR.Delete("/chat/threads/{id}", s.chatHandler.DeleteThread)
+			chatR.Post("/chat/threads/{id}/messages", s.chatHandler.AddMessage)
+			chatR.Get("/chat/threads/{id}/messages", s.chatHandler.ListMessages)
+		})
 	}
 }
 

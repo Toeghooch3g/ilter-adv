@@ -200,7 +200,7 @@ func BenchmarkPromptInjection_NoHeaders(b *testing.B) {
 }
 
 func BenchmarkSemanticCache_Disabled(b *testing.B) {
-	sc := NewSemanticCacheMiddleware(config.CacheConfig{Enabled: false}, nil, nil)
+	sc := NewSemanticCacheMiddleware(config.CacheConfig{Enabled: false}, nil, nil, nil, nil)
 	handler := sc.Handler(&noopHandler{})
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -212,7 +212,7 @@ func BenchmarkSemanticCache_Disabled(b *testing.B) {
 }
 
 func BenchmarkSemanticCache_NonPost(b *testing.B) {
-	sc := NewSemanticCacheMiddleware(config.CacheConfig{Enabled: true}, nil, nil)
+	sc := NewSemanticCacheMiddleware(config.CacheConfig{Enabled: true}, nil, nil, nil, nil)
 	handler := sc.Handler(&noopHandler{})
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -231,7 +231,7 @@ func BenchmarkFullMiddlewareChain(b *testing.B) {
 	be := NewBudgetMiddleware(config.BudgetConfig{Enabled: false}, nil, store, nil)
 	promptMW := NewPromptInjectionMiddleware(store)
 	piiMW := NewPIIMaskerMiddleware(store, config.PIIConfig{Enabled: true}, nil, nil)
-	sc := NewSemanticCacheMiddleware(config.CacheConfig{Enabled: false}, nil, nil)
+	sc := NewSemanticCacheMiddleware(config.CacheConfig{Enabled: false}, nil, nil, nil, nil)
 	r.Use(auth.Handler)
 	r.Use(rl.Handler)
 	r.Use(be.Handler)
@@ -262,7 +262,7 @@ func BenchmarkFullMiddlewareChain_PIIText(b *testing.B) {
 	be := NewBudgetMiddleware(config.BudgetConfig{Enabled: false}, nil, store, nil)
 	promptMW := NewPromptInjectionMiddleware(store)
 	piiMW := NewPIIMaskerMiddleware(store, config.PIIConfig{Enabled: true}, nil, nil)
-	sc := NewSemanticCacheMiddleware(config.CacheConfig{Enabled: false}, nil, nil)
+	sc := NewSemanticCacheMiddleware(config.CacheConfig{Enabled: false}, nil, nil, nil, nil)
 	r.Use(auth.Handler)
 	r.Use(rl.Handler)
 	r.Use(be.Handler)

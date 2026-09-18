@@ -2,8 +2,6 @@ package semanticcache
 
 import (
 	"context"
-	"crypto/sha256"
-	"fmt"
 	"log/slog"
 	"time"
 
@@ -20,54 +18,79 @@ const (
 	CacheModeDisabled CacheMode = "disabled" // cache not available
 )
 
-const exactKeyPrefix = "ilter:cache:exact:"
-
+// SemanticCache is the cache facade. GetFull/SetFull operate on whichever
+// CacheBackend was selected at construction (Redis or Postgres), calling the
+// embedder and optional reranker as configured.
 type SemanticCache struct {
 	cfg      config.CacheConfig
-	client   *redis.Client
-	embedder *OllamaEmbedder // nil = exact-only mode
+	embedder Embedder
+	reranker Reranker
+	backend  CacheBackend
 }
 
-func New(cfg config.CacheConfig, client *redis.Client, ollamaURL string) *SemanticCache {
+// New selects the storage backend from cfg.Type and returns a SemanticCache.
+// signature: New(cfg, embedder, reranker, redisClient, pgDSN).
+func New(cfg config.CacheConfig, embedder Embedder, reranker Reranker, redisClient *redis.Client, pgDSN string) *SemanticCache {
 	sc := &SemanticCache{
-		cfg:    cfg,
-		client: client,
+		cfg:      cfg,
+		embedder: embedder,
+		reranker: reranker,
+	}
+	if !cfg.Enabled {
+		return sc
 	}
 
-	if ollamaURL != "" {
-		sc.embedder = NewOllamaEmbedder(ollamaURL)
+	switch cfg.Type {
+	case "disabled":
+		// Explicitly disabled: no backend, no external DB, no embedder probe.
+		// Mode() returns CacheModeDisabled and GetFull/SetFull no-op.
+		return sc
+	case "postgres":
+		b, err := NewPostgresBackend(context.Background(), cfg, embedder)
+		if err != nil {
+			slog.Error("postgres semantic cache backend init failed; cache disabled", "error", err)
+			return sc
+		}
+		sc.backend = b
+	default: // "" or "redis"
+		if redisClient != nil {
+			b := NewRedisBackend(redisClient, embedder)
+			b.maxEntries = cfg.MaxEntries
+			sc.backend = b
+			if embedder != nil {
+				b.initIndex(embedder.Dim())
+			}
+		}
 	}
-
-	if cfg.Enabled && client != nil && sc.embedder != nil {
-		sc.initIndex(sc.embedder.Dim())
-	}
-
 	return sc
 }
 
 func (c *SemanticCache) Mode() CacheMode {
-	if !c.cfg.Enabled || c.client == nil {
+	if !c.cfg.Enabled || c.backend == nil {
 		return CacheModeDisabled
 	}
-	if c.embedder != nil {
+	if c.embedder != nil && c.backend.Mode() != "exact" {
 		return CacheModeSemantic
 	}
 	return CacheModeExact
 }
 
+// GetFull returns the cached response for embedText, embedding it first and
+// (optionally) re-ranking the top-K vector candidates. Falls back to exact
+// match within the backend when no semantic hit qualifies.
 func (c *SemanticCache) GetFull(ctx context.Context, embedText string, exactKey string) (response string, score float64, found bool) {
-	if c.client == nil {
+	if c.backend == nil {
 		return "", 0, false
 	}
 
-	if c.embedder == nil {
-		return c.exactGet(ctx, exactKey)
-	}
-
-	emb, err := c.embedder.Embed(ctx, embedText)
-	if err != nil {
-		slog.Warn("Embedding failed, falling back to exact match", "error", err)
-		return c.exactGet(ctx, exactKey)
+	var emb []float32
+	if c.embedder != nil {
+		var err error
+		emb, err = c.embedder.Embed(ctx, embedText)
+		if err != nil {
+			slog.Warn("Embedding failed, falling back to exact match", "error", err)
+			emb = nil
+		}
 	}
 
 	threshold := c.cfg.SimilarityThreshold
@@ -75,94 +98,55 @@ func (c *SemanticCache) GetFull(ctx context.Context, embedText string, exactKey 
 		threshold = 0.70
 	}
 
-	resp, score, found := c.searchNearest(ctx, emb, threshold)
-	if found {
-		slog.Debug("semantic cache hit", "score", score, "threshold", threshold)
-		return resp, score, found
+	// Rerank path: pull top-K regardless of threshold, rerank, and accept the
+	// best candidate only if its rerank relevance clears the threshold.
+	if c.reranker != nil && emb != nil {
+		k := c.cfg.RerankTopK
+		if k <= 0 {
+			k = 10
+		}
+		hits, err := c.backend.Get(ctx, emb, exactKey, 0, k)
+		if err == nil && len(hits) > 0 {
+			reranked, rerr := c.reranker.Rerank(ctx, embedText, HitToReranked(hits))
+			if rerr == nil && len(reranked) > 0 && reranked[0].Present && reranked[0].Score >= threshold {
+				slog.Debug("semantic cache hit (rerank)", "score", reranked[0].Score, "threshold", threshold)
+				return reranked[0].Text, reranked[0].Score, true
+			}
+			if rerr != nil {
+				slog.Warn("Rerank failed, falling back to KNN top-1", "error", rerr)
+			}
+		}
 	}
-	return c.exactGet(ctx, exactKey)
+
+	hits, err := c.backend.Get(ctx, emb, exactKey, threshold, 1)
+	if err == nil && len(hits) > 0 {
+		slog.Debug("semantic cache hit", "score", hits[0].Score, "threshold", threshold)
+		return hits[0].Response, hits[0].Score, true
+	}
+	return "", 0, false
 }
 
+// SetFull embeds embedText (when an embedder is present) and stores the
+// response in the backend under exactKey. The exact-match entry is always
+// stored; the vector entry only when an embedder produced an embedding.
 func (c *SemanticCache) SetFull(ctx context.Context, embedText string, exactKey string, response string) error {
-	if c.client == nil {
+	if c.backend == nil {
 		return nil
 	}
 
-	if err := c.exactSet(ctx, exactKey, response); err != nil {
-		slog.Warn("Failed to store exact cache entry", "error", err)
-	}
-
+	var emb []float32
 	if c.embedder != nil {
-		if c.cfg.MaxEntries > 0 {
-			count, err := c.entryCount(ctx)
-			if err == nil && count >= c.cfg.MaxEntries {
-				slog.Warn("semantic cache at capacity, skipping VSS store",
-					"count", count, "max", c.cfg.MaxEntries)
-				return nil // exactSet already stored the exact-match entry
-			}
-		}
-
-		emb, err := c.embedder.Embed(ctx, embedText)
+		var err error
+		emb, err = c.embedder.Embed(ctx, embedText)
 		if err != nil {
 			slog.Warn("Semantic cache skip: embedding failed", "error", err)
-			return nil // exactSet already stored the exact-match entry
+			emb = nil
 		}
-
-		ttl := c.cfg.TTL
-		if ttl <= 0 {
-			ttl = 1 * time.Hour
-		}
-
-		return c.store(ctx, emb, response, ttl)
 	}
 
-	return nil
-}
-
-func cacheKey(prompt string) string {
-	return exactKeyPrefix + fmt.Sprintf("%x", sha256.Sum256([]byte(prompt)))
-}
-
-// countEntriesScript atomically counts ilter:cache:* keys in Redis via non-blocking SCAN.
-// Returns the exact count, not an estimate.
-const countEntriesScript = `
-local cursor = '0'
-local count = 0
-repeat
-    local result = redis.call('SCAN', cursor, 'MATCH', 'ilter:cache:*', 'COUNT', '5000')
-    cursor = result[1]
-    count = count + #result[2]
-until cursor == '0'
-return count
-`
-
-var countEntriesCmd = redis.NewScript(countEntriesScript)
-
-// entryCount returns the current number of cached entries matching ilter:cache:*.
-// Returns -1 if Redis is unavailable.
-func (c *SemanticCache) entryCount(ctx context.Context) (int, error) {
-	if c.client == nil {
-		return -1, fmt.Errorf("redis client is nil")
-	}
-	n, err := countEntriesCmd.Run(ctx, c.client, nil).Int()
-	if err != nil {
-		return -1, fmt.Errorf("entry count: %w", err)
-	}
-	return n, nil
-}
-
-func (c *SemanticCache) exactGet(ctx context.Context, prompt string) (string, float64, bool) {
-	resp, err := c.client.Get(ctx, cacheKey(prompt)).Result()
-	if err != nil {
-		return "", 0, false
-	}
-	return resp, 0, true
-}
-
-func (c *SemanticCache) exactSet(ctx context.Context, prompt, response string) error {
 	ttl := c.cfg.TTL
 	if ttl <= 0 {
 		ttl = 1 * time.Hour
 	}
-	return c.client.Set(ctx, cacheKey(prompt), response, ttl).Err()
+	return c.backend.Set(ctx, emb, exactKey, response, ttl)
 }

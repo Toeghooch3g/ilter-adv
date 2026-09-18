@@ -15,6 +15,7 @@ import { MultiSelect } from '../ui/MultiSelect'
 import { QueryProvider } from '../ui/query-provider'
 import { StatCard } from '../ui/StatCard'
 import { Skeleton } from '../ui/skeleton'
+import { Switch } from '../ui/switch'
 import { useExport } from '../ui/useExport'
 import { GroupField, UserField } from './GroupUserFields'
 
@@ -61,7 +62,7 @@ function ApiKeysManagerContent() {
     value: m.model,
     label: m.name,
     provider: m.provider,
-    tier: m.tier,
+    category: m.category,
   }))
   const providerOptions = rawProviders.map((p) => ({ value: p.name, label: p.name }))
 
@@ -468,6 +469,19 @@ function ApiKeysManagerContent() {
                   placeholder="All providers"
                 />
               </div>
+              <div className="flex items-center justify-between gap-3 rounded-lg border border-surface-200 bg-surface-50 px-3 py-2.5">
+                <div>
+                  <div className="text-sm font-medium text-surface-900">MCP Tool Injection</div>
+                  <div className="text-xs text-surface-500">
+                    Let Ilter Advanced inject and execute its MCP/OpenAPI tools server-side for this key.
+                  </div>
+                </div>
+                <Switch
+                  size="sm"
+                  checked={editTarget.mcp_injection_enabled}
+                  onCheckedChange={(v) => setEditTarget({ ...editTarget, mcp_injection_enabled: v })}
+                />
+              </div>
             </div>
             <div className="flex justify-end gap-2 pt-2">
               <Button variant="outline" onClick={() => setEditTarget(null)}>
@@ -555,6 +569,7 @@ function CreateAPIKeyForm({
               .filter(Boolean)
           : [],
         enabled: true,
+        mcp_injection_enabled: false,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       }
@@ -579,7 +594,7 @@ function CreateAPIKeyForm({
     value: m.model,
     label: m.name,
     provider: m.provider,
-    tier: m.tier,
+    category: m.category,
   }))
   const providerOptions = providers.map((p) => ({ value: p.name, label: p.name }))
 

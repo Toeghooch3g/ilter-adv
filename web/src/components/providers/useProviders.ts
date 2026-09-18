@@ -9,13 +9,14 @@ import { useApiMutation } from '../../lib/useApiMutation'
 export interface ProviderModelItem {
   name: string
   active: boolean
-  tier?: string
+  category?: string
 }
 
 export interface ProviderInfo {
   name: string
   type: string
   base_url: string
+  service_tier?: string
   models: ProviderModelItem[]
   active_models: number
   total_models: number
@@ -45,10 +46,14 @@ export function useProviders() {
   })
 
   const saveProvider = useApiMutation(
-    (args: { name: string; baseUrl: string; apiKey: string | null; apiKeys?: string[] }) =>
-      api.providers.updateProvider(args.name, args.baseUrl, args.apiKey, args.apiKeys),
+    (args: { name: string; baseUrl: string; apiKey: string | null; apiKeys?: string[]; serviceTier?: string }) =>
+      api.providers.updateProvider(args.name, args.baseUrl, args.apiKey, args.apiKeys, args.serviceTier),
     { invalidate: [qk.providers] },
   )
+
+  const removeProvider = useApiMutation((name: string) => api.providers.deleteProvider(name), {
+    invalidate: [qk.providers],
+  })
 
   const [configProvider, setConfigProvider] = useState<ProviderInfo | null>(null)
   const [configForm, setConfigForm] = useState<{ base_url: string; api_key: string; api_keys: string[] }>({
@@ -56,6 +61,8 @@ export function useProviders() {
     api_key: '',
     api_keys: [],
   })
+  const [serviceTier, setServiceTier] = useState<string>('')
+  const [serviceTierTouched, setServiceTierTouched] = useState(false)
   const [apiKeyTouched, setApiKeyTouched] = useState(false)
   const [multiKeysTouched, setMultiKeysTouched] = useState(false)
   const [expandedProviders, setExpandedProviders] = useState<Set<string>>(new Set())
@@ -71,6 +78,8 @@ export function useProviders() {
 
   const openConfig = (p: ProviderInfo) => {
     setConfigForm({ base_url: p.base_url, api_key: '', api_keys: [] })
+    setServiceTier(p.service_tier ?? '')
+    setServiceTierTouched(false)
     setApiKeyTouched(false)
     setMultiKeysTouched(false)
     setConfigProvider(p)
@@ -84,6 +93,7 @@ export function useProviders() {
         baseUrl: configForm.base_url,
         apiKey: apiKeyTouched ? configForm.api_key : null,
         apiKeys: multiKeysTouched ? configForm.api_keys : undefined,
+        serviceTier: serviceTierTouched ? serviceTier : undefined,
       })
       toast.success('Provider updated', { description: `${configProvider.name} configuration saved.` })
       setConfigProvider(null)
@@ -98,9 +108,14 @@ export function useProviders() {
     providers,
     isLoading,
     saveProvider,
+    removeProvider,
     configProvider,
     configForm,
     setConfigForm,
+    serviceTier,
+    setServiceTier,
+    serviceTierTouched,
+    setServiceTierTouched,
     apiKeyTouched,
     setApiKeyTouched,
     multiKeysTouched,

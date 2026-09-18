@@ -108,6 +108,7 @@ func DefaultBootConfig() BootConfig {
 		},
 		Dashboard: DashboardConfig{
 			Enabled: true,
+			Host:    "",
 			Port:    DefaultDashboardPort,
 		},
 		Telemetry: TelemetryConfig{

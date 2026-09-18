@@ -6,8 +6,10 @@ import (
 	"io/fs"
 	"log/slog"
 	"mime"
+	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -182,7 +184,7 @@ func NewServer(cfg *config.Config, configCache *config.Cache, store *db.SQLiteSt
 	}
 
 	s.authHandler = auth.NewAuthHandler(store, cfg)
-	s.providersHandler = providers.NewHandler(store, cfg, lb)
+	s.providersHandler = providers.NewHandler(store, cfg, lb, reg, configCache)
 	s.modelsHandler = models.NewModelsHandler(store, cfg, lb)
 	s.piiHandler = NewPIIHandler(store, configCache)
 	s.ratelimitHandler = ratelimit.NewRateLimitHandler(store, cfg, configCache, s.redis)
@@ -199,6 +201,13 @@ func NewServer(cfg *config.Config, configCache *config.Cache, store *db.SQLiteSt
 		opt(s)
 	}
 
+	// After all opts are applied, connect the runtime PII masker (if any) to
+	// the PII handler so pattern CRUD re-snapshots the masker's enabled set
+	// live — new/changed patterns take effect without a restart.
+	if s.piiMasker != nil {
+		s.piiHandler.SetMaskerRefresh(s.piiMasker.RefreshPatterns)
+	}
+
 	return s
 }
 
@@ -211,10 +220,26 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		model.WriteJSONError(w, http.StatusServiceUnavailable, "chat_unavailable", "Chat completions endpoint is not configured")
 		return
 	}
+	if !config.IsEnabled(s.configCache, "chat") {
+		model.WriteJSONError(w, http.StatusServiceUnavailable, "chat_disabled", "Chat is disabled")
+		return
+	}
 
 	r.Header.Set("Authorization", "Bearer "+s.cfg.Auth.AdminKey)
 	r.URL.Path = "/v1/chat/completions"
 	s.chatChain.ServeHTTP(w, r)
+}
+
+// chatEnabledMw rejects /api/chat/* requests when the chat feature is
+// disabled at runtime, so the thread CRUD endpoints honor the toggle too.
+func (s *Server) chatEnabledMw(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !config.IsEnabled(s.configCache, "chat") {
+			model.WriteJSONError(w, http.StatusServiceUnavailable, "chat_disabled", "Chat is disabled")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) BuildServer() (*http.Server, error) {
@@ -236,7 +261,7 @@ func (s *Server) BuildServer() (*http.Server, error) {
 	r.Post("/api/auth/user-login", s.authHandler.HandleUserLogin)
 
 	if s.jobsHandler != nil {
-		r.Post("/api/webhooks/{token}", s.jobsHandler.WebhookHandler)
+		r.Post("/api/webhooks/{token}", s.jobsEnabledMw(http.HandlerFunc(s.jobsHandler.WebhookHandler)).ServeHTTP)
 	}
 
 	r.Route("/api", func(r chi.Router) {
@@ -263,7 +288,7 @@ func (s *Server) BuildServer() (*http.Server, error) {
 	s.registerSPARoutes(r, fileServer, s.makePageAuthMiddleware())
 
 	s.srv = &http.Server{
-		Addr:              fmt.Sprintf(":%d", s.cfg.Dashboard.Port),
+		Addr:              net.JoinHostPort(s.cfg.Dashboard.Host, strconv.Itoa(s.cfg.Dashboard.Port)),
 		Handler:           r,
 		ReadHeaderTimeout: 10 * time.Second,
 	}

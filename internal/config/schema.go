@@ -95,6 +95,12 @@ var ConfigSchema = []SchemaEntry{
 	// ── PII ──
 	{Section: "pii", Key: "mode", Type: TypeString, Default: "mask", Description: "PII masking mode (mask/block/reversible)"},
 
+	// ── MCP ──
+	// blocked_tools is a JSON array of tool names (stored as a string); the
+	// schema registers it as TypeString so the generic write path accepts it.
+	// The actual array validation happens in validateMCPConfig.
+	{Section: "mcp", Key: "blocked_tools", Type: TypeString, Default: "[]", Description: "MCP tool names hidden from every surface; entries must be the server-prefixed exposed name (e.g. kagi_search-search) (JSON array)"},
+
 	// ── Logging ──
 	{Section: "logging", Key: "format", Type: TypeString, Default: "console", Description: "Log output format (console/json)"},
 }

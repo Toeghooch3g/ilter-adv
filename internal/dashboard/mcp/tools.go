@@ -109,7 +109,7 @@ func writeMCPTestConnectError(w http.ResponseWriter, errMsg string, client mcp.T
 // on to the handshake — in that case the caller owns cleanup (cancel +
 // client.Close). In every false case except the timeout/failure ones,
 // cleanup has already run here.
-func awaitMCPTestConnection(w http.ResponseWriter, ctx context.Context, cancel context.CancelFunc, client mcp.TransportClient, startCh <-chan error) bool {
+func awaitMCPTestConnection(ctx context.Context, cancel context.CancelFunc, client mcp.TransportClient, w http.ResponseWriter, startCh <-chan error) bool {
 	ticker := time.NewTicker(300 * time.Millisecond)
 	defer ticker.Stop()
 
@@ -148,7 +148,7 @@ func awaitMCPTestConnection(w http.ResponseWriter, ctx context.Context, cancel c
 // performMCPHandshakeAndList runs TestServer's initialize + tools/list
 // JSON-RPC calls against client, writing an error response to w and
 // returning nil if either step fails.
-func performMCPHandshakeAndList(w http.ResponseWriter, ctx context.Context, client mcp.TransportClient) *mcp.ListToolsResult {
+func performMCPHandshakeAndList(ctx context.Context, client mcp.TransportClient, w http.ResponseWriter) *mcp.ListToolsResult {
 	initID := json.RawMessage(`"1"`)
 	initReq := &mcp.JSONRPCRequest{
 		JSONRPC: mcp.JSONRPCVersion,
@@ -230,6 +230,7 @@ func (h *MCPHandler) syncMCPToolsAfterTest(id string, tools []mcp.ToolDefinition
 	}
 }
 
+//nolint:contextcheck // Background-derived ctx below is intentional: the MCP process must outlive this HTTP request (OAuth callback runs in-process).
 func (h *MCPHandler) TestServer(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if id == "" {
@@ -279,12 +280,12 @@ func (h *MCPHandler) TestServer(w http.ResponseWriter, r *http.Request) {
 		startCh <- client.Start(ctx)
 	}()
 
-	if !awaitMCPTestConnection(w, ctx, cancel, client, startCh) { //nolint:contextcheck // ctx is the intentional Background-derived timeout from above (MCP process must outlive this HTTP request)
+	if !awaitMCPTestConnection(ctx, cancel, client, w, startCh) { //nolint:contextcheck // ctx is the intentional Background-derived timeout from above (MCP process must outlive this HTTP request)
 		return
 	}
 	defer func() { cancel(); _ = client.Close() }()
 
-	listResult := performMCPHandshakeAndList(w, ctx, client) //nolint:contextcheck // ctx is the intentional Background-derived timeout from above (MCP process must outlive this HTTP request)
+	listResult := performMCPHandshakeAndList(ctx, client, w) //nolint:contextcheck // ctx is the intentional Background-derived timeout from above (MCP process must outlive this HTTP request)
 	if listResult == nil {
 		return
 	}
@@ -311,8 +312,11 @@ func (h *MCPHandler) ListServerTools(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rows, err := h.store.DB.Query(`SELECT id, name, description, schema, created_at
-		FROM mcp_tools WHERE server_id = ? ORDER BY name`, id)
+	rows, err := h.store.DB.Query(`SELECT t.id, t.name, t.description, t.schema, t.created_at,
+		COALESCE(g.enabled, 1), g.cost_per_1k
+		FROM mcp_tools t
+		LEFT JOIN mcp_tool_toggles g ON g.server_id = t.server_id AND g.tool_name = t.name
+		WHERE t.server_id = ? ORDER BY t.name`, id)
 	if err != nil {
 		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", "Failed to list tools")
 		return
@@ -322,16 +326,23 @@ func (h *MCPHandler) ListServerTools(w http.ResponseWriter, r *http.Request) {
 	tools := make([]map[string]any, 0)
 	for rows.Next() {
 		var id, name, description, inputSchema, createdAt sql.NullString
-		if err := rows.Scan(&id, &name, &description, &inputSchema, &createdAt); err != nil {
+		var enabled sql.NullInt64
+		var costPer1k sql.NullFloat64
+		if err := rows.Scan(&id, &name, &description, &inputSchema, &createdAt, &enabled, &costPer1k); err != nil {
 			continue
 		}
-		tools = append(tools, map[string]any{
+		tool := map[string]any{
 			"id":           nullToEmpty(id),
 			"name":         nullToEmpty(name),
 			"description":  nullToEmpty(description),
 			"input_schema": nullToEmpty(inputSchema),
 			"created_at":   nullToEmpty(createdAt),
-		})
+			"enabled":      enabled.Valid && enabled.Int64 != 0,
+		}
+		if costPer1k.Valid {
+			tool["cost_per_1k"] = costPer1k.Float64
+		}
+		tools = append(tools, tool)
 	}
 	if err := rows.Err(); err != nil {
 		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", "Failed to list tools")
@@ -341,6 +352,97 @@ func (h *MCPHandler) ListServerTools(w http.ResponseWriter, r *http.Request) {
 	model.WriteJSON(w, http.StatusOK, map[string]any{
 		"server_id": id,
 		"tools":     tools,
+	})
+}
+
+// toolToggleRequest is the PATCH body for enabling/disabling a server tool.
+type toolToggleRequest struct {
+	Enabled bool `json:"enabled"`
+}
+
+// ToggleServerTool enables or disables a single tool on a server.
+func (h *MCPHandler) ToggleServerTool(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	toolName := chi.URLParam(r, "toolName")
+	if id == "" || toolName == "" {
+		model.WriteJSONError(w, http.StatusBadRequest, "invalid_request_error", "Server ID and tool name are required")
+		return
+	}
+
+	defer func() { _ = r.Body.Close() }()
+	var req toolToggleRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		model.WriteJSONError(w, http.StatusBadRequest, "invalid_request_error", "Invalid request body")
+		return
+	}
+
+	var exists int
+	if err := h.store.DB.QueryRow(`SELECT 1 FROM mcp_tools WHERE server_id = ? AND name = ?`, id, toolName).Scan(&exists); err != nil {
+		model.WriteJSONError(w, http.StatusNotFound, "not_found", "Tool not found for this server")
+		return
+	}
+
+	if h.registry != nil {
+		h.registry.SetToolEnabled(r.Context(), id, toolName, req.Enabled)
+	} else if err := h.store.UpsertMCPToolToggle(r.Context(), db.MCPToolToggleRow{
+		ServerID: id,
+		ToolName: toolName,
+		Enabled:  req.Enabled,
+	}); err != nil {
+		mcpLog.Warn("failed to persist tool toggle without registry", "server_id", id, "tool", toolName, "error", err)
+	}
+
+	model.WriteJSON(w, http.StatusOK, map[string]any{
+		"status":  "ok",
+		"enabled": req.Enabled,
+	})
+}
+
+// toolCostRequest is the PUT body for setting/clearing a tool's per-1k cost.
+type toolCostRequest struct {
+	CostPer1k *float64 `json:"cost_per_1k"`
+}
+
+// SetToolCostHandler sets or clears the per-1k-request cost of a server tool.
+func (h *MCPHandler) SetToolCostHandler(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	toolName := chi.URLParam(r, "toolName")
+	if id == "" || toolName == "" {
+		model.WriteJSONError(w, http.StatusBadRequest, "invalid_request_error", "Server ID and tool name are required")
+		return
+	}
+
+	defer func() { _ = r.Body.Close() }()
+	var req toolCostRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		model.WriteJSONError(w, http.StatusBadRequest, "invalid_request_error", "Invalid request body")
+		return
+	}
+	if req.CostPer1k != nil && (*req.CostPer1k < 0 || *req.CostPer1k > 1000) {
+		model.WriteJSONError(w, http.StatusBadRequest, "invalid_request_error", "cost_per_1k must be between 0 and 1000")
+		return
+	}
+
+	var exists int
+	if err := h.store.DB.QueryRow(`SELECT 1 FROM mcp_tools WHERE server_id = ? AND name = ?`, id, toolName).Scan(&exists); err != nil {
+		model.WriteJSONError(w, http.StatusNotFound, "not_found", "Tool not found for this server")
+		return
+	}
+
+	if h.registry != nil {
+		h.registry.SetToolCost(r.Context(), id, toolName, req.CostPer1k)
+	} else if err := h.store.UpsertMCPToolToggle(r.Context(), db.MCPToolToggleRow{
+		ServerID:  id,
+		ToolName:  toolName,
+		Enabled:   true,
+		CostPer1k: req.CostPer1k,
+	}); err != nil {
+		mcpLog.Warn("failed to persist tool cost without registry", "server_id", id, "tool", toolName, "error", err)
+	}
+
+	model.WriteJSON(w, http.StatusOK, map[string]any{
+		"status":      "ok",
+		"cost_per_1k": req.CostPer1k,
 	})
 }
 

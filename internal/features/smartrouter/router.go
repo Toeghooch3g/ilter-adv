@@ -96,10 +96,15 @@ func (sr *SmartRouter) selectModelForTier(tier string) (string, error) {
 		t := "standard"
 		if entries, ok := catalog.Models[modelName]; ok && len(entries) > 0 {
 			mInfo := entries[0]
-			if mInfo.Tier == "free" {
+			// Embedding models are not chat candidates; skip them so they are
+			// never selected for a chat request via complexity routing.
+			if mInfo.Category == "embedding" {
+				continue
+			}
+			if mInfo.Category == "free" {
 				t = "economy"
 			} else {
-				t = mInfo.Tier
+				t = mInfo.Category
 			}
 		}
 		modelsByTier[t] = append(modelsByTier[t], modelName)

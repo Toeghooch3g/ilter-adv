@@ -1,4 +1,4 @@
-# ILTER vs. Other AI Gateways
+# Ilter Advanced vs. Other AI Gateways
 
 > We try to be honest here — if a competitor has something we don't, the table says so. Checked against each project's own repo/docs as of 2026-08; these projects ship fast, so re-verify before quoting externally.
 
@@ -8,7 +8,7 @@
 
 | Project | Built for |
 |---|---|
-| **ILTER** | Teams self-hosting production LLM traffic who want governance (budget kill-switch, PII masking, guardrails, loop protection) built into the gateway itself — a single binary, no Python/Node runtime to install |
+| **Ilter Advanced** | Teams self-hosting production LLM traffic who want governance (budget kill-switch, PII masking, guardrails, loop protection) built into the gateway itself — a single binary, no Python/Node runtime to install |
 | **[LiteLLM](https://github.com/BerriAI/litellm)** | Python-native teams/enterprises wanting the broadest provider + plugin ecosystem, fine running Python+Node+DB |
 | **[Higress](https://github.com/higress-group/higress)** | Platform/SRE teams already on Kubernetes + Istio who want AI routing as one more capability of their existing cloud-native ingress gateway |
 | **[New API](https://github.com/QuantumNous/new-api)** | People running or **reselling** AI API access — multi-tenant quota/billing, token shops, teams monetizing spare provider capacity |
@@ -20,7 +20,7 @@
 
 ## Feature Comparison
 
-| Feature | ILTER | LiteLLM | Higress | New API | OmniRoute | 9Router | APISIX |
+| Feature | Ilter Advanced | LiteLLM | Higress | New API | OmniRoute | 9Router | APISIX |
 |---|---|---|---|---|---|---|---|
 | MCP Gateway (tool injection/interception) | ✅ | ✅ | ✅ | ❌ | ✅ | ❌ | ✅ (one-way bridge only) |
 | MCP Marketplace (browse + one-click install) | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ |
@@ -39,7 +39,7 @@
 
 ## Honestly, where we don't win
 
-- **Provider count & ecosystem:** LiteLLM (100+ integrations, years of plugins) and OmniRoute (290+ providers) both beat ILTER's 9 on raw coverage.
-- **Billing/reseller tooling:** New API's multi-tenant quota and reselling features are more built-out than anything ILTER offers — ILTER isn't built to run as a token shop.
+- **Provider count & ecosystem:** LiteLLM (100+ integrations, years of plugins) and OmniRoute (290+ providers) both beat Ilter Advanced's 9 on raw coverage.
+- **Billing/reseller tooling:** New API's multi-tenant quota and reselling features are more built-out than anything Ilter Advanced offers — Ilter Advanced isn't built to run as a token shop.
 - **Cloud-native/K8s fit:** Higress and APISIX are the better choice if you're already running Istio/Envoy or APISIX and just want to bolt on LLM routing rather than run a separate gateway.
-- **Agent loop detection and cron workflows** are the two rows where we didn't find *any* equivalent elsewhere — genuinely unique to ILTER among this list, not just better-marketed.
+- **Agent loop detection and cron workflows** are the two rows where we didn't find *any* equivalent elsewhere — genuinely unique to Ilter Advanced among this list, not just better-marketed.

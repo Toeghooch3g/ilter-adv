@@ -11,7 +11,9 @@ import (
 	"github.com/sony/gobreaker/v2"
 
 	"github.com/ilter-ai/ilter/internal/config"
+	"github.com/ilter-ai/ilter/internal/db"
 	"github.com/ilter-ai/ilter/internal/features/mcp/protocol"
+	"github.com/ilter-ai/ilter/internal/features/mcp/toolpricing"
 )
 
 // mockTransport implements TransportClient for executor tests.
@@ -59,7 +61,7 @@ func TestExecutor_ExecuteTool_Success(t *testing.T) {
 
 	ex := NewExecutor(reg, clients, nil, nil, nil)
 	result := ex.ExecuteTool(context.Background(), &ExecuteToolParams{
-		ToolName: "test-tool", Arguments: json.RawMessage(`{"foo":"bar"}`),
+		ToolName: "test_server-test-tool", Arguments: json.RawMessage(`{"foo":"bar"}`),
 	})
 	if result == nil {
 		t.Fatal("expected non-nil result")
@@ -104,7 +106,7 @@ func TestExecutor_ExecuteTool_AccessDenied(t *testing.T) {
 	ex := NewExecutor(reg, clients, auth, nil, nil)
 
 	result := ex.ExecuteTool(context.Background(), &ExecuteToolParams{
-		ToolName: "secret-tool", APIKeyID: "1", KeyPrefix: "abc123def456",
+		ToolName: "test_server-secret-tool", APIKeyID: "1", KeyPrefix: "abc123def456",
 	})
 	if result == nil {
 		t.Fatal("expected non-nil result")
@@ -145,7 +147,7 @@ func TestExecutor_ExecuteTool_RetryThenSuccess(t *testing.T) {
 	ex := NewExecutor(reg, clients, nil, nil, nil)
 
 	result := ex.ExecuteTool(context.Background(), &ExecuteToolParams{
-		ToolName: "retry-tool",
+		ToolName: "retry-retry-tool",
 	})
 	if result == nil {
 		t.Fatal("expected non-nil result")
@@ -282,9 +284,9 @@ func TestExecutor_ExecuteTool_DestructiveBlocked(t *testing.T) {
 	}}
 
 	ex := NewExecutor(reg, clients, nil, nil, nil)
-	ex.toolConfigCache.Store("danger-tool", &ToolConfig{Destructive: true})
+	ex.toolConfigCache.Store("test-server-danger-tool", &ToolConfig{Destructive: true})
 
-	result := ex.ExecuteTool(context.Background(), &ExecuteToolParams{ToolName: "danger-tool"})
+	result := ex.ExecuteTool(context.Background(), &ExecuteToolParams{ToolName: "test-server-danger-tool"})
 	if !result.IsError {
 		t.Fatal("expected error for destructive tool")
 	}
@@ -308,9 +310,9 @@ func TestExecutor_ExecuteTool_RequiresConfirmationBlocked(t *testing.T) {
 	}}
 
 	ex := NewExecutor(reg, clients, nil, nil, nil)
-	ex.toolConfigCache.Store("confirm-tool", &ToolConfig{RequiresConfirmation: true})
+	ex.toolConfigCache.Store("test-server-confirm-tool", &ToolConfig{RequiresConfirmation: true})
 
-	result := ex.ExecuteTool(context.Background(), &ExecuteToolParams{ToolName: "confirm-tool"})
+	result := ex.ExecuteTool(context.Background(), &ExecuteToolParams{ToolName: "test-server-confirm-tool"})
 	if !result.IsError {
 		t.Fatal("expected error for confirmation-required tool")
 	}
@@ -334,18 +336,18 @@ func TestExecutor_ExecuteTool_RateLimited(t *testing.T) {
 	}}
 
 	ex := NewExecutor(reg, clients, nil, nil, nil)
-	ex.toolConfigCache.Store("freq-tool", &ToolConfig{RateLimitRPM: 2})
+	ex.toolConfigCache.Store("test-server-freq-tool", &ToolConfig{RateLimitRPM: 2})
 
 	// First two calls should succeed.
 	for i := range 2 {
-		result := ex.ExecuteTool(context.Background(), &ExecuteToolParams{ToolName: "freq-tool"})
+		result := ex.ExecuteTool(context.Background(), &ExecuteToolParams{ToolName: "test-server-freq-tool"})
 		if result.IsError {
 			t.Fatalf("call %d should succeed, got: %s", i+1, result.Content[0].Text)
 		}
 	}
 
 	// Third call should be rate-limited.
-	result := ex.ExecuteTool(context.Background(), &ExecuteToolParams{ToolName: "freq-tool"})
+	result := ex.ExecuteTool(context.Background(), &ExecuteToolParams{ToolName: "test-server-freq-tool"})
 	if !result.IsError {
 		t.Fatal("expected rate limit error on third call")
 	}
@@ -371,8 +373,114 @@ func TestExecutor_ExecuteTool_NoConfigMeansNoRestriction(t *testing.T) {
 	// No tool config stored → no restrictions.
 	ex := NewExecutor(reg, clients, nil, nil, nil)
 
-	result := ex.ExecuteTool(context.Background(), &ExecuteToolParams{ToolName: "plain-tool"})
+	result := ex.ExecuteTool(context.Background(), &ExecuteToolParams{ToolName: "test-server-plain-tool"})
 	if result.IsError {
 		t.Fatalf("expected success, got: %s", result.Content[0].Text)
+	}
+}
+
+// TestExecutor_ExecuteTool_CostAccounting verifies that a priced tool call
+// records its cost through the budget and usage_daily recorders and persists
+// the cost in the MCP audit log; an un-priced call records nothing.
+func TestExecutor_ExecuteTool_CostAccounting(t *testing.T) {
+	cleanBreakers()
+
+	store, err := db.NewSQLiteStore(config.StorageConfig{Type: "sqlite", SqlitePath: ":memory:"})
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if _, err := store.DB.Exec(
+		`INSERT INTO mcp_servers (id, name, transport, enabled) VALUES (?, ?, ?, 1)`,
+		"test-server", "Test Server", "sse",
+	); err != nil {
+		t.Fatalf("seed mcp_servers: %v", err)
+	}
+
+	mock := &mockTransportForExecutor{connected: true}
+	clients := NewClientManager(nil)
+	insertMockClient(clients, mock)
+
+	reg := &Registry{servers: map[string]*ServerInfo{
+		"test-server": {
+			ID:     "test-server",
+			Config: config.MCPServerConfig{ID: "test-server", Name: "Test Server", Transport: "sse", URL: "http://localhost:9999", Timeout: "5s"},
+			Tools:  []ToolDefinition{{Name: "test-tool"}, {Name: "free-tool"}},
+		},
+	}}
+
+	auditLog := NewAuditLogger(store)
+	ex := NewExecutor(reg, clients, nil, auditLog, nil)
+	ex.SetPricingResolver(func() *toolpricing.Resolver {
+		return toolpricing.NewResolver([]toolpricing.Rule{
+			{Server: "test-server", Tool: "test-tool", Unit: toolpricing.UnitCall, CostPerUnit: 0.012},
+		})
+	})
+
+	var budgetKey string
+	var budgeted float64
+	ex.SetBudgetRecorder(func(_ context.Context, keyID string, cost float64) {
+		budgetKey = keyID
+		budgeted = cost
+	})
+	var usageKey, usageServer, usageTool string
+	var usageCost float64
+	ex.SetUsageRecorder(func(_ context.Context, keyID, serverID, toolName string, cost float64) {
+		usageKey, usageServer, usageTool, usageCost = keyID, serverID, toolName, cost
+	})
+
+	// Priced call: success path bills 0.012.
+	result := ex.ExecuteTool(context.Background(), &ExecuteToolParams{
+		ToolName: "test_server-test-tool", APIKeyID: "key-1", Arguments: json.RawMessage(`{}`),
+	})
+	if result == nil || result.IsError {
+		t.Fatalf("expected success, got %+v", result)
+	}
+	if budgetKey != "key-1" || budgeted != 0.012 {
+		t.Errorf("budget recorder: got key=%q cost=%v, want key-1/0.012", budgetKey, budgeted)
+	}
+	if usageKey != "key-1" || usageServer != "test-server" || usageTool != "test-tool" || usageCost != 0.012 {
+		t.Errorf("usage recorder: got %q/%s/%s/%v, want key-1/test-server/test-tool/0.012", usageKey, usageServer, usageTool, usageCost)
+	}
+
+	// Audit entry carries the cost (async persist; poll the DB).
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		var cost float64
+		if qErr := store.DB.QueryRow("SELECT cost FROM mcp_audit_log WHERE tool = 'test-tool' LIMIT 1").Scan(&cost); qErr == nil {
+			if cost != 0.012 {
+				t.Fatalf("audit cost = %v, want 0.012", cost)
+			}
+			break
+		} else if time.Now().After(deadline) {
+			t.Fatalf("audit entry not persisted in time: %v", qErr)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// Un-priced call: no recording at all, audit cost 0.
+	budgetKey, budgeted = "", 0
+	usageKey, usageCost = "", 0
+	result = ex.ExecuteTool(context.Background(), &ExecuteToolParams{
+		ToolName: "test_server-free-tool", APIKeyID: "key-1", Arguments: json.RawMessage(`{}`),
+	})
+	if result == nil || result.IsError {
+		t.Fatalf("expected success for free-tool, got %+v", result)
+	}
+	if budgeted != 0 || usageCost != 0 {
+		t.Errorf("un-priced call must not record cost: budget=%v usage=%v", budgeted, usageCost)
+	}
+	deadline = time.Now().Add(2 * time.Second)
+	for {
+		var cost float64
+		if qErr := store.DB.QueryRow("SELECT cost FROM mcp_audit_log WHERE tool = 'free-tool' LIMIT 1").Scan(&cost); qErr == nil {
+			if cost != 0 {
+				t.Fatalf("free-tool audit cost = %v, want 0", cost)
+			}
+			break
+		} else if time.Now().After(deadline) {
+			t.Fatalf("free-tool audit entry not persisted in time: %v", qErr)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }

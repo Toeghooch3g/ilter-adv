@@ -1,9 +1,12 @@
 package mcp
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/ilter-ai/ilter/internal/config"
+	"github.com/ilter-ai/ilter/internal/db"
+	"github.com/ilter-ai/ilter/internal/model"
 )
 
 func TestMatchToolPatternWildcard(t *testing.T) {
@@ -276,5 +279,128 @@ func TestGetAuthorizedToolsKeyPrefixAndGroup(t *testing.T) {
 	authorized = a.GetAuthorizedTools("a1b2c3d4e5f6", []int{2}, "", all)
 	if len(authorized) != 2 {
 		t.Errorf("expected 2 tools with both prefix and group match, got %d: %v", len(authorized), authorized)
+	}
+}
+
+// seedServerTools returns a Registry with the given server→tools mapping,
+// backed by store (so mcp_grant rows are queryable by the Authorizer).
+func seedServerTools(t *testing.T, store *db.SQLiteStore, servers map[string][]ToolDefinition) *Registry {
+	t.Helper()
+	cfgs := make([]config.MCPServerConfig, 0, len(servers))
+	for id, tools := range servers {
+		cfgs = append(cfgs, config.MCPServerConfig{ID: id, Name: id, Enabled: true, Transport: "sse"})
+		_ = tools
+	}
+	reg, err := NewRegistryFromCache(cfgs, store)
+	if err != nil {
+		t.Fatalf("NewRegistryFromCache: %v", err)
+	}
+	for id, tools := range servers {
+		reg.RegisterServer(id, config.MCPServerConfig{ID: id, Name: id, Enabled: true, Transport: "sse"}, tools)
+	}
+	return reg
+}
+
+func oaToolNames(out []model.Tool) []string {
+	names := make([]string, 0, len(out))
+	for _, t := range out {
+		names = append(names, t.Function.Name)
+	}
+	return names
+}
+
+func contains(name string, names []string) bool {
+	return slices.Contains(names, name)
+}
+
+// TestServerQualifiedDenyAtInjection verifies that a server-qualified deny
+// grant (subject '*', server 'anginxbrowser', tools '["search"]') is honored
+// by the chat-request injection path: the denied server's tool is invisible,
+// while the same bare tool name on an un-denied server stays exposed.
+func TestServerQualifiedDenyAtInjection(t *testing.T) {
+	store, err := db.NewSQLiteStore(config.StorageConfig{Type: "sqlite", SqlitePath: ":memory:"})
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	// Scenario 1: 'search' exists only on anginxbrowser, which denies it.
+	if _, err := store.DB.Exec(
+		`INSERT INTO mcp_grant (id, subject_type, subject_id, server_id, tools, effect) VALUES (?, 'key', '*', 'anginxbrowser', '["search"]', 'deny')`,
+		"grant-1",
+	); err != nil {
+		t.Fatalf("seed deny grant: %v", err)
+	}
+
+	reg1 := seedServerTools(t, store, map[string][]ToolDefinition{
+		"kagi":          {{Name: "get_info", Description: "kagi info"}},
+		"anginxbrowser": {{Name: "search", Description: "web search"}},
+	})
+	authorizer := NewAuthorizer(store, nil, "allow")
+	inj := NewInjector(reg1, authorizer, store)
+
+	out := inj.GetAuthorizedOpenAITools("key123", nil)
+	names := oaToolNames(out)
+	if contains("anginxbrowser-search", names) {
+		t.Fatalf("anginxbrowser-search must be invisible (denied on its only server), got %v", names)
+	}
+	if !contains("kagi-get_info", names) {
+		t.Fatalf("kagi tool kagi-get_info must be included, got %v", names)
+	}
+
+	// Scenario 2: 'search' exists on BOTH servers; only anginxbrowser denies it.
+	reg2 := seedServerTools(t, store, map[string][]ToolDefinition{
+		"kagi":          {{Name: "search", Description: "kagi search"}, {Name: "get_info", Description: "kagi info"}},
+		"anginxbrowser": {{Name: "search", Description: "web search"}, {Name: "browse", Description: "browse"}},
+	})
+	inj2 := NewInjector(reg2, authorizer, store)
+	out2 := inj2.GetAuthorizedOpenAITools("key123", nil)
+	names2 := oaToolNames(out2)
+
+	// Every tool is server-prefixed: only kagi's copy of search survives.
+	if !contains("kagi-search", names2) {
+		t.Errorf("kagi-search must be exposed (denied only on anginxbrowser), got %v", names2)
+	}
+	if contains("anginxbrowser-search", names2) {
+		t.Errorf("anginxbrowser-search must be invisible, got %v", names2)
+	}
+	// anginxbrowser's other (un-denied) tool stays visible under its server name.
+	if !contains("anginxbrowser-browse", names2) {
+		t.Errorf("anginxbrowser-browse must be included, got %v", names2)
+	}
+}
+
+// TestServerQualifiedDenyAllowsOtherServerTools is a guard that the new
+// server-aware method (used at injection) resolves the same bare tool on an
+// unrelated server as allowed when no grant covers it.
+func TestServerQualifiedDenyAllowsOtherServerTools(t *testing.T) {
+	store, err := db.NewSQLiteStore(config.StorageConfig{Type: "sqlite", SqlitePath: ":memory:"})
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	// Deny grant scoped to kagi only — tools on other servers are untouched.
+	if _, err := store.DB.Exec(
+		`INSERT INTO mcp_grant (id, subject_type, subject_id, server_id, tools, effect) VALUES (?, 'key', '*', 'kagi', '["secret"]', 'deny')`,
+		"grant-2",
+	); err != nil {
+		t.Fatalf("seed deny grant: %v", err)
+	}
+
+	reg := seedServerTools(t, store, map[string][]ToolDefinition{
+		"kagi":  {{Name: "secret", Description: "kagi secret"}},
+		"other": {{Name: "secret", Description: "other secret"}},
+	})
+	authorizer := NewAuthorizer(store, nil, "allow")
+	inj := NewInjector(reg, authorizer, store)
+	out := inj.GetAuthorizedOpenAITools("key123", nil)
+	names := oaToolNames(out)
+
+	if contains("kagi-secret", names) {
+		t.Errorf("kagi-secret must be invisible, got %v", names)
+	}
+	if !contains("other-secret", names) {
+		t.Errorf("other-secret must be exposed (grant only denies kagi), got %v", names)
 	}
 }

@@ -2,24 +2,27 @@
   <a href="https://github.com/ilter-ai/ilter">
     <img src="https://avatars.githubusercontent.com/u/290145298?s=120&v=4" width="80" height="80" alt="ILTER logo">
   </a>
-  <h1>ILTER — AI Gateway</h1>
+  <h1>ILTER ADVANCED — AI Gateway</h1>
 
-[![GHCR](https://img.shields.io/badge/ghcr.io-ilter--ai%2Filter-2496ED?logo=github&logoColor=white)](https://github.com/ilter-ai/ilter/pkgs/container/ilter)
-[![GitHub release](https://img.shields.io/github/v/release/ilter-ai/ilter)](https://github.com/ilter-ai/ilter/releases)
-[![Go Version](https://img.shields.io/github/go-mod/go-version/ilter-ai/ilter)](go.mod)
+> [!IMPORTANT]
+> **This is a fork of [Ilter](https://github.com/ilter-ai/ilter)** — the upstream project by ilter-ai. Ilter Advanced exists to provide a freely available, fully open source LLM/MCP gateway with advanced features that upstream does not ship. **Heavily under development.** Pre-v1.0.0 builds are likely broken in some way or another — do not rely on this software for anything important, or it may bring about the end of the world as we know it.
+
+[![GHCR](https://img.shields.io/badge/ghcr.io-ilter--adv%2Filter-2496ED?logo=github&logoColor=white)](https://github.com/Toeghooch3g/ilter-adv/pkgs/container/ilter)
+[![GitHub release](https://img.shields.io/github/v/release/Toeghooch3g/ilter-adv)](https://github.com/Toeghooch3g/ilter-adv/releases)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/Toeghooch3g/ilter-adv)](go.mod)
 [![License](https://img.shields.io/badge/license-Apache%202.0%20with%20Commons%20Clause-blue)](LICENSE)
 
 <a href="https://www.producthunt.com/products/ilter?embed=true&utm_source=badge-featured&utm_medium=badge&utm_campaign=badge-ilter" target="_blank" rel="noopener noreferrer"><img alt="ILTER - Self-hosted AI gateway in a single binary | Product Hunt" width="250" height="54" src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1210064&theme=light&t=1785440130124"></a>
 </div>
 
 
-Deploying AI models to production brings critical operational challenges such as unpredictable costs, data privacy risks, and API outages. **ILTER** is an independent gateway that sits between your application and AI providers; transforming your entire AI traffic into a secure, optimized, and fully controlled infrastructure without requiring any architectural changes in your code.
+Deploying AI models to production brings critical operational challenges such as unpredictable costs, data privacy risks, and API outages. **Ilter Advanced** is an independent gateway that sits between your application and AI providers; transforming your entire AI traffic into a secure, optimized, and fully controlled infrastructure without requiring any architectural changes in your code.
 
->*ILTER is Turkish for "one who watches over, protects, and keeps order" — fitting for a gateway that monitors, guards, and governs every request flowing through your AI stack.*
+>*Ilter Advanced is Turkish for "one who watches over, protects, and keeps order" — fitting for a gateway that monitors, guards, and governs every request flowing through your AI stack.*
 
 *   🧩 **MCP Gateway & Marketplace:** Connect AI to your APIs, CRM, or MCP servers — zero changes required.
 *   ⚡ **Smart Router:** Every request is scored for complexity in real time and routed to the right model tier.
-*   🌐 **Smart Fallback:** Provider down or rate-limited? ILTER fails over to another key or provider, no changes.
+*   🌐 **Smart Fallback:** Provider down or rate-limited? Ilter Advanced fails over to another key or provider, no changes.
 *   💰 **Budget Control:** Hard daily/monthly spending limits per key — traffic cuts off the instant a limit is hit.
 *   🪪 **PII Guard:** Emails, SSNs, and other sensitive data are masked before they ever leave your network.
 *   🧠 **Semantic Cache:** Queries are served from cache — vector search with SHA-256 exact-match fallback.
@@ -31,7 +34,7 @@ Deploying AI models to production brings critical operational challenges such as
 
 > All this infrastructure requires no external server, Node.js/Python environment, or complex dependencies. **It comes as a zero-setup, single static executable (binary) ready to run in seconds.**
 
-**[⬇️ Download the latest release](https://github.com/ilter-ai/ilter/releases)**
+**[⬇️ Download the latest release](https://github.com/Toeghooch3g/ilter-adv/releases)**
 
 ```bash
 ./ilter serve
@@ -44,7 +47,7 @@ Deploying AI models to production brings critical operational challenges such as
 
 Paste this into Claude Code, Cursor, or any coding agent:
 
-> Set up ILTER (AI gateway) in this project by following the instructions here: https://raw.githubusercontent.com/ilter-ai/ilter/main/docs/agent-setup.md
+> Set up Ilter Advanced (AI gateway) in this project by following the instructions here: https://raw.githubusercontent.com/Toeghooch3g/ilter-adv/main/docs/agent-setup.md
 
 The agent picks binary vs. Docker, generates the admin key, reuses any provider key already in your project, starts the gateway, and points your app's `base_url` at it.
 
@@ -110,18 +113,18 @@ The agent picks binary vs. Docker, generates the admin key, reuses any provider 
 
 ## Features
 
-Every business integrating AI faces uncontrolled costs, privacy concerns, and unpredictable agent behaviors. ILTER solves these directly at the gateway level.
+Every business integrating AI faces uncontrolled costs, privacy concerns, and unpredictable agent behaviors. Ilter Advanced solves these directly at the gateway level.
 
 ### 🧩 MCP Gateway & Marketplace
 Connecting AI to your internal APIs or CRM usually requires heavy client-side modifications.
 - **Zero Client Changes:** Automatically injects tools from registered MCP servers into every chat completion request.
-- **Interception:** ILTER catches the `tool_call`, executes the MCP server tool locally (`stdio`/SSE), and returns the result to the model.
+- **Interception:** Ilter Advanced catches the `tool_call`, executes the MCP server tool locally (`stdio`/SSE), and returns the result to the model.
 - **OpenAPI Bridge:** Convert any REST API to an MCP tool list instantly.
 - **OAuth PKCE Support:** Standard OAuth PKCE authorization endpoints (`/.well-known/*`, `/authorize`, `/token`, `/register`) on port `8181` for remote MCP clients.
 - **Tri-Protocol Support:** Speaks all three published MCP revisions — `2024-11-05`, `2025-03-26`, `2026-07-28` — on both inbound (as MCP server) and outbound (as MCP client) sides, negotiating newest-first and bridging whatever versions each side actually supports. See [`docs/architecture.md`](docs/architecture.md#tri-protocol-mcp-support-2024-11-05--2025-03-26--2026-07-28) for the negotiation rules, per-version OAuth policies, and the async Tasks engine.
 
 ### ⚡ Smart Router
-Using expensive models for every simple question wastes engineering time and money. ILTER routes requests dynamically based on context.
+Using expensive models for every simple question wastes engineering time and money. Ilter Advanced routes requests dynamically based on context.
 - **Real-Time Scoring:** `<0.03ms` heuristic complexity score (0–100) based on word count, reasoning-required phrases, code blocks, and tool calls.
 - **Automatic Tier Selection:** Routes dynamically between economy, standard, and premium models.
 - **Custom Overrides:** E.g., `complexity > 50 → gpt-4o` or `prompt contains "analyze" → claude-sonnet`.
@@ -134,7 +137,8 @@ Don't get locked into a single vendor or disrupted by provider outages.
 - **Seamless Failover:** Switching from OpenAI to Anthropic during an outage requires zero code changes.
 
 ### 🧠 Semantic Cache
-- **Vector Search:** Redis Stack-backed similarity search to catch and serve repetitive queries.
+- **Vector Search:** Redis Stack or PostgreSQL (`pgvector`/`pgvectorscale`) backed similarity search to catch and serve repetitive queries. Backend chosen by `ILTER_CACHE_TYPE` (`redis` default | `postgres`).
+- **Provider-Selectable Embedding + Rerank:** Choose the embedding model with `ILTER_CACHE_EMBEDDING_MODEL=provider:model` and enable two-stage retrieval with `ILTER_CACHE_RERANK_MODEL=provider:model`.
 - **Exact-Match Fallback:** SHA-256 caching works even without an embedding model.
 - **Async Operations:** Cache writing does not block the primary request path.
 
@@ -144,27 +148,27 @@ Don't get locked into a single vendor or disrupted by provider outages.
 - **Actions:** Set per-rule severity to `block`, `warn`, or `mask`.
 
 ### 💰 Budget Control
-Per-token pricing creates end-of-month surprises. ILTER tracks costs in real-time for each API key and enforces hard limits.
+Per-token pricing creates end-of-month surprises. Ilter Advanced tracks costs in real-time for each API key and enforces hard limits.
 - **Hard Kill Switch:** Configurable daily and monthly spending limits (USD). Returns `429 budget_exceeded` the millisecond the limit is breached.
 - **Warning Thresholds:** Default 80% usage alerts.
 - **Real-time Tracking:** Cost breakdowns by model, provider, and individual keys via the dashboard.
 
 ### 🪪 PII Guard
-Sending customer data to cloud providers violates GDPR and HIPAA. ILTER masks this data before it ever leaves your network.
+Sending customer data to cloud providers violates GDPR and HIPAA. Ilter Advanced masks this data before it ever leaves your network.
 - **Triple-Layer Engine:** Bloom Filter + Aho-Corasick Trie + Regex working together.
 - **Detected Types:** Names (EN/TR), Emails, Phones, SSN/National IDs (TCKN), Credit Cards (Luhn validated), IPs.
 - **Three Modes:** Mask (`[PII_EMAIL]`), Reversible (`PII:EMAIL:a8b9f1` — restored in response/SSE stream), or Block (`422 pii_blocked`).
 - **Ultra-Fast:** `<0.04ms` latency overhead with `<5MB` memory footprint.
 
 ### 🌀 Agent Loop Detector
-Agentic workflows can enter infinite loops, generating massive bills overnight. ILTER catches them while you sleep.
+Agentic workflows can enter infinite loops, generating massive bills overnight. Ilter Advanced catches them while you sleep.
 - **Rate Limit:** Blocks if >30 requests/sec.
 - **Fingerprint Match:** Blocks if the exact same prompt is sent >5 times in a 20-request window.
 - **Cost Accumulation:** Blocks if >$5 is spent within 5 minutes on a single session.
 - **Session Depth:** Throttles if a single session exceeds 100 requests.
 
 ### ⏱️ Cron Engine
-Running periodic AI tasks (summaries, reports) usually requires external queues and workers. ILTER embeds this directly in the binary.
+Running periodic AI tasks (summaries, reports) usually requires external queues and workers. Ilter Advanced embeds this directly in the binary.
 - **No External Queue:** Uses standard cron expressions (e.g., `0 9 * * 1`).
 - **Workflow State:** Pass data between steps using `{{.Input}}` and `{{.prev}}`.
 - **Robust Execution:** Webhook triggers, exponential backoff, and dead-letter queues included.
@@ -199,7 +203,7 @@ To see the dashboard filled with mock costs, requests, and PII events:
 ./ilter init --demo && ./ilter serve
 ```
 
-Your first real request (Point your existing OpenAI SDK to ILTER):
+Your first real request (Point your existing OpenAI SDK to Ilter Advanced):
 ```bash
 curl -X POST http://localhost:8181/v1/chat/completions \
   -H "Authorization: Bearer <ilter-api-key>" \
@@ -225,12 +229,12 @@ curl -X POST http://localhost:8181/v1/chat/completions \
 
 ### API Formats
 
-ILTER isn't limited to OpenAI Chat Completions — it accepts multiple inbound wire formats and routes them all through the same pipeline (auth, budget, PII, guardrails, routing):
+Ilter Advanced isn't limited to OpenAI Chat Completions — it accepts multiple inbound wire formats and routes them all through the same pipeline (auth, budget, PII, guardrails, routing):
 
 | Endpoint | Format |
 |----------|--------|
 | `POST /v1/chat/completions` | OpenAI Chat (primary) |
-| `POST /v1/messages` | Anthropic Messages (e.g. Claude Code pointed at ILTER) |
+| `POST /v1/messages` | Anthropic Messages (e.g. Claude Code pointed at Ilter Advanced) |
 | `POST /v1/completions` | OpenAI legacy text completions |
 | `POST /v1/embeddings` | OpenAI Embeddings |
 | `POST /v1/rerank` | Cohere/TEI-style rerank |
@@ -243,7 +247,7 @@ ILTER isn't limited to OpenAI Chat Completions — it accepts multiple inbound w
 Your Application
     │  OpenAI API format
     ▼
-ILTER :8181
+Ilter Advanced :8181
     │
     ├─ Auth              — ilter-xxxx key (Argon2id/SHA-256 + LRU cache)
     ├─ Rate Limiter      — Redis / in-memory token bucket, RPM/TPM per key
@@ -261,14 +265,14 @@ ILTER :8181
            ├─ OpenRouter / Ollama / Qwen / OpenCode
            └─ ...
 
-ILTER :9191  →  Dashboard (Astro + React, Go embed)
-ILTER :9192  →  /metrics  (Prometheus, OpenTelemetry bridge)
+Ilter Advanced :9191  →  Dashboard (Astro + React, Go embed)
+Ilter Advanced :9192  →  /metrics  (Prometheus, OpenTelemetry bridge)
 ```
 
 - **Language:** Go 1.26.3, single binary, CGo-free (`CGO_ENABLED=0`), goroutine concurrency.
 - **Router:** `chi` v5.
 - **Database:** SQLite — `modernc.org/sqlite`, pure Go, WAL mode.
-- **Cache:** Redis Stack 7+ — optional, graceful degradation.
+- **Cache:** Semantic cache — Redis Stack 7+ (`redis` backend) or PostgreSQL `pgvector`/`pgvectorscale` (`postgres` backend); both optional, graceful degradation.
 - **Config:** Compiled defaults + `ILTER_*` env vars — no configuration file required.
 
 → Architecture details: [`docs/architecture.md`](docs/architecture.md)  
@@ -289,15 +293,15 @@ docker run -d \
   -v $(pwd)/data:/app/data \
   -e ILTER_ADMIN_API_KEY=<your-own-random-secret> \
   -e ILTER_PROVIDER_OPENAI_API_KEY=sk-... \
-  ghcr.io/ilter-ai/ilter:latest
+  ghcr.io/ilter-adv/ilter:latest
 
-# Full local stack: ILTER + Redis Stack + Ollama
+# Full local stack: Ilter Advanced + Redis Stack + Ollama
 docker compose up -d
 ```
 
 Without `ILTER_ADMIN_API_KEY` and a provider key both set, `serve` refuses to start — there'd be no way to authenticate or route requests — and exits with a message telling you to run `ilter init` or set both.
 
-Image size: **<20MB** (3-stage build: Bun web → Go UPX → empty `scratch` base image). This applies to the Docker image specifically — the plain binary from [Releases](https://github.com/ilter-ai/ilter/releases) (no UPX) is ~35-40MB.
+Image size: **<20MB** (3-stage build: Bun web → Go UPX → empty `scratch` base image). This applies to the Docker image specifically — the plain binary from [Releases](https://github.com/Toeghooch3g/ilter-adv/releases) (no UPX) is ~35-40MB.
 
 ---
 
@@ -336,7 +340,8 @@ make test       # go test -race -count=1 ./...
 make fix        # gofumpt + biome format
 ```
 
-Contribution guidelines: [`CONTRIBUTING.md`](CONTRIBUTING.md)
+Contribution guidelines: [`CONTRIBUTING.md`](CONTRIBUTING.md)  
+Agent/contributor short guide (repo layout, invariants, middleware chain, config model): [`AGENTS.md`](AGENTS.md)
 
 ---
 

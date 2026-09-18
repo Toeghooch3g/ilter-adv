@@ -2,16 +2,14 @@ package app
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
-	"io"
 	"log/slog"
-	"net/http"
 	"strings"
 
+	"github.com/ilter-ai/ilter/internal/config"
 	"github.com/ilter-ai/ilter/internal/config/openapi"
 	dashopenapi "github.com/ilter-ai/ilter/internal/dashboard"
 	"github.com/ilter-ai/ilter/internal/features/mcp"
+	"github.com/ilter-ai/ilter/internal/features/mcp/toolpricing"
 	iltermiddleware "github.com/ilter-ai/ilter/internal/middleware"
 	"github.com/ilter-ai/ilter/internal/model"
 	"github.com/ilter-ai/ilter/internal/model/catalog"
@@ -28,9 +26,46 @@ func (a *App) initMCP() {
 		return
 	}
 	a.mcpHandler.SetRegistry(mcpRegistry)
+	blockedToolsFn := func() []string { return a.cfgCache.Get().MCPBlockedTools }
+	mcpRegistry.SetBlockedToolsFn(blockedToolsFn)
 	mcpAuthorizer := mcp.NewAuthorizer(a.store, nil, cfg.MCP.DefaultPolicy)
 	mcpClients := mcp.NewClientManager(mcpRegistry)
 	a.mcpExecutor = mcp.NewExecutor(mcpRegistry, mcpClients, mcpAuthorizer, a.mcpAuditLogger, a.store.DB)
+	a.mcpExecutor.SetBlockedToolsFn(blockedToolsFn)
+
+	// Tool pricing: rules live in the runtime_config "tool_pricing" section.
+	// The resolver is rebuilt on every config-cache refresh (same pattern as
+	// the guardrails middleware) so pricing edits apply without restart.
+	var pricing *toolpricing.Resolver
+	rebuildPricing := func() {
+		rules, err := toolpricing.Load(context.Background(), a.store)
+		if err != nil {
+			slog.Warn("toolpricing: failed to load pricing rules; tool calls unbilled", "error", err)
+			pricing = nil
+			return
+		}
+		pricing = toolpricing.NewResolver(rules)
+	}
+	rebuildPricing()
+	a.cfgCache.OnChange(func(*config.Snapshot) { rebuildPricing() })
+	a.mcpExecutor.SetPricingResolver(func() *toolpricing.Resolver { return pricing })
+
+	// Bill priced tool calls against the caller's key budget and usage_daily.
+	if a.budgetMiddleware != nil {
+		a.mcpExecutor.SetBudgetRecorder(func(ctx context.Context, keyID string, cost float64) {
+			if err := a.budgetMiddleware.Enforcer().RecordUsage(ctx, keyID, cost); err != nil {
+				slog.Warn("mcp tool budget record failed", "key_id", keyID, "cost", cost, "error", err)
+			}
+		})
+	}
+	a.mcpExecutor.SetUsageRecorder(func(ctx context.Context, keyID, serverID, toolName string, cost float64) {
+		if a.store == nil {
+			return
+		}
+		if err := a.store.RecordMCPToolUsage(ctx, keyID, serverID, toolName, cost); err != nil {
+			slog.Warn("mcp tool usage record failed", "key_id", keyID, "tool", serverID+":"+toolName, "error", err)
+		}
+	})
 	mcpGateway := mcp.NewGateway(mcpRegistry, mcpAuthorizer, a.mcpAuditLogger, a.store, &cfg.MCP, a.mcpExecutor)
 	mcpGateway.SetConfigCache(a.cfgCache)
 
@@ -127,9 +162,20 @@ func (a *App) initMCP() {
 		return
 	}
 
+	// Server-side tool injection is a per-key opt-in (api_keys
+	// mcp_injection_enabled). Synthetic keys (dashboard/admin) and keys
+	// without the flag never get tools injected; the flag gates both the MCP
+	// and OpenAPI providers at this single choke point.
+	injectFn := func(keyID string, groupIDs []int) []model.Tool {
+		if !a.mcpInjectionAllowed(keyID) {
+			return nil
+		}
+		return providerSet.Inject(keyID, groupIDs)
+	}
+
 	a.mcpInjectMiddleware = iltermiddleware.NewMCPMiddleware(
 		a.cfgCache,
-		providerSet.Inject,
+		injectFn,
 		providerSet.Execute,
 		a.piiMaskerMiddleware,
 	)
@@ -138,12 +184,17 @@ func (a *App) initMCP() {
 		a.mcpInjectMiddleware.SetGuardrailsChecker(a.guardrailsMiddleware.Checker())
 	}
 
-	toolEventWriter := func(w io.Writer, eventType string, data json.RawMessage) {
-		_, _ = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", eventType, string(data))
-		if flusher, ok := w.(http.Flusher); ok {
-			flusher.Flush()
-		}
-	}
-	a.mcpInjectMiddleware.SetToolEventWriter(toolEventWriter)
 	a.mcpInjectMiddleware.SetSupportsToolsFn(catalog.ModelSupportsTools)
+}
+
+// mcpInjectionAllowed reports whether server-side MCP/OpenAPI tool injection
+// may run for keyID. It is a per-key opt-in: empty and synthetic (admin,
+// dev:*) key IDs are never allowed, and the key must exist and have
+// mcp_injection_enabled set.
+func (a *App) mcpInjectionAllowed(keyID string) bool {
+	if keyID == "" || mcp.IsSyntheticKeyID(keyID) {
+		return false
+	}
+	vk, err := a.store.GetAPIKey(context.Background(), keyID)
+	return err == nil && vk.MCPInjectionEnabled
 }

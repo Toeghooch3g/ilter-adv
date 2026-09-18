@@ -155,7 +155,7 @@ func TestGuardrailEvents_InsertAndProviderLookup(t *testing.T) {
 		t.Fatalf("SaveDiscoveredModels: %v", err)
 	}
 	if _, err := ts.store.DB.Exec(
-		`INSERT INTO provider_models (provider, model, active, tier, cost_in, cost_out) VALUES (?, ?, 1, 'standard', 0, 0)`,
+		`INSERT INTO provider_models (provider, model, active, category, cost_in, cost_out) VALUES (?, ?, 1, 'standard', 0, 0)`,
 		"openai", "gpt-4o",
 	); err != nil {
 		t.Fatalf("seed provider_models: %v", err)

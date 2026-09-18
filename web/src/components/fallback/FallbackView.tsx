@@ -3,7 +3,7 @@ import { useState } from 'react'
 import { api } from '../../lib/api'
 import { qk } from '../../lib/query'
 import { useApiMutation } from '../../lib/useApiMutation'
-import { ModelBadge, ModelSelector, providerMeta, TierBadge } from '../chat/ModelSelector'
+import { CategoryBadge, ModelBadge, ModelSelector, providerMeta } from '../chat/ModelSelector'
 import { FeatureStatus } from '../settings/FeatureStatus'
 import { Button } from '../ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card'
@@ -272,7 +272,7 @@ function FallbackViewContent() {
                                 </button>
                                 <span className="flex items-center gap-2">
                                   <span className="font-medium">{mInfo?.name || modelId}</span>
-                                  <TierBadge tier={mInfo?.tier} />
+                                  <CategoryBadge category={mInfo?.category} />
                                 </span>
                               </div>
                             ))}
@@ -327,7 +327,7 @@ function FallbackViewContent() {
                       <ModelBadge
                         modelId={c.model}
                         provider={mInfo?.provider || c.provider}
-                        tier={mInfo?.tier}
+                        category={mInfo?.category}
                         name={mInfo?.name}
                       />
                     )

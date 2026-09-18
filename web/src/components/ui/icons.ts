@@ -56,6 +56,7 @@ export {
   Trash2,
   TrendingUp,
   Unlock,
+  Upload,
   User,
   Wallet,
   Wand2,

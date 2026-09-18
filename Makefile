@@ -13,13 +13,22 @@ RTK        := $(or $(shell command -v rtk 2>/dev/null),)
 # and inject it into the Go binary via -ldflags. Nowhere else should hardcode
 # ilter's version.
 VERSION    := $(shell cat VERSION)
-LDFLAGS    := -X github.com/ilter-ai/ilter/internal/version.Version=$(VERSION)
+LDFLAGS    := -s -w -X github.com/ilter-ai/ilter/internal/version.Version=$(VERSION)
+
+# Set platform to build for
+export GOOS=linux
+export GOARCH=amd64
 
 ILTER_ADMIN_API_KEY ?= test
 export ILTER_ADMIN_API_KEY
 
 ILTER_REDIS_URL ?= redis://localhost:6379
 export ILTER_REDIS_URL
+
+# Postgres+Docker backend for the semantic cache (pgvectorscale).
+PG_SVC := ilter-postgres-1
+ILTER_CACHE_PG_DSN ?= postgres://ilter:ilter@localhost:5432/ilter_cache?sslmode=disable
+export ILTER_CACHE_PG_DSN
 
 check: check-go check-web
 
@@ -62,6 +71,13 @@ services-up:
 services-down:
 	$(RTK) docker-compose -f docker-compose.yaml stop ollama redis
 
+# Bring up the Postgres semantic-cache backend (pgvectorscale) alongside the
+# default services, and optionally the ilter instance wired to it (--profile pg).
+services-up-pg:
+	@$(RTK) docker-compose -f docker-compose.yaml --profile pg up -d --wait ollama postgres
+services-down-pg:
+	$(RTK) docker-compose -f docker-compose.yaml --profile pg stop ollama postgres ilter-pg
+
 dev: sync-version
 	@test -x "$(AIR_BIN)" || $(RTK) go install github.com/air-verse/air@latest
 	@pkill ilter 2>/dev/null || true
@@ -77,6 +93,12 @@ dev: sync-version
 
 test:
 	$(RTK) go test -race -count=1 ./...
+
+# Postgres semantic-cache integration tests. Requires a running pgvectorscale
+# Postgres (make services-up-pg) and Docker. Skips cleanly otherwise.
+test-pg:
+	ILTER_TEST_POSTGRES=1 $(RTK) go test -race -count=1 \
+		./internal/features/semanticcache/ -run TestPostgresBackend -v
 
 # E2E: Playwright dashboard tests (attaches to dev instance — requires `make dev`)
 test-e2e:

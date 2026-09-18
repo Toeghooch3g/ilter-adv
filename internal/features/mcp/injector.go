@@ -35,20 +35,15 @@ func (inj *Injector) GetAuthorizedOpenAITools(keyID string, groupIDs []int) []mo
 		return nil
 	}
 
-	toolNames := make([]string, 0, len(allTools))
-	for _, ti := range allTools {
-		toolNames = append(toolNames, ti.Tool.Name)
-	}
-
 	keyPrefix := inj.resolveKeyPrefix(keyID)
 
-	authorized := inj.authorizer.GetAuthorizedTools(keyPrefix, groupIDs, keyID, toolNames)
+	authorized := inj.authorizer.GetAuthorizedToolsForServers(keyPrefix, groupIDs, keyID, allTools)
 	if len(authorized) == 0 {
 		return nil
 	}
 	authSet := make(map[string]bool, len(authorized))
-	for _, name := range authorized {
-		authSet[name] = true
+	for _, ti := range authorized {
+		authSet[serverToolKey(ti.ServerID, ti.Tool.Name)] = true
 	}
 
 	out := buildAuthorizedOpenAITools(allTools, authSet)
@@ -60,31 +55,33 @@ func (inj *Injector) GetAuthorizedOpenAITools(keyID string, groupIDs []int) []mo
 	return out
 }
 
-// buildAuthorizedOpenAITools converts each tool in allTools whose bare name
-// is in authSet to model.Tool.
-//
-// Only namespace a tool name with its server ID when the bare name
-// collides across 2+ distinct servers — matches Registry.ResolveTool's
-// own conflict detection (registry.go) and Gateway.handleToolsList's
-// native MCP tools/list behavior (gateway.go). Collisions are computed
-// over every registered tool (not just this key's authorized subset) so
-// the name shown to the LLM stays resolvable regardless of which key is
-// asking. Weak models frequently fail to reproduce compound
-// "server__tool" names correctly (emitting a malformed or empty function
-// name) — prefixing only when genuinely ambiguous keeps most tool names
-// short and reliable to call.
-func buildAuthorizedOpenAITools(allTools []ToolInfo, authSet map[string]bool) []model.Tool {
-	nameServers := toolNameServerSets(allTools)
+// serverToolKey is the per-server map key for an authorized tool. It is only
+// compared against the corresponding key built in buildAuthorizedOpenAITools,
+// never parsed, so the separator never needs to round-trip through a tool
+// name. NUL cannot appear in tool names or server IDs (both are validated),
+// which keeps the key collision-free.
+func serverToolKey(serverID, toolName string) string {
+	return serverID + "\x00" + toolName
+}
 
+// buildAuthorizedOpenAITools converts each tool in allTools whose
+// (serverID, tool name) pair is in authSet to model.Tool. Keying the set
+// per-server lets a server-qualified deny (e.g. anginxbrowser_search) hide
+// a tool on only the denying server while the same bare name stays exposed
+// on another server.
+//
+// Every injected tool name is the server-prefixed exposed form
+// (ExposedToolName: "{server_name}-{tool_name}"), matching the names shown
+// by the gateway's and hub's tools/list — so the LLM's tool_calls round-trip
+// through Registry.ResolveTool, which resolves only prefixed names.
+func buildAuthorizedOpenAITools(allTools []ToolInfo, authSet map[string]bool) []model.Tool {
 	out := make([]model.Tool, 0, len(allTools))
 	for _, ti := range allTools {
-		if !authSet[ti.Tool.Name] {
+		if !authSet[serverToolKey(ti.ServerID, ti.Tool.Name)] {
 			continue
 		}
 		t := convertTool(ti.Tool)
-		if len(nameServers[ti.Tool.Name]) > 1 {
-			t.Function.Name = SanitizeToolName(ti.ServerID, t.Function.Name)
-		}
+		t.Function.Name = ExposedToolName(ti.ServerName, ti.ServerID, t.Function.Name)
 		out = append(out, t)
 	}
 	return out

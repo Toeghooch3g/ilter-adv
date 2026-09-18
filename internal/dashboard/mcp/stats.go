@@ -37,6 +37,17 @@ func (h *MCPHandler) GetStats(w http.ResponseWriter, _ *http.Request) {
 		slog.Warn("Failed to count MCP errors", "error", err)
 	}
 
+	var totalCost sql.NullFloat64
+	if err := h.store.DB.QueryRow(
+		"SELECT SUM(cost) FROM mcp_audit_log WHERE created_at >= datetime('now', '-24 hours')",
+	).Scan(&totalCost); err != nil {
+		slog.Warn("Failed to sum MCP tool spend", "error", err)
+	}
+	cost24h := 0.0
+	if totalCost.Valid {
+		cost24h = totalCost.Float64
+	}
+
 	callsByTool := []map[string]any{}
 	rows, err := h.store.DB.Query(`SELECT tool, COUNT(*) as count FROM mcp_audit_log
 		WHERE created_at >= datetime('now', '-24 hours') GROUP BY tool ORDER BY count DESC LIMIT 10`)
@@ -74,6 +85,7 @@ func (h *MCPHandler) GetStats(w http.ResponseWriter, _ *http.Request) {
 			"error_count":       errorCount,
 			"avg_duration_ms":   avgDur,
 			"calls_by_tool_24h": callsByTool,
+			"cost_24h":          cost24h, // USD tool spend in the last 24h
 		},
 	})
 }

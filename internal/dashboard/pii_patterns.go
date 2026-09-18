@@ -112,6 +112,7 @@ func (h *PIIHandler) HandleCreatePattern(w http.ResponseWriter, r *http.Request)
 	if err := pii.LoadPatternsFromDB(h.store.DB); err != nil {
 		slog.Warn("Failed to reload PII patterns after create", "error", err)
 	}
+	h.refreshAfterPatternChange()
 
 	slog.Info("PII pattern created", "name", req.Name)
 	model.WriteJSON(w, http.StatusCreated, map[string]any{"status": "ok", "name": req.Name})
@@ -183,6 +184,7 @@ func (h *PIIHandler) HandleUpdatePattern(w http.ResponseWriter, r *http.Request)
 	if err := pii.LoadPatternsFromDB(h.store.DB); err != nil {
 		slog.Warn("Failed to reload PII patterns after update", "error", err)
 	}
+	h.refreshAfterPatternChange()
 
 	slog.Info("PII pattern updated", "name", name)
 	model.WriteJSON(w, http.StatusOK, map[string]any{"status": "ok", "name": name})
@@ -210,6 +212,7 @@ func (h *PIIHandler) HandleDeletePattern(w http.ResponseWriter, r *http.Request)
 	if err := pii.LoadPatternsFromDB(h.store.DB); err != nil {
 		slog.Warn("Failed to reload PII patterns after delete", "error", err)
 	}
+	h.refreshAfterPatternChange()
 
 	slog.Info("PII pattern deleted", "name", name)
 	w.WriteHeader(http.StatusNoContent)
@@ -222,6 +225,7 @@ func (h *PIIHandler) HandleReloadPatterns(w http.ResponseWriter, _ *http.Request
 		model.WriteJSONError(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
+	h.refreshAfterPatternChange()
 	slog.Info("PII patterns reloaded")
 	model.WriteJSON(w, http.StatusOK, map[string]any{"status": "ok"})
 }

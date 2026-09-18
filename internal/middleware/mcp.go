@@ -27,7 +27,6 @@ type MCPInjectMiddleware struct {
 	executeFn         func(ctx context.Context, keyID string, keyPrefix string, toolCalls []model.ToolCall) ([]model.Message, []bool)
 	piiMasker         *PIIMaskerMiddleware
 	guardrailsChecker *guardrails.Checker
-	toolEventWriter   func(w io.Writer, eventType string, data json.RawMessage)
 	supportsToolsFn   func(modelID string) bool
 	cfg               config.MCPInjectionConfig
 	cfgMu             sync.RWMutex
@@ -77,11 +76,6 @@ func (m *MCPInjectMiddleware) SetGuardrailsChecker(c *guardrails.Checker) {
 	m.guardrailsChecker = c
 }
 
-// SetToolEventWriter sets the optional event writer for Chat UI visibility.
-func (m *MCPInjectMiddleware) SetToolEventWriter(w func(w io.Writer, eventType string, data json.RawMessage)) {
-	m.toolEventWriter = w
-}
-
 // SetSupportsToolsFn sets the optional function that reports whether a model supports native tool calling.
 func (m *MCPInjectMiddleware) SetSupportsToolsFn(fn func(modelID string) bool) {
 	m.supportsToolsFn = fn
@@ -118,6 +112,16 @@ func (m *MCPInjectMiddleware) Handler(next http.Handler) http.Handler {
 			return
 		}
 
+		// Requests the client fully controls — its own tool definitions or its
+		// own in-flight tool results from a native tool loop — are proxied
+		// byte-identical. Ilter never injects tools into, or intercepts, a
+		// client-run tool loop.
+		if len(req.Tools) > 0 || mcp.HasToolResult(req.Messages) {
+			r.Body = io.NopCloser(bytes.NewBuffer(body))
+			next.ServeHTTP(w, r)
+			return
+		}
+
 		modified := m.maybeInjectTools(r.Context(), &req)
 		if modified {
 			newBody, _ := json.Marshal(req)
@@ -127,7 +131,7 @@ func (m *MCPInjectMiddleware) Handler(next http.Handler) http.Handler {
 			r.Body = io.NopCloser(bytes.NewBuffer(body))
 		}
 
-		if !modified && len(req.Tools) == 0 && !mcp.HasToolSentinel(req.Messages) && !mcp.HasToolResult(req.Messages) {
+		if !modified && !mcp.HasToolSentinel(req.Messages) {
 			next.ServeHTTP(w, r)
 			return
 		}

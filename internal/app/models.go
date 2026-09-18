@@ -8,7 +8,7 @@ import (
 	"github.com/ilter-ai/ilter/internal/model/catalog"
 )
 
-func (a *App) discoverModelsAtStartup() {
+func (a *App) discoverModels(force bool) {
 	cfg := a.cfg
 	reg := a.reg
 	store := a.store
@@ -21,7 +21,7 @@ func (a *App) discoverModelsAtStartup() {
 
 	for _, pCfg := range cfg.Providers {
 		lastDisc, errDisc := store.GetLatestDiscovery(pCfg.Name)
-		if errDisc == nil && !lastDisc.IsZero() && time.Since(lastDisc) < cooldown {
+		if !force && errDisc == nil && !lastDisc.IsZero() && time.Since(lastDisc) < cooldown {
 			slog.Debug("models still fresh, skipping discovery",
 				"provider", pCfg.Name, "last_discovery", lastDisc.Format("15:04:05"))
 			skippedCount++
@@ -94,9 +94,12 @@ func (a *App) syncModelsToDB() {
 	// without a restart. Nil-safe: at boot a.lb is nil here (initLoadBalancer
 	// runs after sync), but it reads provider_models directly so routes are
 	// correct. At runtime after a seed/manual INSERT, a.lb is non-nil and
-	// RebuildProviders syncs the in-memory routes.
+	// RebuildProviders syncs the in-memory routes from persisted rows.
 	if a.lb != nil && a.reg != nil {
-		a.lb.RebuildProviders(a.reg)
-		slog.Info("routes rebuilt after model sync")
+		if err := a.lb.RebuildProviders(a.reg, providerModelEntries(a.store)); err != nil {
+			slog.Error("failed to rebuild routes after model sync", "error", err)
+		} else {
+			slog.Info("routes rebuilt after model sync")
+		}
 	}
 }

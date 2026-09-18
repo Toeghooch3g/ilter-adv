@@ -12,6 +12,7 @@ export const qk = {
   rateLimiting: ['rate-limiting'] as const,
   semanticCache: ['semantic-cache'] as const,
   models: ['models'] as const,
+  categories: ['models', 'categories'] as const,
   providers: ['providers'] as const,
   features: ['features'] as const,
   guardrails: ['guardrails'] as const,

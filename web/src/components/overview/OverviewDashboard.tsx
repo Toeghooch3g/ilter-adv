@@ -6,13 +6,13 @@ import { KpiCards } from './KpiCards'
 import { useOverview } from './useOverview'
 
 function OverviewDashboardContent() {
-  const { stats, providers, providersLoading, costSummary, features, toggleFeature, loading } = useOverview()
+  const { stats, providers, providersLoading, costSummary, features, loading } = useOverview()
 
   return (
     <div className="space-y-6">
       <KpiCards stats={stats} loading={loading} features={features} />
       <AnalyticsCharts costSummary={costSummary} stats={stats} />
-      {features.length > 0 && <FeatureControlCenter features={features} onToggle={toggleFeature} />}
+      {features.length > 0 && <FeatureControlCenter features={features} />}
       <ActiveProviders providers={providers} loading={providersLoading} />
     </div>
   )

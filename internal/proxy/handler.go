@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -95,7 +96,13 @@ func (h *Handler) emitStandard() bool {
 // Priority: middleware-selected model (from SmartRouterMiddleware) > explicit model in the
 // request body. Returns ok=false and writes an error response
 // when no model can be resolved.
-func (h *Handler) resolveRequestedModel(w http.ResponseWriter, r *http.Request, req *model.ChatCompletionRequest, meta *reqmeta.RequestLoggingMetadata) (selectedModel string, complexityScore float64, ok bool) {
+//
+// A request model of the form "provider/model" pins the request to exactly
+// that provider when the prefix names a configured provider serving the
+// model; the caller filters SelectCandidates to it. Any other prefixed name
+// has its prefix stripped as before (garbage prefixes must not break
+// requests). The returned pinnedProvider is non-empty only for a valid pin.
+func (h *Handler) resolveRequestedModel(w http.ResponseWriter, r *http.Request, req *model.ChatCompletionRequest, meta *reqmeta.RequestLoggingMetadata) (selectedModel string, complexityScore float64, pinnedProvider string, ok bool) {
 	// 1. Check if SmartRouterMiddleware already selected a model
 	if midModel, ok := r.Context().Value(middleware.StrategyKey).(string); ok && midModel != "" {
 		selectedModel = midModel
@@ -113,15 +120,27 @@ func (h *Handler) resolveRequestedModel(w http.ResponseWriter, r *http.Request, 
 		}
 	} else {
 		model.WriteJSONError(w, http.StatusBadRequest, model.ErrTypeInvalidRequest, "no model selected in request")
-		return "", 0, false
+		return "", 0, "", false
 	}
 
-	if canonical := catalog.CanonicalModelID(selectedModel); canonical != selectedModel {
-		slog.Debug("model: stripped provider prefix", "before", selectedModel, "after", canonical)
-		selectedModel = canonical
+	// Provider pinning: "provider/model" resolves to that provider's route
+	// for the model. Smart-router-selected models are already bare names, so
+	// pinning only ever fires for an explicit request-body model. A nil lb
+	// (unit-test handlers without routing) behaves as the old strip-only path.
+	if h.lb != nil {
+		if before, after, hasSlash := strings.Cut(selectedModel, "/"); hasSlash && after != "" && h.lb.HasProviderModel(before, after) {
+			pinnedProvider = before
+			selectedModel = after
+		}
+	}
+	if pinnedProvider == "" {
+		if canonical := catalog.CanonicalModelID(selectedModel); canonical != selectedModel {
+			slog.Debug("model: stripped provider prefix", "before", selectedModel, "after", canonical)
+			selectedModel = canonical
+		}
 	}
 
-	return selectedModel, complexityScore, true
+	return selectedModel, complexityScore, pinnedProvider, true
 }
 
 func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
@@ -141,7 +160,7 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		meta.SetKeyID(keyID)
 	}
 
-	selectedModel, complexityScore, ok := h.resolveRequestedModel(w, r, &req, meta)
+	selectedModel, complexityScore, pinnedProvider, ok := h.resolveRequestedModel(w, r, &req, meta)
 	if !ok {
 		h.recordErrorAudit(r, nil, "", http.StatusBadRequest, fmt.Errorf("no model selected in request"), start, req.Messages)
 		return
@@ -154,6 +173,20 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		h.recordErrorAudit(r, nil, selectedModel, http.StatusNotFound, err, start, req.Messages)
 		model.WriteJSONError(w, http.StatusNotFound, model.ErrTypeModelNotFound, err.Error())
 		return
+	}
+
+	// A "provider/model" request pins dispatch to exactly that provider:
+	// drop every candidate that isn't the pinned one before dispatch.
+	if pinnedProvider != "" {
+		candidates = slices.DeleteFunc(candidates, func(c cooldown.Candidate) bool {
+			return c.Provider != pinnedProvider
+		})
+		if len(candidates) == 0 {
+			err := fmt.Errorf("no providers configured for model: %s (pinned provider %q)", selectedModel, pinnedProvider)
+			h.recordErrorAudit(r, nil, selectedModel, http.StatusNotFound, err, start, req.Messages)
+			model.WriteJSONError(w, http.StatusNotFound, model.ErrTypeModelNotFound, err.Error())
+			return
+		}
 	}
 
 	routes, _ := h.lb.GetRoutes(req.Model)
@@ -189,11 +222,22 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Both downstream handlers (streaming and non-streaming) close resp.Body
+	// themselves; this defer guards the transient period so the linter can
+	// verify the body is always released. Double-close is a no-op for net/http.
+	defer func() { _ = resp.Body.Close() }()
+
 	finalRoute := smartrouter.Route{
 		Provider: p,
 		Model: config.ModelConfig{
 			Name: finalCandidate.Model,
 		},
+	}
+	// Recover the full ModelConfig (pricing fields) for the provider/model the
+	// request was actually dispatched to. SelectCandidates yields only names;
+	// without this the cost calc / pricing headers would read zero prices.
+	if r, ok := h.lb.GetRouteByProvider(finalCandidate.Model, p.Name()); ok {
+		finalRoute.Model = r.Model
 	}
 
 	if req.Stream {
@@ -328,12 +372,28 @@ func (h *Handler) writeNonStreamingResponse(ctx context.Context, w http.Response
 	}
 	w.Header().Set("X-Ilter-Model-Actual", actualModel)
 	if chatResp.Usage != nil {
-		actualCost := CalculateCost(finalRoute.Model, chatResp.Usage.PromptTokens, chatResp.Usage.CompletionTokens)
+		actualCost := CalculateCost(finalRoute.Model, chatResp.Usage)
+		chatResp.Usage.IlterCost = actualCost
+		u := chatResp.Usage
+		cachedTokens := 0
+		if u.PromptTokensDetails != nil {
+			cachedTokens = u.PromptTokensDetails.CachedTokens
+		}
+		inputTokens := u.PromptTokens
+		if u.CacheReadIncludedInPrompt {
+			inputTokens = max(u.PromptTokens-cachedTokens, 0)
+		}
 		setPostResponse(w, postResponse{
-			Model:            finalRoute.Model.Name,
-			PromptTokens:     chatResp.Usage.PromptTokens,
-			CompletionTokens: chatResp.Usage.CompletionTokens,
-			ActualCost:       actualCost,
+			Model:               finalRoute.Model.Name,
+			PromptTokens:        u.PromptTokens,
+			CompletionTokens:    u.CompletionTokens,
+			CachedTokens:        cachedTokens,
+			CacheCreationTokens: u.CacheCreationInputTokens,
+			InputCost:           math.Round(float64(inputTokens)*finalRoute.Model.CostPerInputToken*1e6) / 1e6,
+			CachedCost:          math.Round(float64(cachedTokens)*finalRoute.Model.CostPerCachedInputToken*1e6) / 1e6,
+			CacheWriteCost:      math.Round(float64(u.CacheCreationInputTokens)*finalRoute.Model.CostPerCacheWriteToken*1e6) / 1e6,
+			OutputCost:          math.Round(float64(u.CompletionTokens)*finalRoute.Model.CostPerOutputToken*1e6) / 1e6,
+			ActualCost:          actualCost,
 		}, h.emitStandard())
 		w.Header().Set("X-Ilter-Cost", strconv.FormatFloat(math.Round(actualCost*1e6)/1e6, 'f', -1, 64))
 	}
@@ -346,10 +406,22 @@ func (h *Handler) writeNonStreamingResponse(ctx context.Context, w http.Response
 	h.recordPostResponse(r, chatResp, finalRoute, start)
 }
 
+// requestLogEnabled reports whether request *contents* (prompt preview and
+// request/response bodies) should be written to the audit log. The runtime
+// feature:request_log flag (hot) overrides the boot Audit.Enabled default;
+// when disabled, aggregate rows (tokens, cost, latency, status) are still
+// written but content fields are blanked.
+func (h *Handler) requestLogEnabled() bool {
+	if h.configCache != nil && h.configCache.Get() != nil {
+		return config.IsEnabled(h.configCache, "request_log")
+	}
+	return h.cfg != nil && h.cfg.Audit.Enabled
+}
+
 // buildAuditPromptPreview truncates the last message's text content to
 // 200 chars for the audit log, if prompt logging is enabled.
 func (h *Handler) buildAuditPromptPreview(messages []model.Message) string {
-	if h.cfg == nil || !h.cfg.Audit.LogPrompts || len(messages) == 0 {
+	if !h.requestLogEnabled() || h.cfg == nil || !h.cfg.Audit.LogPrompts || len(messages) == 0 {
 		return ""
 	}
 	lastMsg := messages[len(messages)-1]
@@ -366,7 +438,7 @@ func (h *Handler) buildAuditPromptPreview(messages []model.Message) string {
 // buildAuditRequestBody JSON-encodes messages for the audit log, if body
 // logging is enabled.
 func (h *Handler) buildAuditRequestBody(messages []model.Message) string {
-	if h.cfg == nil || !h.cfg.Audit.LogBodies || len(messages) == 0 {
+	if !h.requestLogEnabled() || h.cfg == nil || !h.cfg.Audit.LogBodies || len(messages) == 0 {
 		return ""
 	}
 	b, err := json.Marshal(map[string]any{"messages": messages})
@@ -379,7 +451,7 @@ func (h *Handler) buildAuditRequestBody(messages []model.Message) string {
 // buildAuditResponseBody JSON-encodes chatResp for the audit log, if body
 // logging is enabled.
 func (h *Handler) buildAuditResponseBody(chatResp *model.ChatCompletionResponse) string {
-	if h.cfg == nil || !h.cfg.Audit.LogBodies || chatResp == nil {
+	if !h.requestLogEnabled() || h.cfg == nil || !h.cfg.Audit.LogBodies || chatResp == nil {
 		return ""
 	}
 	b, err := json.Marshal(chatResp)
@@ -419,29 +491,39 @@ func (h *Handler) recordAudit(
 
 	promptTokens := 0
 	completionTokens := 0
+	cachedTokens := 0
+	cacheCreationTokens := 0
+	var usage *model.Usage
 	if chatResp != nil && chatResp.Usage != nil {
-		promptTokens = chatResp.Usage.PromptTokens
-		completionTokens = chatResp.Usage.CompletionTokens
+		usage = chatResp.Usage
+		promptTokens = usage.PromptTokens
+		completionTokens = usage.CompletionTokens
+		if usage.PromptTokensDetails != nil {
+			cachedTokens = usage.PromptTokensDetails.CachedTokens
+		}
+		cacheCreationTokens = usage.CacheCreationInputTokens
 	}
 
-	cost := CalculateCost(route.Model, promptTokens, completionTokens)
+	cost := CalculateCost(route.Model, usage)
 	latencyMs := int(time.Since(start) / time.Millisecond)
 
 	h.auditLogger.LogAsync(middleware.AuditLogEntry{
-		IPAddress:        extractClientIP(r),
-		KeyID:            reqmeta.GetKeyID(r.Context()),
-		Model:            requestedModel,
-		Provider:         route.Provider.Name(),
-		PromptTokens:     promptTokens,
-		CompletionTokens: completionTokens,
-		TotalCost:        cost,
-		LatencyMs:        latencyMs,
-		StatusCode:       statusCode,
-		CacheHit:         cacheHit,
-		PromptPreview:    h.buildAuditPromptPreview(messages),
-		RequestBody:      h.buildAuditRequestBody(messages),
-		ResponseBody:     h.buildAuditResponseBody(chatResp),
-		ComplexityScore:  requestComplexityScore(r.Context()),
+		IPAddress:           extractClientIP(r),
+		KeyID:               reqmeta.GetKeyID(r.Context()),
+		Model:               requestedModel,
+		Provider:            route.Provider.Name(),
+		PromptTokens:        promptTokens,
+		CompletionTokens:    completionTokens,
+		CachedTokens:        cachedTokens,
+		CacheCreationTokens: cacheCreationTokens,
+		TotalCost:           cost,
+		LatencyMs:           latencyMs,
+		StatusCode:          statusCode,
+		CacheHit:            cacheHit,
+		PromptPreview:       h.buildAuditPromptPreview(messages),
+		RequestBody:         h.buildAuditRequestBody(messages),
+		ResponseBody:        h.buildAuditResponseBody(chatResp),
+		ComplexityScore:     requestComplexityScore(r.Context()),
 	})
 }
 
@@ -466,7 +548,7 @@ func (h *Handler) recordErrorAudit(
 	}
 
 	var responseBody string
-	if h.cfg != nil && h.cfg.Audit.LogBodies && err != nil {
+	if h.requestLogEnabled() && h.cfg != nil && h.cfg.Audit.LogBodies && err != nil {
 		responseBody = err.Error()
 	}
 
@@ -510,8 +592,12 @@ func (h *Handler) Models(w http.ResponseWriter, _ *http.Request) {
 
 	data := make([]map[string]any, 0, len(infos))
 	for _, info := range infos {
+		// Ids are provider-prefixed ("provider/model") so clients that list
+		// models can pin a provider by echoing the id straight back into a
+		// chat request. provider/owned_by/type entries stay separate fields
+		// for OpenAI-compatible clients.
 		data = append(data, map[string]any{
-			"id":       info.Name,
+			"id":       info.Provider + "/" + info.Name,
 			"object":   "model",
 			"created":  time.Now().Unix(),
 			"owned_by": info.OwnedBy,

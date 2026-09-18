@@ -84,7 +84,7 @@ func (a *App) RunServe() error {
 	a.initMiddleware(a.rg, cacheGuard)
 	defer a.auditLoggerMiddleware.Close()
 
-	a.discoverModelsAtStartup()
+	a.discoverModels(false)
 	a.syncModelsToDB()
 
 	lb, loopDetector, err := initLoadBalancer(cfg, a.reg, a.store, a.cfgCache)
@@ -93,6 +93,10 @@ func (a *App) RunServe() error {
 	}
 	a.lb = lb
 	a.loopDetector = loopDetector
+
+	// Hot-reload the provider registry + routes when the runtime provider set
+	// changes (provider create/edit, model-override upload), without a restart.
+	a.watchProviderReload()
 
 	proxyHandler := proxy.NewHandler(lb, a.auditLoggerMiddleware, a.budgetMiddleware.Enforcer(), loopDetector)
 	proxyHandler.SetStore(a.store)
@@ -172,6 +176,7 @@ func (a *App) RunServe() error {
 
 	a.initMCP()
 	a.initJobs()
+	a.watchJobsFlag()
 	a.initOTel()
 
 	// Auto-sync MCP servers and OpenAPI specs in background on startup

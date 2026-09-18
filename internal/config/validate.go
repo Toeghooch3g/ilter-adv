@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/ilter-ai/ilter/internal/features/mcp/toolpricing"
 	"github.com/ilter-ai/ilter/internal/model"
 )
 
@@ -14,6 +15,8 @@ import (
 var KnownConfigSections = []string{
 	"provider",
 	"mcp_server",
+	"mcp",
+	"tool_pricing",
 	"guardrail_rule",
 	"routing_strategy",
 	"feature_flag",
@@ -59,6 +62,10 @@ func ValidateRuntimeConfig(section string, rawJSON []byte) (*ValidationResult, e
 		return validateProvider(rawJSON)
 	case "mcp_server":
 		return validateMCPServer(rawJSON)
+	case "mcp":
+		return validateMCPConfig(rawJSON)
+	case "tool_pricing":
+		return validateToolPricing(rawJSON)
 	case "guardrail_rule":
 		return validateGuardrailRule(rawJSON)
 	case "routing_strategy":
@@ -94,6 +101,79 @@ func validateMCPServer(raw []byte) (*ValidationResult, error) {
 	}
 	if err := s.Validate(); err != nil {
 		return resultFromErr(err)
+	}
+	return &ValidationResult{Valid: true}, nil
+}
+
+// validateToolPricing validates the generic tool_pricing write payload. The
+// generic config CRUD stores the rule document under a "value" field, which
+// may arrive as a JSON object directly ({"value": {...}}) or as a
+// JSON-encoded string of one ({"value": "{...}"}).
+func validateToolPricing(raw []byte) (*ValidationResult, error) {
+	var body struct {
+		Value json.RawMessage `json:"value"`
+	}
+	if err := json.Unmarshal(raw, &body); err != nil {
+		return nil, fmt.Errorf("unmarshal tool_pricing: %w", err)
+	}
+	if len(body.Value) == 0 {
+		return &ValidationResult{Valid: true}, nil
+	}
+	rawRule := body.Value
+	if body.Value[0] == '"' {
+		var s string
+		if err := json.Unmarshal(body.Value, &s); err != nil {
+			return resultFromErr(fmt.Errorf("invalid value: must be a tool pricing rule JSON object"))
+		}
+		rawRule = []byte(s)
+	}
+	var rule toolpricing.Rule
+	if err := json.Unmarshal(rawRule, &rule); err != nil {
+		return resultFromErr(fmt.Errorf("invalid value: must be a tool pricing rule JSON object"))
+	}
+	if err := rule.Validate(); err != nil {
+		return resultFromErr(err)
+	}
+	return &ValidationResult{Valid: true}, nil
+}
+
+// validateMCPConfig validates the generic MCP runtime_config write payload.
+// The generic config CRUD stores scalar values under a "value" field (a JSON
+// string for scalar keys, or a JSON array/object for structured keys like
+// blocked_tools), so this validator accepts either shape for the
+// "blocked_tools" key and checks that every entry is a nonempty string.
+// Unknown keys in the same payload pass through unvalidated (existing
+// behavior for unknown keys).
+func validateMCPConfig(raw []byte) (*ValidationResult, error) {
+	var body struct {
+		Value json.RawMessage `json:"value"`
+	}
+	if err := json.Unmarshal(raw, &body); err != nil {
+		return nil, fmt.Errorf("unmarshal mcp config: %w", err)
+	}
+	if len(body.Value) == 0 {
+		return &ValidationResult{Valid: true}, nil
+	}
+
+	// Value may arrive as a JSON array directly ({"value": ["a","b"]}) or as
+	// a JSON-encoded string of an array ({"value": "[\"a\",\"b\"]"}).
+	var rawArr []byte = body.Value
+	if body.Value[0] == '"' {
+		var s string
+		if err := json.Unmarshal(body.Value, &s); err != nil {
+			return resultFromErr(fmt.Errorf("invalid value: must be a JSON array of tool names"))
+		}
+		rawArr = []byte(s)
+	}
+
+	var names []string
+	if err := json.Unmarshal(rawArr, &names); err != nil {
+		return resultFromErr(fmt.Errorf("invalid value: must be a JSON array of tool names"))
+	}
+	for i, name := range names {
+		if strings.TrimSpace(name) == "" {
+			return resultFromErr(fmt.Errorf("blocked tool name at index %d must be a nonempty string", i))
+		}
 	}
 	return &ValidationResult{Valid: true}, nil
 }

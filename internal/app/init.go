@@ -2,11 +2,12 @@ package app
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -17,9 +18,9 @@ import (
 	"github.com/ilter-ai/ilter/internal/features/circuitbreaker"
 	"github.com/ilter-ai/ilter/internal/features/loopdetect"
 	"github.com/ilter-ai/ilter/internal/features/pii"
+	"github.com/ilter-ai/ilter/internal/features/semanticcache"
 	"github.com/ilter-ai/ilter/internal/features/smartrouter"
 	iltermiddleware "github.com/ilter-ai/ilter/internal/middleware"
-	"github.com/ilter-ai/ilter/internal/model"
 	"github.com/ilter-ai/ilter/internal/platform/logging"
 	"github.com/ilter-ai/ilter/internal/provider"
 )
@@ -75,40 +76,18 @@ func (a *App) initStore() error {
 }
 
 func loadProvidersFromDB(store *db.SQLiteStore) []config.ProviderConfig {
-	entries, err := store.GetBySection(context.Background(), "provider")
+	providerEntries, err := store.GetBySection(context.Background(), "provider")
 	if err != nil {
 		slog.Warn("no providers in runtime_config (run 'ilter init' first)", "error", err)
 		return nil
 	}
-
-	var providers []config.ProviderConfig
-	for name, raw := range entries {
-		var reg model.ProviderRegistration
-		if err := json.Unmarshal([]byte(raw), &reg); err != nil {
-			slog.Warn("failed to parse provider from runtime_config", "name", name, "error", err)
-			continue
-		}
-		providers = append(providers, providerRegToConfig(reg))
+	overrideEntries, errOver := store.GetBySection(context.Background(), "model_overrides")
+	if errOver != nil {
+		slog.Warn("failed to read model_overrides from runtime_config", "error", errOver)
 	}
-	return providers
-}
-
-func providerRegToConfig(reg model.ProviderRegistration) config.ProviderConfig {
-	return config.ProviderConfig{
-		Name:            reg.Name,
-		Type:            reg.Provider,
-		BaseURL:         reg.BaseURL,
-		APIKey:          reg.APISecretKey,
-		Timeout:         reg.Timeout,
-		MaxRetries:      reg.MaxRetries,
-		Headers:         reg.Headers,
-		DiscoveryPublic: reg.DiscoveryPublic,
-		CircuitBreaker: config.CircuitBreakerConfig{
-			MaxFailures:         reg.CircuitBreaker.MaxFailures,
-			Timeout:             reg.CircuitBreaker.Timeout,
-			HalfOpenMaxRequests: reg.CircuitBreaker.HalfOpenMaxRequests,
-		},
-	}
+	// Delegate to the shared parser so the boot provider set stays identical to
+	// the config-cache snapshot (which the runtime registry hot-reloads from).
+	return config.ProviderConfigsFromSections(providerEntries, overrideEntries)
 }
 
 func (a *App) setupLogging() {
@@ -181,9 +160,85 @@ func (a *App) initMiddleware(rg, cacheGuard *circuitbreaker.RedisBreaker) {
 	a.rateLimitMiddleware = rlMw
 
 	a.budgetMiddleware = iltermiddleware.NewBudgetMiddleware(cfg.Budget, rg, store, a.cfgCache)
-	a.semanticCacheMiddleware = iltermiddleware.NewSemanticCacheMiddleware(cfg.Cache, cacheGuard, a.cfgCache)
+
+	embedder, reranker := a.resolveCacheEmbedding(cfg.Cache)
+	a.semanticCacheMiddleware = iltermiddleware.NewSemanticCacheMiddleware(cfg.Cache, cacheGuard, a.cfgCache, embedder, reranker)
 
 	a.auditLoggerMiddleware = iltermiddleware.NewAuditLoggerMiddleware(store)
+}
+
+// resolveCacheEmbedding resolves the semantic-cache embedder (probing/persisting
+// its dimension) and the optional reranker from cfg. Any resolution failure is
+// logged and degrades the cache to exact-only / top-1 mode rather than failing
+// the boot.
+func (a *App) resolveCacheEmbedding(cfg config.CacheConfig) (semanticcache.Embedder, semanticcache.Reranker) {
+	if cfg.Type == "disabled" {
+		// Fully disabled caching: no embedder, no dimension probe, and no
+		// requirement for Redis, Postgres, or any embedding provider. The
+		// middleware short-circuits on the disabled backend, so no embedding
+		// is ever attempted.
+		return nil, nil
+	}
+	embedder, err := semanticcache.ResolveEmbedder(a.reg, cfg)
+	if err != nil {
+		slog.Error("semantic cache: failed to resolve embedder; cache disabled", "error", err)
+		return nil, nil
+	}
+	if embedder != nil {
+		a.ensureCacheDim(cfg, embedder)
+	}
+
+	var reranker semanticcache.Reranker
+	if cfg.RerankModel != "" {
+		providerName, model, ok := strings.Cut(cfg.RerankModel, ":")
+		if !ok || providerName == "" || model == "" {
+			slog.Error("semantic cache: ILTER_CACHE_RERANK_MODEL must be provider:model; rerank disabled", "value", cfg.RerankModel)
+		} else {
+			r, err := semanticcache.NewProviderReranker(a.reg, providerName, model)
+			if err != nil {
+				slog.Error("semantic cache: failed to resolve reranker; top-1 mode", "error", err)
+			} else {
+				reranker = r
+			}
+		}
+	}
+	return embedder, reranker
+}
+
+// ensureCacheDim probes the embedder's dimension (or reuses a persisted value)
+// and stores it in runtime_config so restarts with the same model skip the probe.
+func (a *App) ensureCacheDim(cfg config.CacheConfig, embedder semanticcache.Embedder) {
+	const section = "semantic_cache"
+	const dimKey = "embedding_dim"
+	const modelKey = "embedding_model"
+
+	// Reuse a persisted dim only when the model that produced it matches.
+	storedModel, _ := a.store.GetRuntimeConfigEntry(context.Background(), section, modelKey)
+	if storedModel != nil && storedModel.Value == cfg.EmbeddingModel {
+		if stored, err := a.store.GetRuntimeConfigEntry(context.Background(), section, dimKey); err == nil && stored.Value != "" {
+			if dim, err := strconv.Atoi(stored.Value); err == nil && dim > 0 {
+				if pe, ok := embedder.(*semanticcache.ProviderEmbedder); ok {
+					pe.SetDim(dim)
+					slog.Info("semantic cache: embedding_dim from runtime_config (skipped probe)", "dim", dim, "model", cfg.EmbeddingModel)
+					return
+				}
+			}
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	dim, err := semanticcache.ProbeDim(ctx, embedder)
+	if err != nil {
+		slog.Error("semantic cache: dim probe failed; cache will operate in exact/top-1 mode", "error", err, "model", cfg.EmbeddingModel)
+		return
+	}
+	if err := a.store.UpsertRuntimeConfig(context.Background(), section, dimKey, fmt.Sprintf("%d", dim), "boot"); err != nil {
+		slog.Warn("semantic cache: failed to persist embedding_dim", "error", err)
+	} else {
+		_ = a.store.UpsertRuntimeConfig(context.Background(), section, modelKey, cfg.EmbeddingModel, "boot")
+	}
+	slog.Info("semantic cache: probed embedding_dim", "dim", dim, "model", cfg.EmbeddingModel)
 }
 
 func initLoadBalancer(cfg *config.Config, reg *provider.Registry, store *db.SQLiteStore, cfgCache *config.Cache) (*smartrouter.LoadBalancer, *loopdetect.Detector, error) {
@@ -191,27 +246,11 @@ func initLoadBalancer(cfg *config.Config, reg *provider.Registry, store *db.SQLi
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to initialize load balancer: %w", err)
 	}
-	if errRoutes := lb.LoadRoutesFromDB(func(provider string) ([]smartrouter.ProviderModelEntry, error) {
-		models, errQ := store.GetProviderModels(provider)
-		if errQ != nil {
-			return nil, errQ
-		}
-		entries := make([]smartrouter.ProviderModelEntry, len(models))
-		for i, m := range models {
-			entries[i] = smartrouter.ProviderModelEntry{
-				Name:    m.Model,
-				Active:  m.Active,
-				Tier:    m.Tier,
-				CostIn:  m.CostIn,
-				CostOut: m.CostOut,
-			}
-		}
-		return entries, nil
-	}); errRoutes != nil {
+	if errRoutes := lb.LoadRoutesFromDB(providerModelEntries(store)); errRoutes != nil {
 		return nil, nil, fmt.Errorf("failed to load routes from DB: %w", errRoutes)
 	}
 	slog.Info("routes loaded")
-	if inactiveModels, errDb := store.GetInactiveModels(); errDb == nil {
+	if inactiveModels, errDb := store.GetInactiveModels(context.Background()); errDb == nil {
 		lb.SetInactiveModels(inactiveModels)
 	}
 	loopSettings := config.LoopSettingsWithDefaults(cfg.CostGuard.LoopSettings)
@@ -221,4 +260,31 @@ func initLoadBalancer(cfg *config.Config, reg *provider.Registry, store *db.SQLi
 	cfg.CostGuard.LoopSettings = loopSettings
 	loopDetector := loopdetect.NewDetector(loopSettings)
 	return lb, loopDetector, nil
+}
+
+// providerModelEntries returns a loader of provider_models rows mapped to
+// smartrouter.ProviderModelEntry, shared by boot route loading
+// (initLoadBalancer) and the runtime route rebuild (syncModelsToDB →
+// RebuildProviders) so both build routes from the same persisted source
+// with full pricing fields.
+func providerModelEntries(store *db.SQLiteStore) func(provider string) ([]smartrouter.ProviderModelEntry, error) {
+	return func(providerName string) ([]smartrouter.ProviderModelEntry, error) {
+		models, errQ := store.GetProviderModels(context.Background(), providerName)
+		if errQ != nil {
+			return nil, errQ
+		}
+		entries := make([]smartrouter.ProviderModelEntry, len(models))
+		for i, m := range models {
+			entries[i] = smartrouter.ProviderModelEntry{
+				Name:           m.Model,
+				Active:         m.Active,
+				Category:       m.Category,
+				CostIn:         m.CostIn,
+				CostOut:        m.CostOut,
+				CostCacheRead:  m.CostCacheRead,
+				CostCacheWrite: m.CostCacheWrite,
+			}
+		}
+		return entries, nil
+	}
 }

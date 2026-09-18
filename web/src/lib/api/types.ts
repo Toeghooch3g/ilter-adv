@@ -92,6 +92,7 @@ export interface APIKey {
   allowed_models: string[]
   allowed_providers: string[]
   enabled: boolean
+  mcp_injection_enabled: boolean
   created_at: string
   updated_at: string
 }
@@ -167,16 +168,19 @@ export interface ModelProvider {
   provider: string
   model: string
   is_active: boolean
-  tier?: string
-  cost_per_1k_in: number
-  cost_per_1k_out: number
+  category?: string
+  cost_per_1m_in: number
+  cost_per_1m_out: number
+  cost_per_1m_cached_in: number
+  cost_per_1m_cache_write: number
 }
 
 export interface ProviderInfo {
   name: string
   type: string
   base_url: string
-  models: { name: string; active: boolean; tier?: string }[]
+  service_tier?: string
+  models: { name: string; active: boolean; category?: string }[]
   active_models: number
   total_models: number
   status: string
@@ -426,6 +430,8 @@ export interface MCPToolDefinition {
   description: string
   input_schema: string // JSON string
   created_at: string
+  enabled: boolean
+  cost_per_1k?: number | null
 }
 
 export interface MCPToolContent {
@@ -454,6 +460,7 @@ export interface McpAuditEntry {
   status_code: number
   error_msg?: string
   created_at: string
+  cost?: number
 }
 
 export interface GuardrailsTestResult {

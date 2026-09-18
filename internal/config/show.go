@@ -131,6 +131,11 @@ func ShowConfig(cfg *Config, _ *Cache) []Entry {
 	add("cache.enabled", cfg.Cache.Enabled)
 	add("cache.type", cfg.Cache.Type)
 	add("cache.redis_url", cfg.Cache.RedisURL)
+	add("cache.postgres_dsn", cfg.Cache.PostgresDSN)
+	add("cache.postgres_require_vectorscale", cfg.Cache.PostgresRequireVectorscale)
+	add("cache.embedding_model", cfg.Cache.EmbeddingModel)
+	add("cache.rerank_model", cfg.Cache.RerankModel)
+	add("cache.rerank_top_k", cfg.Cache.RerankTopK)
 	add("cache.similarity_threshold", cfg.Cache.SimilarityThreshold)
 	add("cache.ttl", cfg.Cache.TTL)
 	add("cache.ollama_url", cfg.Cache.OllamaURL)
@@ -166,6 +171,7 @@ func ShowConfig(cfg *Config, _ *Cache) []Entry {
 
 	// ── Dashboard ──
 	add("dashboard.enabled", cfg.Dashboard.Enabled)
+	add("dashboard.host", cfg.Dashboard.Host)
 	add("dashboard.port", cfg.Dashboard.Port)
 	add("dashboard.auth_token", cfg.Dashboard.AuthToken)
 	add("dashboard.user_auth_jwt_secret", cfg.Dashboard.UserAuthJWTSecret)
@@ -261,6 +267,16 @@ func extractDefault(key string, d Config) any {
 		return d.Cache.Type
 	case "cache.redis_url":
 		return d.Cache.RedisURL
+	case "cache.postgres_dsn":
+		return d.Cache.PostgresDSN
+	case "cache.postgres_require_vectorscale":
+		return d.Cache.PostgresRequireVectorscale
+	case "cache.embedding_model":
+		return d.Cache.EmbeddingModel
+	case "cache.rerank_model":
+		return d.Cache.RerankModel
+	case "cache.rerank_top_k":
+		return d.Cache.RerankTopK
 	case "cache.similarity_threshold":
 		return d.Cache.SimilarityThreshold
 	case "cache.ttl":
@@ -323,6 +339,8 @@ func extractDefault(key string, d Config) any {
 	// ── Dashboard ──
 	case "dashboard.enabled":
 		return d.Dashboard.Enabled
+	case "dashboard.host":
+		return d.Dashboard.Host
 	case "dashboard.port":
 		return d.Dashboard.Port
 	case "dashboard.auth_token":

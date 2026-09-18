@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"sync"
 
 	"github.com/go-chi/chi/v5"
 
@@ -34,6 +35,12 @@ type App struct {
 	reg           *provider.Registry
 	rg            *circuitbreaker.RedisBreaker
 	cacheGuard    *circuitbreaker.RedisBreaker
+
+	// providerReloadMu serializes provider-set reloads; providerFingerprint is
+	// a digest of the last applied provider set used to detect changes (see
+	// app/providers.go).
+	providerReloadMu    sync.Mutex
+	providerFingerprint string
 
 	authMiddleware          *iltermiddleware.AuthMiddleware
 	rateLimitMiddleware     *iltermiddleware.RateLimitMiddleware

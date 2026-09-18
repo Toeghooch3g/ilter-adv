@@ -138,7 +138,18 @@ func TestChatCompletionResponseMarshalUnmarshalWithUsage(t *testing.T) {
 	var resp2 ChatCompletionResponse
 	err = json.Unmarshal(b, &resp2)
 	assert.NoError(t, err)
-	assert.Equal(t, resp, resp2)
+	// The typed fields round-trip; Raw is the internal capture of the same
+	// object (populated on unmarshal) and CacheReadIncludedInPrompt defaults
+	// true for the OpenAI-shape usage. Compare the observable contract, not
+	// the internal capture state.
+	assert.Equal(t, resp.ID, resp2.ID)
+	assert.Equal(t, resp.Model, resp2.Model)
+	if resp2.Usage == nil {
+		t.Fatal("usage should round-trip")
+	}
+	assert.Equal(t, 10, resp2.Usage.PromptTokens)
+	assert.Equal(t, 5, resp2.Usage.CompletionTokens)
+	assert.Equal(t, 15, resp2.Usage.TotalTokens)
 }
 
 func TestChatCompletionResponseMarshalUnmarshalWithoutUsage(t *testing.T) {

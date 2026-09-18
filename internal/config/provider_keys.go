@@ -18,6 +18,14 @@ func ProviderKeysEnv(name string) string {
 	return "ILTER_PROVIDER_" + strings.ToUpper(strings.ReplaceAll(name, "-", "_")) + "_API_KEYS"
 }
 
+// ProviderServiceTierEnv returns the environment variable name for a
+// provider's default service tier ("priority" | "flex" | "default"). It is
+// per-name dynamic (matching the API-key vars), so it surfaces in `ilter
+// config show` via the provider registry rather than a static RegisterEnv.
+func ProviderServiceTierEnv(name string) string {
+	return "ILTER_PROVIDER_" + strings.ToUpper(strings.ReplaceAll(name, "-", "_")) + "_SERVICE_TIER"
+}
+
 // providerKeysFromEnv reads ILTER_PROVIDER_<NAME>_API_KEY(S) for name and
 // returns the parsed keys, which env var supplied them, and whether either
 // was set. The *_KEYS (plural) var wins when both are set.
@@ -58,25 +66,34 @@ func AnyProviderKeyEnvSet() bool {
 	return false
 }
 
-// ResolveProviderKeys overrides each provider's APIKey / APIKeys from its
-// environment variables when set (DB value is the fallback), then registers
-// any known provider type that has an env key set but no DB/config entry —
-// setting ILTER_PROVIDER_<NAME>_API_KEY is enough to enable that provider,
-// no `ilter init` required.
-func ResolveProviderKeys(cfg *Config, _ *slog.Logger) {
-	configured := make(map[string]bool, len(cfg.Providers))
+// applyEnvKeys resolves the environment-var provider seeding on a provider
+// set and returns a new slice.
+//
+// Semantics (user decision: "DB row wins"): providers already present in the
+// slice keep their stored values — the env var does NOT override an existing
+// provider's API key (a runtime_config provider row, once materialized, is
+// authoritative; this is what makes UI-configured env-seeded providers behave
+// identically to UI-added ones across restarts). Env service-tier overrides
+// still apply. Providers with NO entry for a known type are auto-registered
+// from their env var — setting ILTER_PROVIDER_<NAME>_API_KEY is enough to
+// enable that provider, no `ilter init` required.
+func applyEnvKeys(providers []ProviderConfig) []ProviderConfig {
+	out := make([]ProviderConfig, 0, len(providers)+len(DefaultBaseURLs))
+	configured := make(map[string]bool, len(providers))
 
-	for i := range cfg.Providers {
-		p := &cfg.Providers[i]
+	for i := range providers {
+		p := providers[i]
 		configured[p.Type] = true
 
-		if keys, source, ok := providerKeysFromEnv(p.Name); ok {
-			p.APIKeys = keys
-			p.APIKey = keys[0]
-			p.APIKeySource = source
-		} else if len(p.GetAPIKeys()) > 0 {
+		if v, isSet := os.LookupEnv(ProviderServiceTierEnv(p.Name)); isSet && strings.TrimSpace(v) != "" {
+			p.ServiceTier = strings.TrimSpace(v)
+		}
+
+		// DB row wins: never override an existing provider's keys from env.
+		if len(p.GetAPIKeys()) > 0 {
 			p.APIKeySource = "db"
 		}
+		out = append(out, p)
 	}
 
 	types := make([]string, 0, len(DefaultBaseURLs))
@@ -93,13 +110,31 @@ func ResolveProviderKeys(cfg *Config, _ *slog.Logger) {
 		if !ok {
 			continue
 		}
-		cfg.Providers = append(cfg.Providers, ProviderConfig{
+		out = append(out, ProviderConfig{
 			Name:         t,
 			Type:         t,
 			BaseURL:      DefaultBaseURLs[t],
 			APIKey:       keys[0],
 			APIKeys:      keys,
 			APIKeySource: source,
+			ServiceTier:  strings.TrimSpace(os.Getenv(ProviderServiceTierEnv(t))),
 		})
 	}
+	return out
+}
+
+// ReapplyEnvKeys applies the same env-key resolution a boot performs to a
+// provider set. It is used by the app's provider hot-reload path so that
+// env-seeded providers (which have no runtime_config row) survive a config
+// cache refresh identically to a boot, instead of being dropped when the
+// reload swaps in the DB-only snapshot.
+func ReapplyEnvKeys(providers []ProviderConfig) []ProviderConfig {
+	return applyEnvKeys(providers)
+}
+
+// ResolveProviderKeys resolves env-key seeding on cfg.Providers at boot.
+// It delegates to the shared applyEnvKeys helper so boot and hot reload
+// agree on the resulting provider set.
+func ResolveProviderKeys(cfg *Config, _ *slog.Logger) {
+	cfg.Providers = applyEnvKeys(cfg.Providers)
 }

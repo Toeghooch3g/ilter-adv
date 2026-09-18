@@ -214,18 +214,27 @@ func ValidateMCPServerID(id string) error {
 	return nil
 }
 
-// SanitizeToolName creates a safe MCP tool name from server ID and tool name.
-// The server ID is sanitized (invalid chars → _); the tool name is NOT modified
-// so round-trips through ResolveTool work. If the result exceeds maxToolNameLen,
-// the tool name is truncated with a short hash suffix.
-func SanitizeToolName(serverID, toolName string) string {
-	pre := sanitizeToken(serverID) + "__"
+// ExposedToolName builds the tool name shown to MCP clients:
+// "{server_name}-{tool_name}" where server_name is the display name
+// lowercased, spaces→"_", and any char outside [a-zA-Z0-9_-]→"_"
+// (empty result falls back to the sanitized server ID). The tool name
+// itself is not modified so round-trips through ResolveTool work. If the
+// result exceeds maxToolNameLen, the tool name is truncated with a short
+// hash suffix.
+func ExposedToolName(serverName, serverID, toolName string) string {
+	prefix := strings.ToLower(serverName)
+	prefix = strings.ReplaceAll(prefix, " ", "_")
+	prefix = sanitizeToken(prefix)
+	if prefix == "" {
+		prefix = sanitizeToken(serverID)
+	}
+	pre := prefix + "-"
 	if len(pre)+len(toolName) <= maxToolNameLen {
 		return pre + toolName
 	}
 	h := sha256New()
-	h.Write([]byte(serverID))
-	h.Write([]byte("__"))
+	h.Write([]byte(prefix))
+	h.Write([]byte("-"))
 	h.Write([]byte(toolName))
 	hash := hex.EncodeToString(h.Sum(nil)[:3]) // 6 chars
 	keep := maxToolNameLen - len(pre) - len(hash)

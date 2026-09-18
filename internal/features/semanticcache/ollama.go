@@ -21,6 +21,7 @@ type OllamaEmbedder struct {
 	url    string
 	client *http.Client
 	dim    int
+	model  string
 }
 
 // NewOllamaEmbedder creates an embedder that calls the Ollama embeddings API.
@@ -31,10 +32,15 @@ func NewOllamaEmbedder(url string) *OllamaEmbedder {
 		url:    url,
 		client: &http.Client{Timeout: 5 * time.Second},
 		dim:    ollamaEmbedDim,
+		model:  "nomic-embed-text",
 	}
 }
 
 func (o *OllamaEmbedder) Dim() int { return o.dim }
+
+// Model returns the human-readable model id, prefixed with the "ollama:"
+// provider namespace so logs identify it consistently with provider embedders.
+func (o *OllamaEmbedder) Model() string { return "ollama:" + o.model }
 
 // Embed sends the text to the Ollama embeddings API and returns the vector.
 // On any failure (network error, non-200, bad response), it returns an error

@@ -97,16 +97,17 @@ func TestGetAuthorizedOpenAITools_AllAuthorized(t *testing.T) {
 	if len(tools) != 2 {
 		t.Fatalf("expected 2 authorized tools, got %d", len(tools))
 	}
-	// No other server offers "alpha"/"beta" — names stay bare, unprefixed.
-	if tools[0].Function.Name != "alpha" {
-		t.Fatalf("expected first tool 'alpha', got %s", tools[0].Function.Name)
+	// Every injected name is server-prefixed (empty server name falls back
+	// to the server ID).
+	if tools[0].Function.Name != "s1-alpha" {
+		t.Fatalf("expected first tool 's1-alpha', got %s", tools[0].Function.Name)
 	}
-	if tools[1].Function.Name != "beta" {
-		t.Fatalf("expected second tool 'beta', got %s", tools[1].Function.Name)
+	if tools[1].Function.Name != "s1-beta" {
+		t.Fatalf("expected second tool 's1-beta', got %s", tools[1].Function.Name)
 	}
 }
 
-func TestGetAuthorizedOpenAITools_NameCollisionAcrossServers(t *testing.T) {
+func TestGetAuthorizedOpenAITools_PrefixedNames(t *testing.T) {
 	reg := &Registry{
 		servers: map[string]*ServerInfo{
 			"s1": {
@@ -137,13 +138,14 @@ func TestGetAuthorizedOpenAITools_NameCollisionAcrossServers(t *testing.T) {
 	for _, tl := range tools {
 		names[tl.Function.Name] = true
 	}
-	// "fetch" collides between s1 and s2 — both must be namespaced.
-	if !names["s1__fetch"] || !names["s2__fetch"] {
-		t.Fatalf("expected colliding tool namespaced as s1__fetch/s2__fetch, got %v", names)
+	// Every injected name is server-prefixed (empty server name falls back
+	// to the server ID), including "fetch" offered by both servers.
+	if !names["s1-fetch"] || !names["s2-fetch"] {
+		t.Fatalf("expected prefixed s1-fetch/s2-fetch, got %v", names)
 	}
-	// "unique-s1" has no collision — stays bare.
-	if !names["unique-s1"] {
-		t.Fatalf("expected non-colliding tool to stay bare as 'unique-s1', got %v", names)
+	// "unique-s1" is also prefixed.
+	if !names["s1-unique-s1"] {
+		t.Fatalf("expected prefixed 's1-unique-s1', got %v", names)
 	}
 }
 
@@ -169,9 +171,9 @@ func TestGetAuthorizedOpenAITools_PartialAuth(t *testing.T) {
 	if len(tools) != 1 {
 		t.Fatalf("expected 1 authorized tool, got %d", len(tools))
 	}
-	// No other server offers "public" — name stays bare, unprefixed.
-	if tools[0].Function.Name != "public" {
-		t.Fatalf("expected 'public', got %s", tools[0].Function.Name)
+	// Every injected name is server-prefixed.
+	if tools[0].Function.Name != "s1-public" {
+		t.Fatalf("expected 's1-public', got %s", tools[0].Function.Name)
 	}
 }
 

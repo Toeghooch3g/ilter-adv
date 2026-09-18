@@ -16,6 +16,7 @@ type ChatCompletionRequest struct {
 	ToolChoice       any             `json:"tool_choice,omitempty"`
 	ResponseFormat   map[string]any  `json:"response_format,omitempty"`
 	Thinking         *ThinkingConfig `json:"thinking,omitempty"`
+	ServiceTier      string          `json:"service_tier,omitempty"`
 }
 
 // StreamOptions mirrors OpenAI's stream_options. IncludeUsage requests a

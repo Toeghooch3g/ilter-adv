@@ -11,27 +11,31 @@ import (
 
 const recordDailyUsage = `-- name: RecordDailyUsage :exec
 
-INSERT INTO usage_daily (key_id, date, model, provider, tokens, cost, request_count, prompt_tokens, completion_tokens, cache_hits)
-VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+INSERT INTO usage_daily (key_id, date, model, provider, tokens, cost, request_count, prompt_tokens, completion_tokens, cached_tokens, cache_creation_tokens, cache_hits)
+VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
 ON CONFLICT(key_id, date, model, provider) DO UPDATE SET
     tokens = tokens + excluded.tokens,
     cost = cost + excluded.cost,
     request_count = request_count + 1,
     prompt_tokens = prompt_tokens + excluded.prompt_tokens,
     completion_tokens = completion_tokens + excluded.completion_tokens,
+    cached_tokens = cached_tokens + excluded.cached_tokens,
+    cache_creation_tokens = cache_creation_tokens + excluded.cache_creation_tokens,
     cache_hits = cache_hits + excluded.cache_hits
 `
 
 type RecordDailyUsageParams struct {
-	KeyID            *string  `json:"key_id"`
-	Date             *string  `json:"date"`
-	Model            *string  `json:"model"`
-	Provider         *string  `json:"provider"`
-	Tokens           *int64   `json:"tokens"`
-	Cost             *float64 `json:"cost"`
-	PromptTokens     *int64   `json:"prompt_tokens"`
-	CompletionTokens *int64   `json:"completion_tokens"`
-	CacheHits        *int64   `json:"cache_hits"`
+	KeyID               *string  `json:"key_id"`
+	Date                *string  `json:"date"`
+	Model               *string  `json:"model"`
+	Provider            *string  `json:"provider"`
+	Tokens              *int64   `json:"tokens"`
+	Cost                *float64 `json:"cost"`
+	PromptTokens        *int64   `json:"prompt_tokens"`
+	CompletionTokens    *int64   `json:"completion_tokens"`
+	CachedTokens        int64    `json:"cached_tokens"`
+	CacheCreationTokens int64    `json:"cache_creation_tokens"`
+	CacheHits           *int64   `json:"cache_hits"`
 }
 
 // Daily usage aggregation queries.
@@ -45,6 +49,8 @@ func (q *Queries) RecordDailyUsage(ctx context.Context, arg RecordDailyUsagePara
 		arg.Cost,
 		arg.PromptTokens,
 		arg.CompletionTokens,
+		arg.CachedTokens,
+		arg.CacheCreationTokens,
 		arg.CacheHits,
 	)
 	return err

@@ -272,7 +272,7 @@ func TestStrategyCRUD(t *testing.T) {
 		// a different, unregistered model.
 		catalog.ModelsMu.Lock()
 		catalog.Models["gpt-4o-mini"] = []catalog.ModelInfo{
-			{ID: "gpt-4o-mini", Provider: "openai", Tier: "economy"},
+			{ID: "gpt-4o-mini", Provider: "openai", Category: "economy"},
 		}
 		catalog.ModelsMu.Unlock()
 		t.Cleanup(func() {

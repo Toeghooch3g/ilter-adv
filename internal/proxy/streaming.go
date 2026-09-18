@@ -214,12 +214,23 @@ func (h *Handler) recordStreamAudit(
 ) {
 	pTokens, cTokens := streamTokenCounts(finalUsage, req, accumulatedCompletionText)
 
+	auditUsage := &model.Usage{
+		PromptTokens:     pTokens,
+		CompletionTokens: cTokens,
+		TotalTokens:      pTokens + cTokens,
+	}
+	if finalUsage != nil {
+		if finalUsage.PromptTokensDetails != nil {
+			auditUsage.PromptTokensDetails = &model.PromptTokensDetails{
+				CachedTokens: finalUsage.PromptTokensDetails.CachedTokens,
+			}
+		}
+		auditUsage.CacheCreationInputTokens = finalUsage.CacheCreationInputTokens
+		auditUsage.CacheReadIncludedInPrompt = finalUsage.CacheReadIncludedInPrompt
+	}
+
 	auditResp := &model.ChatCompletionResponse{
-		Usage: &model.Usage{
-			PromptTokens:     pTokens,
-			CompletionTokens: cTokens,
-			TotalTokens:      pTokens + cTokens,
-		},
+		Usage: auditUsage,
 		Choices: []model.Choice{
 			{
 				Message: model.ChoiceMessage{
@@ -237,7 +248,7 @@ func (h *Handler) recordStreamAudit(
 	h.recordAudit(originalRequest, route, requestedModel, auditResp, statusCode, start, false, msgs)
 
 	keyID := reqmeta.GetKeyID(originalRequest.Context())
-	cost := CalculateCost(route.Model, pTokens, cTokens)
+	cost := CalculateCost(route.Model, auditUsage)
 
 	if meta := reqmeta.GetRequestMetadata(originalRequest.Context()); meta != nil {
 		meta.SetTokensAndCost(pTokens, cTokens, cost)
@@ -283,7 +294,7 @@ func enrichAndCheckLoop(
 	processStreamChunk(chunk, unmasker, accumulated, finalUsage)
 
 	if chunk.Usage != nil {
-		cost := CalculateCost(route.Model, chunk.Usage.PromptTokens, chunk.Usage.CompletionTokens)
+		cost := CalculateCost(route.Model, chunk.Usage)
 		chunk.Usage.IlterCost = cost
 		if id, ok := ctx.Value(reqmeta.KeyIDContextKey).(string); ok && id != "" {
 			chunk.Usage.IlterBillingKey = id

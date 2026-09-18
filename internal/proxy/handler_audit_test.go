@@ -295,3 +295,43 @@ func TestRecordErrorAudit_Success(t *testing.T) {
 	require.NoError(t, err)
 	assert.Greater(t, count, 0, "expected audit log entry for successful request")
 }
+
+// TestRequestLogEnabledGatesContent verifies the runtime feature:request_log
+// flag blanks request/response content fields while rows still flow (the
+// builders return "" when disabled).
+func TestRequestLogEnabledGatesContent(t *testing.T) {
+	cfg := &config.Config{Audit: config.AuditConfig{Enabled: true, LogPrompts: true, LogBodies: true}}
+	h := NewHandler(nil, nil, nil, nil)
+	h.SetConfig(cfg)
+
+	messages := []model.Message{{Role: "user", Content: "a very distinctive prompt string for the audit log"}}
+	resp := &model.ChatCompletionResponse{Choices: []model.Choice{{Message: model.ChoiceMessage{Content: "response body"}}}}
+
+	// Without a config cache, boot default (enabled) applies.
+	if got := h.buildAuditPromptPreview(messages); got == "" {
+		t.Error("prompt preview should be populated when request log is enabled")
+	}
+	if got := h.buildAuditRequestBody(messages); got == "" {
+		t.Error("request body should be populated when request log is enabled")
+	}
+	if got := h.buildAuditResponseBody(resp); got == "" {
+		t.Error("response body should be populated when request log is enabled")
+	}
+
+	// Disabled via runtime config -> content fields blanked.
+	boot := config.DefaultBootConfig()
+	cache := config.NewConfigCache(&boot)
+	snap := cache.Get()
+	snap.RequestLogEnabled = false
+	h.SetConfigCache(cache)
+
+	if got := h.buildAuditPromptPreview(messages); got != "" {
+		t.Errorf("prompt preview should be blank when disabled, got %q", got)
+	}
+	if got := h.buildAuditRequestBody(messages); got != "" {
+		t.Errorf("request body should be blank when disabled, got %q", got)
+	}
+	if got := h.buildAuditResponseBody(resp); got != "" {
+		t.Errorf("response body should be blank when disabled, got %q", got)
+	}
+}

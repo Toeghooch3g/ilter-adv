@@ -77,6 +77,9 @@ func (h *Handler) bootFeatures() []FeatureItem {
 			{FeatureKey: "smart_router", Enabled: snap.Routing.Enabled},
 			{FeatureKey: "mcp", Enabled: snap.MCPEnabled},
 			{FeatureKey: "openapi", Enabled: snap.OpenAPIEnabled},
+			{FeatureKey: "request_log", Enabled: snap.RequestLogEnabled},
+			{FeatureKey: "chat", Enabled: snap.ChatEnabled},
+			{FeatureKey: "jobs", Enabled: snap.JobsEnabled},
 		}
 	}
 	// Fallback: boot config
@@ -93,6 +96,9 @@ func (h *Handler) bootFeatures() []FeatureItem {
 		{FeatureKey: "smart_router", Enabled: cfg.Routing.Enabled},
 		{FeatureKey: "mcp", Enabled: cfg.MCP.Enabled},
 		{FeatureKey: "openapi", Enabled: true},
+		{FeatureKey: "request_log", Enabled: cfg.Audit.Enabled},
+		{FeatureKey: "chat", Enabled: true},
+		{FeatureKey: "jobs", Enabled: cfg.Jobs.Enabled},
 	}
 }
 

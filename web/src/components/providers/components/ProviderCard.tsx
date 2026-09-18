@@ -1,7 +1,8 @@
 import { Button } from '../../ui/button'
 import { Card, CardContent } from '../../ui/card'
-import { ChevronDown, Settings } from '../../ui/icons'
+import { ChevronDown, Settings, Trash2 } from '../../ui/icons'
 import type { ProviderInfo } from '../useProviders'
+import { ModelOverridesControls } from './ModelOverridesControls'
 import { StatusBadge } from './StatusBadge'
 
 function isEnvSource(source: string): boolean {
@@ -13,9 +14,10 @@ interface ProviderCardProps {
   isExpanded: boolean
   onToggleModels: (name: string) => void
   onOpenConfig: (provider: ProviderInfo) => void
+  onRemove: (provider: ProviderInfo) => void
 }
 
-export function ProviderCard({ provider, isExpanded, onToggleModels, onOpenConfig }: ProviderCardProps) {
+export function ProviderCard({ provider, isExpanded, onToggleModels, onOpenConfig, onRemove }: ProviderCardProps) {
   return (
     <Card>
       <CardContent className="p-4">
@@ -47,10 +49,22 @@ export function ProviderCard({ provider, isExpanded, onToggleModels, onOpenConfi
                 CB: {provider.circuit_breaker_state}
               </span>
             )}
+            <ModelOverridesControls providerName={provider.name} />
             <Button variant="outline" size="sm" onClick={() => onOpenConfig(provider)}>
               <Settings size={14} />
               Configure
             </Button>
+            {!isEnvSource(provider.api_key_source) && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="text-error hover:bg-error/10 hover:text-error border-error/30"
+                onClick={() => onRemove(provider)}
+                title="Remove provider"
+              >
+                <Trash2 size={14} />
+              </Button>
+            )}
           </div>
         </div>
 
@@ -69,6 +83,12 @@ export function ProviderCard({ provider, isExpanded, onToggleModels, onOpenConfi
             <p className="text-xs text-surface-500 mb-1">Circuit Breaker</p>
             <p className="text-sm font-semibold text-surface-900 capitalize">{provider.circuit_breaker_state || '—'}</p>
           </div>
+          {provider.service_tier && (
+            <div className="rounded-lg bg-surface-50 p-3">
+              <p className="text-xs text-surface-500 mb-1">Service Tier</p>
+              <p className="text-sm font-semibold text-surface-900 capitalize">{provider.service_tier}</p>
+            </div>
+          )}
         </div>
 
         {provider.circuit_breaker_state && provider.circuit_breaker_state !== 'closed' && (
@@ -133,11 +153,13 @@ export function ProviderCard({ provider, isExpanded, onToggleModels, onOpenConfi
             </button>
             {isExpanded && (
               <div className="pl-5">
-                {[...new Set(provider.models.map((m) => m.tier || 'other'))].map((tier) => {
-                  const group = provider.models.filter((m) => (m.tier || 'other') === tier)
+                {[...new Set(provider.models.map((m) => m.category || 'other'))].map((category) => {
+                  const group = provider.models.filter((m) => (m.category || 'other') === category)
                   return (
-                    <div key={tier} className="mb-2 last:mb-0">
-                      <p className="text-[10px] font-medium text-surface-400 uppercase tracking-wider mb-1.5">{tier}</p>
+                    <div key={category} className="mb-2 last:mb-0">
+                      <p className="text-[10px] font-medium text-surface-400 uppercase tracking-wider mb-1.5">
+                        {category}
+                      </p>
                       <div className="flex flex-wrap gap-1.5">
                         {group.map((m) => (
                           <span

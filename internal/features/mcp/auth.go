@@ -266,6 +266,23 @@ func (a *Authorizer) GetAuthorizedTools(keyPrefix string, groupIDs []int, keyID 
 	return authorized
 }
 
+// GetAuthorizedToolsForServers returns the tools the caller is allowed to use,
+// each paired with its owning server. Unlike GetAuthorizedTools (which passes
+// serverID="" and therefore can never match server-qualified grants), it
+// checks every tool against its real server, so a deny grant scoped to one
+// server (subject '*', server 'anginxbrowser', tools '["search"]') hides that
+// tool only on the denying server at injection time. A bare-name tool offered
+// by several servers stays authorized on the servers without a deny.
+func (a *Authorizer) GetAuthorizedToolsForServers(keyPrefix string, groupIDs []int, keyID string, tools []ToolInfo) []ToolInfo {
+	authorized := make([]ToolInfo, 0, len(tools))
+	for _, ti := range tools {
+		if result := a.CheckAccess(keyPrefix, groupIDs, keyID, ti.ServerID, ti.Tool.Name); result.Allowed {
+			authorized = append(authorized, ti)
+		}
+	}
+	return authorized
+}
+
 // configToolMatches checks whether a config rule pattern matches the given
 // serverID and toolName. A bare pattern ("tool-a") matches on any server.
 func configToolMatches(pattern, serverID, toolName string) bool {

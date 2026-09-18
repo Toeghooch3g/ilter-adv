@@ -19,6 +19,7 @@ const statusConfig: Record<string, { dot: string; label: string; text: string; b
 
 const transportLabels: Record<string, string> = {
   sse: 'SSE',
+  http: 'HTTP',
   stdio: 'STDIO',
   inline: 'Inline',
 }
@@ -126,6 +127,43 @@ export function McpServerDetailView({ serverId, onBack }: Props) {
       .catch(() => toast.error('Failed to load tools'))
       .finally(() => setLoadingTools(false))
   }, [serverId])
+
+  const handleToggleTool = useCallback(
+    (tool: MCPToolDefinition, enabled: boolean) => {
+      // Optimistic update, rollback on failure.
+      setTools((prev) => prev.map((t) => (t.id === tool.id ? { ...t, enabled } : t)))
+      api.mcp
+        .toggleServerTool(serverId, tool.name, enabled)
+        .then(() => toast.success(`${tool.name} ${enabled ? 'enabled' : 'disabled'}`))
+        .catch(() => {
+          setTools((prev) => prev.map((t) => (t.id === tool.id ? { ...t, enabled: !enabled } : t)))
+          toast.error(`Failed to ${enabled ? 'enable' : 'disable'} ${tool.name}`)
+        })
+    },
+    [serverId],
+  )
+
+  const handleSetToolCost = useCallback(
+    (tool: MCPToolDefinition, raw: string) => {
+      const trimmed = raw.trim()
+      // Empty input clears the cost.
+      const costPer1k: number | null = trimmed === '' ? null : Number(trimmed)
+      if (trimmed !== '' && (Number.isNaN(costPer1k as number) || (costPer1k as number) < 0)) {
+        toast.error('Cost must be a non-negative number of dollars per 1k requests')
+        return
+      }
+      const prev = tool.cost_per_1k ?? null
+      setTools((prevTools) => prevTools.map((t) => (t.id === tool.id ? { ...t, cost_per_1k: costPer1k } : t)))
+      api.mcp
+        .setToolCost(serverId, tool.name, costPer1k)
+        .then(() => toast.success(`Cost for ${tool.name} updated`))
+        .catch(() => {
+          setTools((prevTools) => prevTools.map((t) => (t.id === tool.id ? { ...t, cost_per_1k: prev } : t)))
+          toast.error(`Failed to update cost for ${tool.name}`)
+        })
+    },
+    [serverId],
+  )
 
   const handleRun = useCallback(async () => {
     if (!selectedTool) return
@@ -293,6 +331,8 @@ export function McpServerDetailView({ serverId, onBack }: Props) {
               command: data.command,
               args: data.args,
               env: data.env ?? '',
+              auth_type: data.authType,
+              auth_key_env: data.authKey,
             })
             setShowEditModal(false)
             api.mcp
@@ -303,6 +343,8 @@ export function McpServerDetailView({ serverId, onBack }: Props) {
                 command: data.command,
                 args: data.args,
                 env: data.env ?? '',
+                auth_type: data.authType,
+                auth_key_env: data.authKey,
               })
               .then(() => toast.success('Server updated'))
               .catch(() => {
@@ -335,46 +377,78 @@ export function McpServerDetailView({ serverId, onBack }: Props) {
           ) : (
             <div className="flex gap-4 min-h-0">
               {/* Tool list sidebar */}
-              <div className="w-48 shrink-0 space-y-1">
+              <div className="w-56 shrink-0 space-y-1">
                 {tools.map((tool) => (
-                  <button
+                  <div
                     key={tool.id}
-                    onClick={() => {
-                      setSelectedTool(tool)
-                      setResult(null)
-                      try {
-                        const schema = JSON.parse(tool.input_schema)
-                        if (schema?.properties) {
-                          const defaults: Record<string, unknown> = {}
-                          for (const [k, v] of Object.entries(schema.properties as Record<string, unknown>)) {
-                            const p = v as Record<string, unknown>
-                            if (p.default !== undefined) defaults[k] = p.default
-                            else if (p.type === 'string') defaults[k] = ''
-                            else if (p.type === 'number' || p.type === 'integer') defaults[k] = 0
-                            else if (p.type === 'boolean') defaults[k] = false
-                            else if (p.type === 'object') defaults[k] = {}
-                            else if (p.type === 'array') defaults[k] = []
-                          }
-                          setArgs(defaults)
-                        } else {
-                          setArgs({})
-                        }
-                      } catch {
-                        setArgs({})
-                      }
-                    }}
                     className={cn(
-                      'w-full text-left px-3 py-2 rounded-lg text-sm transition-colors',
+                      'rounded-lg border px-3 py-2 transition-colors',
                       selectedTool?.id === tool.id
-                        ? 'bg-brand-50 text-brand-700 font-medium'
-                        : 'text-surface-600 hover:bg-surface-50',
+                        ? 'border-brand-300 bg-brand-50'
+                        : 'border-surface-200 bg-surface-50',
+                      tool.enabled === false && 'opacity-60',
                     )}
                   >
-                    <span className="block truncate font-mono text-xs">{tool.name}</span>
-                    {tool.description && (
-                      <span className="block text-[11px] text-surface-400 truncate mt-0.5">{tool.description}</span>
-                    )}
-                  </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedTool(tool)
+                        setResult(null)
+                        try {
+                          const schema = JSON.parse(tool.input_schema)
+                          if (schema?.properties) {
+                            const defaults: Record<string, unknown> = {}
+                            for (const [k, v] of Object.entries(schema.properties as Record<string, unknown>)) {
+                              const p = v as Record<string, unknown>
+                              if (p.default !== undefined) defaults[k] = p.default
+                              else if (p.type === 'string') defaults[k] = ''
+                              else if (p.type === 'number' || p.type === 'integer') defaults[k] = 0
+                              else if (p.type === 'boolean') defaults[k] = false
+                              else if (p.type === 'object') defaults[k] = {}
+                              else if (p.type === 'array') defaults[k] = []
+                            }
+                            setArgs(defaults)
+                          } else {
+                            setArgs({})
+                          }
+                        } catch {
+                          setArgs({})
+                        }
+                      }}
+                      className="w-full text-left"
+                    >
+                      <span className="block truncate font-mono text-xs text-surface-700">{tool.name}</span>
+                      {tool.description && (
+                        <span className="block text-[11px] text-surface-400 truncate mt-0.5">{tool.description}</span>
+                      )}
+                    </button>
+                    <div className="mt-1.5 flex items-center gap-2">
+                      <label className="flex items-center gap-1.5 text-[11px] text-surface-500">
+                        <Switch
+                          checked={tool.enabled !== false}
+                          onCheckedChange={(checked) => handleToggleTool(tool, checked)}
+                        />
+                        {tool.enabled === false ? 'Disabled' : 'Enabled'}
+                      </label>
+                      <input
+                        type="number"
+                        min={0}
+                        step={0.01}
+                        defaultValue={tool.cost_per_1k ?? ''}
+                        placeholder="$/1k"
+                        title="USD per 1000 requests; blank = not priced"
+                        onBlur={(e) => {
+                          const v = e.target.value
+                          if (v === (tool.cost_per_1k ?? '').toString()) return
+                          handleSetToolCost(tool, v)
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
+                        }}
+                        className="ml-auto w-16 rounded border border-surface-300 bg-white px-1 py-0.5 text-right font-mono text-[11px] text-surface-700 focus:border-brand-500 focus:outline-none"
+                      />
+                    </div>
+                  </div>
                 ))}
               </div>
 
@@ -421,7 +495,7 @@ export function McpServerDetailView({ serverId, onBack }: Props) {
                     })()}
 
                     <div className="flex justify-end mt-3">
-                      <Button onClick={handleRun} disabled={running}>
+                      <Button onClick={handleRun} disabled={running || selectedTool.enabled === false}>
                         {running ? (
                           <>
                             <Loader2 size={14} className="animate-spin mr-1" /> Running...
@@ -432,6 +506,9 @@ export function McpServerDetailView({ serverId, onBack }: Props) {
                           </>
                         )}
                       </Button>
+                      {selectedTool.enabled === false && (
+                        <span className="text-[11px] text-surface-400 self-center ml-2">Tool disabled</span>
+                      )}
                     </div>
 
                     {result && (

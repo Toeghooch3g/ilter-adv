@@ -179,10 +179,7 @@ func seedUserGroupMemberships(db *sql.DB, userIDs, groupIDs []int) error {
 	if err := addMembership(db, userIDs[0], groupIDs[0]); err != nil {
 		return err
 	}
-	if err := addMembership(db, userIDs[1], groupIDs[1]); err != nil {
-		return err
-	}
-	return nil
+	return addMembership(db, userIDs[1], groupIDs[1])
 }
 
 func addMembership(db *sql.DB, userID, groupID int) error {
@@ -401,7 +398,7 @@ func seedProviderModels(db *sql.DB) error {
 	providerModels := []struct {
 		model        string
 		displayName  string
-		tier         string
+		category     string
 		costIn       float64
 		costOut      float64
 		ctxTokens    int
@@ -417,10 +414,10 @@ func seedProviderModels(db *sql.DB) error {
 	}
 	for _, m := range providerModels {
 		_, err := db.Exec(
-			`INSERT INTO provider_models (provider, model, active, tier, cost_in, cost_out, display_name, max_context_tokens, max_output_tokens, capabilities, default_base_url)
+			`INSERT INTO provider_models (provider, model, active, category, cost_in, cost_out, display_name, max_context_tokens, max_output_tokens, capabilities, default_base_url)
 			 VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, 'https://opencode.ai/zen/v1')
 			 ON CONFLICT(provider, model) DO NOTHING`,
-			"opencode_zen", m.model, m.tier, m.costIn, m.costOut, m.displayName, m.ctxTokens, m.outTokens, m.capabilities,
+			"opencode_zen", m.model, m.category, m.costIn, m.costOut, m.displayName, m.ctxTokens, m.outTokens, m.capabilities,
 		)
 		if err != nil {
 			return fmt.Errorf("insert provider_model %q: %w", m.model, err)

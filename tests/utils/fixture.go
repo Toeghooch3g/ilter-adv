@@ -90,9 +90,9 @@ type TestFixture struct {
 func SeedModelRegistry(t *testing.T, models map[string]string) {
 	t.Helper()
 	catalog.ModelsMu.Lock()
-	for id, tier := range models {
+	for id, category := range models {
 		catalog.Models[id] = []catalog.ModelInfo{{
-			ID: id, Provider: "mock", Tier: tier,
+			ID: id, Provider: "mock", Category: category,
 		}}
 	}
 	catalog.ModelsMu.Unlock()

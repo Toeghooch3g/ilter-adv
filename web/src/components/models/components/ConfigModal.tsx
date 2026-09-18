@@ -1,17 +1,24 @@
 import { Button } from '../../ui/button'
 import type { Model } from '../useModels'
-import { tiers } from '../useModels'
+import { categories } from '../useModels'
 
 interface ConfigModalProps {
   model: Model
-  onTierChange: (tier: string) => void
+  onCategoryChange: (category: string) => void
   onToggleActive: () => void
   onSave: () => void
   onClose: () => void
   formatCost: (cost: number) => string
 }
 
-export function ConfigModal({ model, onTierChange, onToggleActive, onSave, onClose, formatCost }: ConfigModalProps) {
+export function ConfigModal({
+  model,
+  onCategoryChange,
+  onToggleActive,
+  onSave,
+  onClose,
+  formatCost,
+}: ConfigModalProps) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={onClose}>
       <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-xl" onClick={(e) => e.stopPropagation()}>
@@ -34,13 +41,13 @@ export function ConfigModal({ model, onTierChange, onToggleActive, onSave, onClo
             </button>
           </div>
           <div className="rounded-lg bg-surface-50 p-3">
-            <label className="block text-sm text-surface-600 mb-1">Tier</label>
+            <label className="block text-sm text-surface-600 mb-1">Category</label>
             <select
-              value={model.tier}
-              onChange={(e) => onTierChange(e.target.value)}
+              value={model.category}
+              onChange={(e) => onCategoryChange(e.target.value)}
               className="w-full rounded-lg border border-surface-300 bg-white px-3 py-2 text-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
             >
-              {tiers.map((t) => (
+              {categories.map((t) => (
                 <option key={t} value={t}>
                   {t.charAt(0).toUpperCase() + t.slice(1)}
                 </option>
@@ -57,11 +64,11 @@ export function ConfigModal({ model, onTierChange, onToggleActive, onSave, onClo
           </div>
           <div className="flex items-center justify-between rounded-lg bg-surface-50 p-3">
             <span className="text-sm text-surface-600">Input Cost</span>
-            <span className="text-sm font-mono text-surface-800">${formatCost(model.cost_per_1k_in)}/1K</span>
+            <span className="text-sm font-mono text-surface-800">${formatCost(model.cost_per_1m_in)}/1M</span>
           </div>
           <div className="flex items-center justify-between rounded-lg bg-surface-50 p-3">
             <span className="text-sm text-surface-600">Output Cost</span>
-            <span className="text-sm font-mono text-surface-800">${formatCost(model.cost_per_1k_out)}/1K</span>
+            <span className="text-sm font-mono text-surface-800">${formatCost(model.cost_per_1m_out)}/1M</span>
           </div>
           <div className="flex justify-end gap-2 pt-2">
             <Button variant="outline" onClick={onClose}>

@@ -138,7 +138,7 @@ func TestRecordDailyUsage_InsertAndQuery(t *testing.T) {
 	ts := setupTestStore(t)
 	defer ts.close()
 
-	err := ts.store.RecordDailyUsage(context.Background(), "v1", "2026-06-10", "gpt-4o", "openai", 100, 200, 0, 0.0045)
+	err := ts.store.RecordDailyUsage(context.Background(), "v1", "2026-06-10", "gpt-4o", "openai", 100, 200, 0, 0, 0, 0.0045)
 	require.NoError(t, err)
 
 	// Verify the row was inserted correctly
@@ -169,11 +169,11 @@ func TestRecordDailyUsage_UpsertAccumulates(t *testing.T) {
 	defer ts.close()
 
 	// First insert
-	err := ts.store.RecordDailyUsage(context.Background(), "v1", "2026-06-10", "gpt-4o", "openai", 100, 200, 0, 0.0045)
+	err := ts.store.RecordDailyUsage(context.Background(), "v1", "2026-06-10", "gpt-4o", "openai", 100, 200, 0, 0, 0, 0.0045)
 	require.NoError(t, err)
 
 	// Second insert — same key, should UPSERT and accumulate
-	err = ts.store.RecordDailyUsage(context.Background(), "v1", "2026-06-10", "gpt-4o", "openai", 50, 100, 2, 0.0020)
+	err = ts.store.RecordDailyUsage(context.Background(), "v1", "2026-06-10", "gpt-4o", "openai", 50, 100, 2, 0, 0, 0.0020)
 	require.NoError(t, err)
 
 	// Verify accumulated values
@@ -198,18 +198,18 @@ func TestRecordDailyUsage_MultipleKeyCombos(t *testing.T) {
 	defer ts.close()
 
 	// Different key_id
-	err := ts.store.RecordDailyUsage(context.Background(), "v1", "2026-06-10", "gpt-4o", "openai", 100, 200, 0, 0.0045)
+	err := ts.store.RecordDailyUsage(context.Background(), "v1", "2026-06-10", "gpt-4o", "openai", 100, 200, 0, 0, 0, 0.0045)
 	require.NoError(t, err)
 
-	err = ts.store.RecordDailyUsage(context.Background(), "v2", "2026-06-10", "gpt-4o", "openai", 50, 100, 0, 0.0020)
+	err = ts.store.RecordDailyUsage(context.Background(), "v2", "2026-06-10", "gpt-4o", "openai", 50, 100, 0, 0, 0, 0.0020)
 	require.NoError(t, err)
 
 	// Different date
-	err = ts.store.RecordDailyUsage(context.Background(), "v1", "2026-06-11", "gpt-4o", "openai", 30, 60, 0, 0.0010)
+	err = ts.store.RecordDailyUsage(context.Background(), "v1", "2026-06-11", "gpt-4o", "openai", 30, 60, 0, 0, 0, 0.0010)
 	require.NoError(t, err)
 
 	// Different model
-	err = ts.store.RecordDailyUsage(context.Background(), "v1", "2026-06-10", "claude-3-sonnet", "anthropic", 200, 400, 0, 0.0090)
+	err = ts.store.RecordDailyUsage(context.Background(), "v1", "2026-06-10", "claude-3-sonnet", "anthropic", 200, 400, 0, 0, 0, 0.0090)
 	require.NoError(t, err)
 
 	// All 4 rows should exist independently
@@ -219,11 +219,12 @@ func TestRecordDailyUsage_MultipleKeyCombos(t *testing.T) {
 	assert.Equal(t, 4, count)
 }
 
+// TestRecordDailyUsage_ZeroValues tests recording zero-value usage.
 func TestRecordDailyUsage_ZeroValues(t *testing.T) {
 	ts := setupTestStore(t)
 	defer ts.close()
 
-	err := ts.store.RecordDailyUsage(context.Background(), "v1", "2026-06-10", "gpt-4o", "openai", 0, 0, 0, 0.0)
+	err := ts.store.RecordDailyUsage(context.Background(), "v1", "2026-06-10", "gpt-4o", "openai", 0, 0, 0, 0, 0, 0.0)
 	require.NoError(t, err)
 
 	var requestCount int
@@ -232,6 +233,31 @@ func TestRecordDailyUsage_ZeroValues(t *testing.T) {
 	).Scan(&requestCount)
 	require.NoError(t, err)
 	assert.Equal(t, 1, requestCount, "even with zero tokens, request_count should be 1")
+}
+
+// TestRecordMCPToolUsage verifies tool calls aggregate under provider "mcp"
+// with a "<server>:<tool>" model key and accumulate cost across calls.
+func TestRecordMCPToolUsage(t *testing.T) {
+	ts := setupTestStore(t)
+	defer ts.close()
+
+	err := ts.store.RecordMCPToolUsage(context.Background(), "key1", "kagi", "search", 0.012)
+	require.NoError(t, err)
+	err = ts.store.RecordMCPToolUsage(context.Background(), "key1", "kagi", "search", 0.012)
+	require.NoError(t, err)
+
+	var cost float64
+	var provider, model string
+	var tokens, requestCount int
+	err = ts.store.DB.QueryRow(
+		`SELECT cost, provider, model, tokens, request_count FROM usage_daily WHERE key_id = 'key1' AND provider = 'mcp'`,
+	).Scan(&cost, &provider, &model, &tokens, &requestCount)
+	require.NoError(t, err)
+	assert.Equal(t, 0.024, cost, "repeated calls to the same tool must aggregate cost")
+	assert.Equal(t, "mcp", provider)
+	assert.Equal(t, "kagi:search", model)
+	assert.Equal(t, 0, tokens, "tool calls have no token counts")
+	assert.Equal(t, 2, requestCount, "request_count must aggregate per call")
 }
 
 func TestStore_Close(t *testing.T) {
@@ -254,32 +280,32 @@ func TestSaveDiscoveredModels(t *testing.T) {
 	defer ts.close()
 
 	models := []catalog.ModelInfo{
-		{ID: "model-a", Provider: "test-provider", DisplayName: "Model A", Tier: "free", CostPerInputToken: 0, CostPerOutputToken: 0},
-		{ID: "model-b", Provider: "test-provider", DisplayName: "Model B", Tier: "economy", CostPerInputToken: 0.0001, CostPerOutputToken: 0.0002},
+		{ID: "model-a", Provider: "test-provider", DisplayName: "Model A", Category: "free", CostPerInputToken: 0, CostPerOutputToken: 0},
+		{ID: "model-b", Provider: "test-provider", DisplayName: "Model B", Category: "economy", CostPerInputToken: 0.0001, CostPerOutputToken: 0.0002},
 	}
 
 	err := ts.store.SaveDiscoveredModels(context.Background(), "test-provider", models)
 	require.NoError(t, err)
 
-	all, err := ts.store.GetAllProviderModels()
+	all, err := ts.store.GetAllProviderModels(context.Background())
 	require.NoError(t, err)
 	assert.Len(t, all, 2)
 
-	provModels, err := ts.store.GetProviderModels("test-provider")
+	provModels, err := ts.store.GetProviderModels(context.Background(), "test-provider")
 	require.NoError(t, err)
 	require.Len(t, provModels, 2)
 	assert.Equal(t, "model-a", provModels[0].Model)
 	assert.True(t, provModels[0].Active)
-	assert.Equal(t, "free", provModels[0].Tier)
+	assert.Equal(t, "free", provModels[0].Category)
 	assert.Equal(t, 0.0, provModels[0].CostIn)
 
 	models2 := []catalog.ModelInfo{
-		{ID: "model-c", Provider: "test-provider", Tier: "standard"},
+		{ID: "model-c", Provider: "test-provider", Category: "standard"},
 	}
 	err = ts.store.SaveDiscoveredModels(context.Background(), "test-provider", models2)
 	require.NoError(t, err)
 
-	all2, err := ts.store.GetAllProviderModels()
+	all2, err := ts.store.GetAllProviderModels(context.Background())
 	require.NoError(t, err)
 	assert.Len(t, all2, 3)
 	assert.Equal(t, "model-c", all2[2].Model)
@@ -290,13 +316,13 @@ func TestGetActiveProviderModels(t *testing.T) {
 	defer ts.close()
 
 	models := []catalog.ModelInfo{
-		{ID: "active-model", Provider: "prov1", Tier: "free"},
-		{ID: "inactive-model", Provider: "prov1", Tier: "economy"},
+		{ID: "active-model", Provider: "prov1", Category: "free"},
+		{ID: "inactive-model", Provider: "prov1", Category: "economy"},
 	}
 	err := ts.store.SaveDiscoveredModels(context.Background(), "prov1", models)
 	require.NoError(t, err)
 
-	err = ts.store.SaveModelStatus("inactive-model", false)
+	err = ts.store.SaveModelStatus(context.Background(), "prov1", "inactive-model", false)
 	require.NoError(t, err)
 
 	active, err := ts.store.GetActiveProviderModels()
@@ -305,7 +331,7 @@ func TestGetActiveProviderModels(t *testing.T) {
 	assert.Equal(t, "active-model", active[0].Model)
 
 	// GetInactiveModels should return the deactivated one.
-	inactive, err := ts.store.GetInactiveModels()
+	inactive, err := ts.store.GetInactiveModels(context.Background())
 	require.NoError(t, err)
 	assert.Contains(t, inactive, "inactive-model")
 }
@@ -319,8 +345,8 @@ func TestProviderModelCount(t *testing.T) {
 	assert.Equal(t, 0, count)
 
 	models := []catalog.ModelInfo{
-		{ID: "m1", Provider: "prov2", Tier: "free"},
-		{ID: "m2", Provider: "prov2", Tier: "standard"},
+		{ID: "m1", Provider: "prov2", Category: "free"},
+		{ID: "m2", Provider: "prov2", Category: "standard"},
 	}
 	_ = ts.store.SaveDiscoveredModels(context.Background(), "prov2", models)
 
@@ -329,21 +355,31 @@ func TestProviderModelCount(t *testing.T) {
 	assert.Equal(t, 2, count2)
 }
 
-func TestGetModelStatusesWithProviderModels(t *testing.T) {
+func TestGetActiveProviderModelsWithCompositeKey(t *testing.T) {
 	ts := setupTestStore(t)
 	defer ts.close()
 
 	models := []catalog.ModelInfo{
-		{ID: "model-x", Provider: "p", Tier: "free"},
-		{ID: "model-y", Provider: "p", Tier: "economy"},
+		{ID: "shared-model", Provider: "prov1", Category: "free"},
+		{ID: "shared-model", Provider: "prov2", Category: "economy"},
 	}
-	err := ts.store.SaveDiscoveredModels(context.Background(), "p", models)
+	err := ts.store.SaveDiscoveredModels(context.Background(), "prov1", models[:1])
+	require.NoError(t, err)
+	err = ts.store.SaveDiscoveredModels(context.Background(), "prov2", models[1:])
 	require.NoError(t, err)
 
-	_ = ts.store.SaveModelStatus("model-y", false)
-
-	statuses, err := ts.store.GetModelStatuses()
+	// Disabling the model under prov1 must not touch the prov2 row.
+	err = ts.store.SaveModelStatus(context.Background(), "prov1", "shared-model", false)
 	require.NoError(t, err)
-	assert.True(t, statuses["model-x"])
-	assert.False(t, statuses["model-y"])
+
+	rows, err := ts.store.GetAllProviderModels(context.Background())
+	require.NoError(t, err)
+	for _, r := range rows {
+		if r.Provider == "prov1" && r.Model == "shared-model" {
+			assert.False(t, r.Active, "prov1/shared-model should be inactive")
+		}
+		if r.Provider == "prov2" && r.Model == "shared-model" {
+			assert.True(t, r.Active, "prov2/shared-model should stay active")
+		}
+	}
 }

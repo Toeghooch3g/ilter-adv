@@ -147,15 +147,15 @@ func (m *MockProvider) DiscoverModels(_ context.Context) ([]catalog.ModelInfo, e
 		return nil, m.errToReturn
 	}
 	models := []catalog.ModelInfo{
-		{ID: "mock-default", Provider: m.name, DisplayName: "Mock Default (Dev)", CostPerInputToken: 0, CostPerOutputToken: 0, Tier: "free"},
-		{ID: "gpt-4o", Provider: m.name, DisplayName: "Gpt 4o", CostPerInputToken: 0, CostPerOutputToken: 0, Tier: "premium"},
-		{ID: "gpt-4o-mini", Provider: m.name, DisplayName: "Gpt 4o Mini", CostPerInputToken: 0, CostPerOutputToken: 0, Tier: "standard"},
-		{ID: "gpt-5.1", Provider: m.name, DisplayName: "Gpt 5.1", CostPerInputToken: 0, CostPerOutputToken: 0, Tier: "premium"},
-		{ID: "gpt-5.2", Provider: m.name, DisplayName: "Gpt 5.2", CostPerInputToken: 0, CostPerOutputToken: 0, Tier: "economy"},
-		{ID: "claude-sonnet-4", Provider: m.name, DisplayName: "Claude Sonnet 4", CostPerInputToken: 0, CostPerOutputToken: 0, Tier: "premium"},
-		{ID: "claude-haiku-3", Provider: m.name, DisplayName: "Claude Haiku 3", CostPerInputToken: 0, CostPerOutputToken: 0, Tier: "standard"},
-		{ID: "deepseek-chat", Provider: m.name, DisplayName: "Deepseek Chat", CostPerInputToken: 0, CostPerOutputToken: 0, Tier: "economy"},
-		{ID: "gemini-2-flash", Provider: m.name, DisplayName: "Gemini 2 Flash", CostPerInputToken: 0, CostPerOutputToken: 0, Tier: "standard"},
+		{ID: "mock-default", Provider: m.name, DisplayName: "Mock Default (Dev)", CostPerInputToken: 0, CostPerOutputToken: 0, Category: "free"},
+		{ID: "gpt-4o", Provider: m.name, DisplayName: "Gpt 4o", CostPerInputToken: 0, CostPerOutputToken: 0, Category: "premium"},
+		{ID: "gpt-4o-mini", Provider: m.name, DisplayName: "Gpt 4o Mini", CostPerInputToken: 0, CostPerOutputToken: 0, Category: "standard"},
+		{ID: "gpt-5.1", Provider: m.name, DisplayName: "Gpt 5.1", CostPerInputToken: 0, CostPerOutputToken: 0, Category: "premium"},
+		{ID: "gpt-5.2", Provider: m.name, DisplayName: "Gpt 5.2", CostPerInputToken: 0, CostPerOutputToken: 0, Category: "economy"},
+		{ID: "claude-sonnet-4", Provider: m.name, DisplayName: "Claude Sonnet 4", CostPerInputToken: 0, CostPerOutputToken: 0, Category: "premium"},
+		{ID: "claude-haiku-3", Provider: m.name, DisplayName: "Claude Haiku 3", CostPerInputToken: 0, CostPerOutputToken: 0, Category: "standard"},
+		{ID: "deepseek-chat", Provider: m.name, DisplayName: "Deepseek Chat", CostPerInputToken: 0, CostPerOutputToken: 0, Category: "economy"},
+		{ID: "gemini-2-flash", Provider: m.name, DisplayName: "Gemini 2 Flash", CostPerInputToken: 0, CostPerOutputToken: 0, Category: "standard"},
 	}
 	return models, nil
 }

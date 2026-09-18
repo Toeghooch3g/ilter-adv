@@ -20,6 +20,8 @@ interface ConfigModalProps {
   onBaseUrlChange: (url: string) => void
   onApiKeyChange: (key: string) => void
   onMultiKeysChange?: (keys: string[]) => void
+  serviceTier: string
+  onServiceTierChange: (tier: string) => void
   onSave: () => void
   onClose: () => void
 }
@@ -32,6 +34,8 @@ export function ConfigModal({
   onBaseUrlChange,
   onApiKeyChange,
   onMultiKeysChange,
+  serviceTier,
+  onServiceTierChange,
   onSave,
   onClose,
 }: ConfigModalProps) {
@@ -58,7 +62,7 @@ export function ConfigModal({
         bg: 'bg-emerald-50 text-emerald-700 border-emerald-200',
         dot: 'bg-emerald-500',
         label: `${provider.api_keys_count} Keys Configured (Failover Active)`,
-        desc: 'Multiple API keys configured in pool. If rate limits or quota issues occur, ILTER automatically cycles to the next healthy key.',
+        desc: 'Multiple API keys configured in pool. If rate limits or quota issues occur, Ilter Advanced automatically cycles to the next healthy key.',
       }
     }
     if (dbHasKey) {
@@ -235,11 +239,33 @@ export function ConfigModal({
                       className="w-full rounded-lg border border-surface-300 px-3 py-2 text-xs font-mono text-surface-900 placeholder:text-surface-400 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
                     />
                     <p className="mt-1 text-[11px] text-surface-500">
-                      Enter multiple API tokens. If rate limits (429) or quota errors occur, ILTER automatically uses
-                      the next key in line.
+                      Enter multiple API tokens. If rate limits (429) or quota errors occur, Ilter Advanced
+                      automatically uses the next key in line.
                     </p>
                   </div>
                 )}
+              </div>
+
+              {/* Service Tier */}
+              <div>
+                <label htmlFor="provider-service-tier" className="block text-xs font-medium text-surface-700 mb-1">
+                  Service Tier
+                </label>
+                <select
+                  id="provider-service-tier"
+                  value={serviceTier}
+                  onChange={(e) => onServiceTierChange(e.target.value)}
+                  className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm text-surface-900 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+                >
+                  <option value="">(none — client decides)</option>
+                  <option value="default">default</option>
+                  <option value="priority">priority</option>
+                  <option value="flex">flex</option>
+                </select>
+                <p className="mt-1 text-[11px] text-surface-500">
+                  Provider-level default service tier, injected into chat requests that don't set one (OpenAI-compatible
+                  providers only).
+                </p>
               </div>
             </div>
 

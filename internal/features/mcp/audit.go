@@ -24,6 +24,7 @@ type AuditEntry struct {
 	Success    bool
 	ErrorMsg   string
 	ClientIP   string
+	Cost       float64 // USD billed for the call (tool pricing rules)
 }
 
 // AuditLogger asynchronously persists MCP audit entries to the database
@@ -65,8 +66,8 @@ func (l *AuditLogger) worker() {
 
 func (l *AuditLogger) persist(entry AuditEntry) {
 	query := `INSERT INTO mcp_audit_log
-	(key_id, tool, server_id, method, params, duration_ms, status_code, success, error_msg, client_ip)
-	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	(key_id, tool, server_id, method, params, duration_ms, status_code, success, error_msg, client_ip, cost)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	paramsJSON := sanitizedParamsJSON(entry.Params)
 
@@ -85,6 +86,7 @@ func (l *AuditLogger) persist(entry AuditEntry) {
 		boolToInt(entry.Success),
 		nullIfEmpty(entry.ErrorMsg),
 		nullIfEmpty(entry.ClientIP),
+		entry.Cost,
 	)
 	if err != nil {
 		mcpLog.Error("failed to write audit log", "error", err)
@@ -190,6 +192,7 @@ type AuditLogEntry struct {
 	ErrorMsg   *string `json:"error_msg,omitempty"`
 	ClientIP   *string `json:"client_ip,omitempty"`
 	CreatedAt  string  `json:"created_at"`
+	Cost       float64 `json:"cost,omitempty"` // USD billed (0 when unpriced)
 }
 
 // Query returns audit log entries matching filter, along with the total
@@ -215,7 +218,7 @@ func (l *AuditLogger) Query(ctx context.Context, filter AuditFilter) ([]AuditLog
 	offset := filter.Offset
 
 	dataSQL := `SELECT id, key_id, tool, server_id, method, params,
-		duration_ms, status_code, success, error_msg, client_ip, created_at
+		duration_ms, status_code, success, error_msg, client_ip, created_at, cost
 		FROM mcp_audit_log` + where + ` ORDER BY id DESC LIMIT ? OFFSET ?`
 	args = append(args, limit, offset)
 
@@ -291,7 +294,7 @@ func buildAuditConditions(filter AuditFilter) ([]string, []any) {
 type auditRowNulls struct {
 	keyID, serverID, params, errorMsg, clientIP, createdAt sql.NullString
 	statusCode, successInt                                 sql.NullInt64
-	durationMs                                             sql.NullFloat64
+	durationMs, cost                                       sql.NullFloat64
 }
 
 // scanAuditLogEntries reads every row of rows into an AuditLogEntry slice.
@@ -302,7 +305,7 @@ func scanAuditLogEntries(rows *sql.Rows) ([]AuditLogEntry, error) {
 		var n auditRowNulls
 
 		if err := rows.Scan(&e.ID, &n.keyID, &e.Tool, &n.serverID,
-			&e.Method, &n.params, &n.durationMs, &n.statusCode, &n.successInt, &n.errorMsg, &n.clientIP, &n.createdAt); err != nil {
+			&e.Method, &n.params, &n.durationMs, &n.statusCode, &n.successInt, &n.errorMsg, &n.clientIP, &n.createdAt, &n.cost); err != nil {
 			return nil, fmt.Errorf("scan audit log: %w", err)
 		}
 
@@ -329,6 +332,9 @@ func (n auditRowNulls) applyTo(e *AuditLogEntry) {
 	}
 	if n.durationMs.Valid {
 		e.DurationMs = n.durationMs.Float64
+	}
+	if n.cost.Valid {
+		e.Cost = n.cost.Float64
 	}
 	if n.statusCode.Valid {
 		e.StatusCode = int(n.statusCode.Int64)

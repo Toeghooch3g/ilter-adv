@@ -40,7 +40,7 @@ func TestSemanticCache_Integration(t *testing.T) {
 		TTL:                 1 * time.Hour,
 	}
 
-	sc := NewSemanticCacheMiddleware(cfg, circuitbreaker.NewRedisBreaker(rdb, 200*time.Millisecond, gobreaker.Settings{}), nil)
+	sc := NewSemanticCacheMiddleware(cfg, circuitbreaker.NewRedisBreaker(rdb, 200*time.Millisecond, gobreaker.Settings{}), nil, nil, nil)
 
 	callCount := 0
 	dummyHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -132,5 +132,37 @@ func TestSemanticCache_Integration(t *testing.T) {
 	}
 	if callCount != 2 {
 		t.Errorf("Expected callCount to be 2, got %d", callCount)
+	}
+}
+
+// TestSemanticCache_DisabledTypeShortCircuits verifies that
+// ILTER_CACHE_TYPE=disabled makes the middleware skip caching entirely (no
+// body reading, no cache header, every request reaches the handler) even
+// with no Redis/Postgres present.
+func TestSemanticCache_DisabledTypeShortCircuits(t *testing.T) {
+	cfg := config.CacheConfig{Enabled: true, Type: "disabled", SimilarityThreshold: 0.85, TTL: time.Hour}
+	sc := NewSemanticCacheMiddleware(cfg, nil, nil, nil, nil)
+
+	callCount := 0
+	router := sc.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		callCount++
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"r1","choices":[{"message":{"role":"assistant","content":"ok"}}]}`))
+	}))
+
+	body := `{"model":"gpt-mock","messages":[{"role":"user","content":"same prompt"}]}`
+	for i := range 2 {
+		req := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewBufferString(body))
+		rr := httptest.NewRecorder()
+		router.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("request %d failed with status %d", i+1, rr.Code)
+		}
+		if rr.Header().Get("X-Cache-Hit") != "" {
+			t.Errorf("request %d: X-Cache-Hit must be absent on a disabled cache, got %q", i+1, rr.Header().Get("X-Cache-Hit"))
+		}
+	}
+	if callCount != 2 {
+		t.Fatalf("every request must reach the upstream handler on a disabled cache, callCount=%d", callCount)
 	}
 }

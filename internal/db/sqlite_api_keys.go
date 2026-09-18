@@ -63,6 +63,7 @@ func apiKeyFromSQLC(
 	allowedModels *string,
 	allowedProviders *string,
 	enabled int64,
+	mcpInjectionEnabled int64,
 	createdAt time.Time,
 	updatedAt time.Time,
 ) *auth.APIKey {
@@ -95,6 +96,7 @@ func apiKeyFromSQLC(
 		AllowedModels:       models,
 		AllowedProviders:    providers,
 		Enabled:             enabled == 1,
+		MCPInjectionEnabled: mcpInjectionEnabled == 1,
 		CreatedAt:           createdAt,
 		UpdatedAt:           updatedAt,
 	}
@@ -143,6 +145,7 @@ func (s *SQLiteStore) CreateAPIKey(ctx context.Context, name string, groupID *in
 		AllowedModels:       &modelsStr,
 		AllowedProviders:    &providersStr,
 		Enabled:             1,
+		McpInjectionEnabled: 0,
 		CreatedAt:           now,
 		UpdatedAt:           now,
 	})
@@ -167,6 +170,7 @@ func (s *SQLiteStore) CreateAPIKey(ctx context.Context, name string, groupID *in
 		AllowedModels:       allowedModels,
 		AllowedProviders:    allowedProviders,
 		Enabled:             true,
+		MCPInjectionEnabled: false,
 		CreatedAt:           now,
 		UpdatedAt:           now,
 	}
@@ -192,7 +196,7 @@ func (s *SQLiteStore) GetAPIKey(ctx context.Context, id string) (*auth.APIKey, e
 		dbKey.Tags, dbKey.MonthlyBudgetUsd, dbKey.MonthlyBudgetTokens,
 		dbKey.RateLimitRpm, dbKey.RateLimitTpm,
 		dbKey.AllowedModels, dbKey.AllowedProviders,
-		dbKey.Enabled, dbKey.CreatedAt, dbKey.UpdatedAt,
+		dbKey.Enabled, dbKey.McpInjectionEnabled, dbKey.CreatedAt, dbKey.UpdatedAt,
 	), nil
 }
 
@@ -213,7 +217,7 @@ func (s *SQLiteStore) getAPIKeyByHashLookup(hash string) (*auth.APIKey, error) {
 		dbKey.Tags, dbKey.MonthlyBudgetUsd, dbKey.MonthlyBudgetTokens,
 		dbKey.RateLimitRpm, dbKey.RateLimitTpm,
 		dbKey.AllowedModels, dbKey.AllowedProviders,
-		dbKey.Enabled, dbKey.CreatedAt, dbKey.UpdatedAt,
+		dbKey.Enabled, dbKey.McpInjectionEnabled, dbKey.CreatedAt, dbKey.UpdatedAt,
 	), nil
 }
 
@@ -240,7 +244,7 @@ func (s *SQLiteStore) GetActiveKeyByHash(ctx context.Context, rawToken string) (
 			dbKey.Tags, dbKey.MonthlyBudgetUsd, dbKey.MonthlyBudgetTokens,
 			dbKey.RateLimitRpm, dbKey.RateLimitTpm,
 			dbKey.AllowedModels, dbKey.AllowedProviders,
-			dbKey.Enabled, dbKey.CreatedAt, dbKey.UpdatedAt,
+			dbKey.Enabled, dbKey.McpInjectionEnabled, dbKey.CreatedAt, dbKey.UpdatedAt,
 		), nil
 	}
 
@@ -290,7 +294,7 @@ func (s *SQLiteStore) lookupAPIKeyArgon2id(ctx context.Context, rawToken string,
 	if err != nil {
 		return nil, err
 	}
-	return s.argon2idVerifyAndConvert(rawToken, row.HashedKey, row.Salt, row.ID, row.Name, row.GroupID, row.UserID, row.Tags, row.MonthlyBudgetUsd, row.MonthlyBudgetTokens, row.RateLimitRpm, row.RateLimitTpm, row.AllowedModels, row.AllowedProviders, row.Enabled, row.CreatedAt, row.UpdatedAt)
+	return s.argon2idVerifyAndConvert(rawToken, row.HashedKey, row.Salt, row.ID, row.Name, row.GroupID, row.UserID, row.Tags, row.MonthlyBudgetUsd, row.MonthlyBudgetTokens, row.RateLimitRpm, row.RateLimitTpm, row.AllowedModels, row.AllowedProviders, row.Enabled, row.McpInjectionEnabled, row.CreatedAt, row.UpdatedAt)
 }
 
 // lookupAPIKeyArgon2idNoPrefix queries keys without a key_prefix and verifies with Argon2id.
@@ -299,12 +303,12 @@ func (s *SQLiteStore) lookupAPIKeyArgon2idNoPrefix(ctx context.Context, rawToken
 	if err != nil {
 		return nil, err
 	}
-	return s.argon2idVerifyAndConvert(rawToken, row.HashedKey, row.Salt, row.ID, row.Name, row.GroupID, row.UserID, row.Tags, row.MonthlyBudgetUsd, row.MonthlyBudgetTokens, row.RateLimitRpm, row.RateLimitTpm, row.AllowedModels, row.AllowedProviders, row.Enabled, row.CreatedAt, row.UpdatedAt)
+	return s.argon2idVerifyAndConvert(rawToken, row.HashedKey, row.Salt, row.ID, row.Name, row.GroupID, row.UserID, row.Tags, row.MonthlyBudgetUsd, row.MonthlyBudgetTokens, row.RateLimitRpm, row.RateLimitTpm, row.AllowedModels, row.AllowedProviders, row.Enabled, row.McpInjectionEnabled, row.CreatedAt, row.UpdatedAt)
 }
 
 // argon2idVerifyAndConvert checks rawToken against storedHash using Argon2id and
 // converts the sqlc row fields to an auth.APIKey on match.
-func (s *SQLiteStore) argon2idVerifyAndConvert(rawToken, storedHash, salt string, id string, name string, groupID *int64, userID *int64, tags *string, monthlyBudgetUSD *float64, monthlyBudgetTokens *int64, rateLimitRPM *int64, rateLimitTPM *int64, allowedModels *string, allowedProviders *string, enabled int64, createdAt, updatedAt time.Time) (*auth.APIKey, error) {
+func (s *SQLiteStore) argon2idVerifyAndConvert(rawToken, storedHash, salt string, id string, name string, groupID *int64, userID *int64, tags *string, monthlyBudgetUSD *float64, monthlyBudgetTokens *int64, rateLimitRPM *int64, rateLimitTPM *int64, allowedModels *string, allowedProviders *string, enabled int64, mcpInjectionEnabled int64, createdAt, updatedAt time.Time) (*auth.APIKey, error) {
 	computedHash, err := crypto.HashTokenWithSalt(rawToken, salt, "argon2")
 	if err != nil {
 		slog.Warn("Failed to compute Argon2id hash", "error", err)
@@ -317,7 +321,7 @@ func (s *SQLiteStore) argon2idVerifyAndConvert(rawToken, storedHash, salt string
 			tags, monthlyBudgetUSD, monthlyBudgetTokens,
 			rateLimitRPM, rateLimitTPM,
 			allowedModels, allowedProviders,
-			enabled, createdAt, updatedAt,
+			enabled, mcpInjectionEnabled, createdAt, updatedAt,
 		), nil
 	}
 
@@ -346,7 +350,7 @@ func (s *SQLiteStore) ListAPIKeys(ctx context.Context, groupID ...int) ([]auth.A
 				k.Tags, k.MonthlyBudgetUsd, k.MonthlyBudgetTokens,
 				k.RateLimitRpm, k.RateLimitTpm,
 				k.AllowedModels, k.AllowedProviders,
-				k.Enabled, k.CreatedAt, k.UpdatedAt,
+				k.Enabled, k.McpInjectionEnabled, k.CreatedAt, k.UpdatedAt,
 			))
 		}
 		return rows, nil
@@ -364,7 +368,7 @@ func (s *SQLiteStore) ListAPIKeys(ctx context.Context, groupID ...int) ([]auth.A
 			k.Tags, k.MonthlyBudgetUsd, k.MonthlyBudgetTokens,
 			k.RateLimitRpm, k.RateLimitTpm,
 			k.AllowedModels, k.AllowedProviders,
-			k.Enabled, k.CreatedAt, k.UpdatedAt,
+			k.Enabled, k.McpInjectionEnabled, k.CreatedAt, k.UpdatedAt,
 		))
 	}
 	return rows, nil
@@ -447,6 +451,7 @@ func (s *SQLiteStore) UpdateAPIKey(ctx context.Context, id string, updates auth.
 		AllowedModels:       &modelsStr,
 		AllowedProviders:    &providersStr,
 		Enabled:             boolToInt64(updates.Enabled),
+		McpInjectionEnabled: boolToInt64(updates.MCPInjectionEnabled),
 		UpdatedAt:           now,
 		ID:                  id,
 	})

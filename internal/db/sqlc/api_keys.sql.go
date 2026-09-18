@@ -32,13 +32,13 @@ INSERT INTO api_keys (
     id, name, hashed_key, salt, key_prefix, group_id, user_id, tags,
     monthly_budget_usd, monthly_budget_tokens,
     rate_limit_rpm, rate_limit_tpm, rate_limit_retry_after,
-    allowed_models, allowed_providers, enabled,
+    allowed_models, allowed_providers, enabled, mcp_injection_enabled,
     created_at, updated_at
 ) VALUES (
     ?, ?, ?, ?, ?, ?, ?, ?,
     ?, ?,
     ?, ?, ?,
-    ?, ?, ?,
+    ?, ?, ?, ?,
     ?, ?
 )
 `
@@ -60,6 +60,7 @@ type CreateAPIKeyParams struct {
 	AllowedModels       *string   `json:"allowed_models"`
 	AllowedProviders    *string   `json:"allowed_providers"`
 	Enabled             int64     `json:"enabled"`
+	McpInjectionEnabled int64     `json:"mcp_injection_enabled"`
 	CreatedAt           time.Time `json:"created_at"`
 	UpdatedAt           time.Time `json:"updated_at"`
 }
@@ -83,6 +84,7 @@ func (q *Queries) CreateAPIKey(ctx context.Context, arg CreateAPIKeyParams) erro
 		arg.AllowedModels,
 		arg.AllowedProviders,
 		arg.Enabled,
+		arg.McpInjectionEnabled,
 		arg.CreatedAt,
 		arg.UpdatedAt,
 	)
@@ -102,7 +104,7 @@ const getAPIKey = `-- name: GetAPIKey :one
 SELECT id, name, group_id, user_id, tags,
     monthly_budget_usd, monthly_budget_tokens,
     rate_limit_rpm, rate_limit_tpm, rate_limit_retry_after,
-    allowed_models, allowed_providers, enabled,
+    allowed_models, allowed_providers, enabled, mcp_injection_enabled,
     created_at, updated_at
 FROM api_keys
 WHERE id = ?
@@ -122,6 +124,7 @@ type GetAPIKeyRow struct {
 	AllowedModels       *string   `json:"allowed_models"`
 	AllowedProviders    *string   `json:"allowed_providers"`
 	Enabled             int64     `json:"enabled"`
+	McpInjectionEnabled int64     `json:"mcp_injection_enabled"`
 	CreatedAt           time.Time `json:"created_at"`
 	UpdatedAt           time.Time `json:"updated_at"`
 }
@@ -143,6 +146,7 @@ func (q *Queries) GetAPIKey(ctx context.Context, id string) (GetAPIKeyRow, error
 		&i.AllowedModels,
 		&i.AllowedProviders,
 		&i.Enabled,
+		&i.McpInjectionEnabled,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -153,7 +157,7 @@ const getAPIKeyByHash = `-- name: GetAPIKeyByHash :one
 SELECT id, name, group_id, user_id, tags,
     monthly_budget_usd, monthly_budget_tokens,
     rate_limit_rpm, rate_limit_tpm, rate_limit_retry_after,
-    allowed_models, allowed_providers, enabled,
+    allowed_models, allowed_providers, enabled, mcp_injection_enabled,
     created_at, updated_at
 FROM api_keys
 WHERE hashed_key = ?
@@ -173,6 +177,7 @@ type GetAPIKeyByHashRow struct {
 	AllowedModels       *string   `json:"allowed_models"`
 	AllowedProviders    *string   `json:"allowed_providers"`
 	Enabled             int64     `json:"enabled"`
+	McpInjectionEnabled int64     `json:"mcp_injection_enabled"`
 	CreatedAt           time.Time `json:"created_at"`
 	UpdatedAt           time.Time `json:"updated_at"`
 }
@@ -194,6 +199,7 @@ func (q *Queries) GetAPIKeyByHash(ctx context.Context, hashedKey string) (GetAPI
 		&i.AllowedModels,
 		&i.AllowedProviders,
 		&i.Enabled,
+		&i.McpInjectionEnabled,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -220,7 +226,7 @@ const getAPIKeyWithHash = `-- name: GetAPIKeyWithHash :one
 SELECT id, name, group_id, user_id, tags,
     monthly_budget_usd, monthly_budget_tokens,
     rate_limit_rpm, rate_limit_tpm, rate_limit_retry_after,
-    allowed_models, allowed_providers, enabled,
+    allowed_models, allowed_providers, enabled, mcp_injection_enabled,
     created_at, updated_at, hashed_key, salt
 FROM api_keys
 WHERE key_prefix = ? AND salt != 'sha256' AND salt IS NOT NULL AND salt != ''
@@ -240,6 +246,7 @@ type GetAPIKeyWithHashRow struct {
 	AllowedModels       *string   `json:"allowed_models"`
 	AllowedProviders    *string   `json:"allowed_providers"`
 	Enabled             int64     `json:"enabled"`
+	McpInjectionEnabled int64     `json:"mcp_injection_enabled"`
 	CreatedAt           time.Time `json:"created_at"`
 	UpdatedAt           time.Time `json:"updated_at"`
 	HashedKey           string    `json:"hashed_key"`
@@ -263,6 +270,7 @@ func (q *Queries) GetAPIKeyWithHash(ctx context.Context, keyPrefix *string) (Get
 		&i.AllowedModels,
 		&i.AllowedProviders,
 		&i.Enabled,
+		&i.McpInjectionEnabled,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.HashedKey,
@@ -275,7 +283,7 @@ const getAPIKeyWithHashNoPrefix = `-- name: GetAPIKeyWithHashNoPrefix :one
 SELECT id, name, group_id, user_id, tags,
     monthly_budget_usd, monthly_budget_tokens,
     rate_limit_rpm, rate_limit_tpm, rate_limit_retry_after,
-    allowed_models, allowed_providers, enabled,
+    allowed_models, allowed_providers, enabled, mcp_injection_enabled,
     created_at, updated_at, hashed_key, salt
 FROM api_keys
 WHERE (key_prefix IS NULL OR key_prefix = '') AND salt != 'sha256' AND salt IS NOT NULL AND salt != ''
@@ -295,6 +303,7 @@ type GetAPIKeyWithHashNoPrefixRow struct {
 	AllowedModels       *string   `json:"allowed_models"`
 	AllowedProviders    *string   `json:"allowed_providers"`
 	Enabled             int64     `json:"enabled"`
+	McpInjectionEnabled int64     `json:"mcp_injection_enabled"`
 	CreatedAt           time.Time `json:"created_at"`
 	UpdatedAt           time.Time `json:"updated_at"`
 	HashedKey           string    `json:"hashed_key"`
@@ -318,6 +327,7 @@ func (q *Queries) GetAPIKeyWithHashNoPrefix(ctx context.Context) (GetAPIKeyWithH
 		&i.AllowedModels,
 		&i.AllowedProviders,
 		&i.Enabled,
+		&i.McpInjectionEnabled,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.HashedKey,
@@ -330,7 +340,7 @@ const listAPIKeys = `-- name: ListAPIKeys :many
 SELECT id, name, group_id, user_id, tags,
     monthly_budget_usd, monthly_budget_tokens,
     rate_limit_rpm, rate_limit_tpm, rate_limit_retry_after,
-    allowed_models, allowed_providers, enabled,
+    allowed_models, allowed_providers, enabled, mcp_injection_enabled,
     created_at, updated_at
 FROM api_keys
 ORDER BY created_at DESC
@@ -350,6 +360,7 @@ type ListAPIKeysRow struct {
 	AllowedModels       *string   `json:"allowed_models"`
 	AllowedProviders    *string   `json:"allowed_providers"`
 	Enabled             int64     `json:"enabled"`
+	McpInjectionEnabled int64     `json:"mcp_injection_enabled"`
 	CreatedAt           time.Time `json:"created_at"`
 	UpdatedAt           time.Time `json:"updated_at"`
 }
@@ -377,6 +388,7 @@ func (q *Queries) ListAPIKeys(ctx context.Context) ([]ListAPIKeysRow, error) {
 			&i.AllowedModels,
 			&i.AllowedProviders,
 			&i.Enabled,
+			&i.McpInjectionEnabled,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {
@@ -397,7 +409,7 @@ const listAPIKeysByGroup = `-- name: ListAPIKeysByGroup :many
 SELECT id, name, group_id, user_id, tags,
     monthly_budget_usd, monthly_budget_tokens,
     rate_limit_rpm, rate_limit_tpm, rate_limit_retry_after,
-    allowed_models, allowed_providers, enabled,
+    allowed_models, allowed_providers, enabled, mcp_injection_enabled,
     created_at, updated_at
 FROM api_keys
 WHERE group_id = ?
@@ -418,6 +430,7 @@ type ListAPIKeysByGroupRow struct {
 	AllowedModels       *string   `json:"allowed_models"`
 	AllowedProviders    *string   `json:"allowed_providers"`
 	Enabled             int64     `json:"enabled"`
+	McpInjectionEnabled int64     `json:"mcp_injection_enabled"`
 	CreatedAt           time.Time `json:"created_at"`
 	UpdatedAt           time.Time `json:"updated_at"`
 }
@@ -445,6 +458,7 @@ func (q *Queries) ListAPIKeysByGroup(ctx context.Context, groupID *int64) ([]Lis
 			&i.AllowedModels,
 			&i.AllowedProviders,
 			&i.Enabled,
+			&i.McpInjectionEnabled,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {
@@ -489,7 +503,7 @@ UPDATE api_keys SET
     monthly_budget_usd = ?, monthly_budget_tokens = ?,
     rate_limit_rpm = ?, rate_limit_tpm = ?,
     allowed_models = ?, allowed_providers = ?,
-    enabled = ?, updated_at = ?
+    enabled = ?, mcp_injection_enabled = ?, updated_at = ?
 WHERE id = ?
 `
 
@@ -505,6 +519,7 @@ type UpdateAPIKeyParams struct {
 	AllowedModels       *string   `json:"allowed_models"`
 	AllowedProviders    *string   `json:"allowed_providers"`
 	Enabled             int64     `json:"enabled"`
+	McpInjectionEnabled int64     `json:"mcp_injection_enabled"`
 	UpdatedAt           time.Time `json:"updated_at"`
 	ID                  string    `json:"id"`
 }
@@ -522,6 +537,7 @@ func (q *Queries) UpdateAPIKey(ctx context.Context, arg UpdateAPIKeyParams) erro
 		arg.AllowedModels,
 		arg.AllowedProviders,
 		arg.Enabled,
+		arg.McpInjectionEnabled,
 		arg.UpdatedAt,
 		arg.ID,
 	)

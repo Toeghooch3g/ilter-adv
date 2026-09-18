@@ -226,20 +226,22 @@ func (h *MCPHandler) CreateServer(w http.ResponseWriter, r *http.Request) {
 
 // updateMCPServerRequest is the PATCH body accepted by UpdateServer.
 type updateMCPServerRequest struct {
-	Name            string `json:"name"`
-	Description     string `json:"description"`
-	Transport       string `json:"transport"`
-	URL             string `json:"url,omitempty"`
-	Command         string `json:"command,omitempty"`
-	Args            string `json:"args,omitempty"`
-	Env             string `json:"env,omitempty"`
-	Handler         string `json:"handler,omitempty"`
-	Enabled         *bool  `json:"enabled,omitempty"`
-	TimeoutMs       *int   `json:"timeout_ms,omitempty"`
-	MaxRetries      *int   `json:"max_retries,omitempty"`
-	AuthType        string `json:"auth_type,omitempty"`
-	AuthKeyEnv      string `json:"auth_key_env,omitempty"`
-	ProtocolVersion string `json:"protocol_version,omitempty"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Transport   string `json:"transport"`
+	URL         string `json:"url,omitempty"`
+	Command     string `json:"command,omitempty"`
+	Args        string `json:"args,omitempty"`
+	Env         string `json:"env,omitempty"`
+	Handler     string `json:"handler,omitempty"`
+	Enabled     *bool  `json:"enabled,omitempty"`
+	TimeoutMs   *int   `json:"timeout_ms,omitempty"`
+	MaxRetries  *int   `json:"max_retries,omitempty"`
+	// AuthType/AuthKeyEnv are pointers: nil = keep current, "" = clear,
+	// value = set (mirrors the Enabled/TimeoutMs pointer pattern).
+	AuthType        *string `json:"auth_type,omitempty"`
+	AuthKeyEnv      *string `json:"auth_key_env,omitempty"`
+	ProtocolVersion string  `json:"protocol_version,omitempty"`
 }
 
 // oldMCPServerValues holds an mcp_servers row's pre-update column values,
@@ -311,13 +313,13 @@ func buildMCPServerUpdateSets(req updateMCPServerRequest) (sets []string, args [
 		sets = append(sets, "max_retries = ?")
 		args = append(args, *req.MaxRetries)
 	}
-	if req.AuthType != "" {
+	if req.AuthType != nil {
 		sets = append(sets, "auth_type = ?")
-		args = append(args, req.AuthType)
+		args = append(args, *req.AuthType)
 	}
-	if req.AuthKeyEnv != "" {
+	if req.AuthKeyEnv != nil {
 		sets = append(sets, "auth_key_env = ?")
-		args = append(args, req.AuthKeyEnv)
+		args = append(args, *req.AuthKeyEnv)
 	}
 	if req.ProtocolVersion != "" {
 		sets = append(sets, "protocol_version = ?")
@@ -332,12 +334,20 @@ func (h *MCPHandler) auditMCPServerUpdate(r *http.Request, id string, req update
 	if h.configAuditor == nil {
 		return
 	}
+	authTypeVal := old.authType
+	if req.AuthType != nil {
+		authTypeVal = *req.AuthType
+	}
+	authKeyVal := old.authKeyEnv
+	if req.AuthKeyEnv != nil {
+		authKeyVal = *req.AuthKeyEnv
+	}
 	oldVals := auditServerVals(old.name, old.desc, old.transport, old.url, old.cmd, old.enabled, old.timeoutMs, old.maxRetries, old.authType, old.authKeyEnv)
 	newVals := auditServerVals(req.Name, req.Description, req.Transport, req.URL, req.Command,
 		(req.Enabled != nil && *req.Enabled) || (req.Enabled == nil && old.enabled),
 		timeoutOrDefault(req.TimeoutMs, old.timeoutMs),
 		maxRetriesOrDefault(req.MaxRetries, old.maxRetries),
-		req.AuthType, req.AuthKeyEnv)
+		authTypeVal, authKeyVal)
 	if err := h.configAuditor.LogUpdate(r.Context(), "mcp_server", id, oldVals, newVals, reqmeta.GetKeyID(r.Context())); err != nil {
 		slog.Error("failed to log audit update mcp_server", "error", err)
 	}

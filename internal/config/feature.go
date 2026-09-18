@@ -31,6 +31,12 @@ func IsEnabled(cache *Cache, feature string) bool {
 		return snap.MCPEnabled
 	case "openapi":
 		return snap.OpenAPIEnabled
+	case "request_log":
+		return snap.RequestLogEnabled
+	case "chat":
+		return snap.ChatEnabled
+	case "jobs":
+		return snap.JobsEnabled
 	}
 	return false
 }

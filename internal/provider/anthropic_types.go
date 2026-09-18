@@ -45,8 +45,10 @@ type anthropicResponse struct {
 		Input    map[string]any `json:"input,omitempty"`
 	} `json:"content"`
 	Usage struct {
-		InputTokens  int `json:"input_tokens"`
-		OutputTokens int `json:"output_tokens"`
+		InputTokens              int `json:"input_tokens"`
+		OutputTokens             int `json:"output_tokens"`
+		CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+		CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
 	} `json:"usage"`
 }
 
@@ -57,8 +59,10 @@ type anthropicSSEEvent struct {
 		ID    string `json:"id"`
 		Model string `json:"model"`
 		Usage *struct {
-			InputTokens  int `json:"input_tokens"`
-			OutputTokens int `json:"output_tokens"`
+			InputTokens              int `json:"input_tokens"`
+			OutputTokens             int `json:"output_tokens"`
+			CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+			CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
 		} `json:"usage,omitempty"`
 	} `json:"message,omitempty"`
 	ContentBlock *struct {

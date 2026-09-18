@@ -1,6 +1,6 @@
 openapi: 3.1.0
 info:
-  title: ILTER Gateway API
+  title: Ilter Advanced Gateway API
   description: Secure, cost-optimizing LLM Gateway with built-in PII masking, loop detection, and load balancing.
   version: 1.0.0
 servers:
@@ -711,6 +711,12 @@ paths:
                           type: integer
                         completion_tokens:
                           type: integer
+                        cached_tokens:
+                          type: integer
+                          description: Cache-read (cached input) token count
+                        cache_creation_tokens:
+                          type: integer
+                          description: Anthropic cache-write token count
                         total_cost:
                           type: number
                         latency_ms:
@@ -838,8 +844,20 @@ paths:
                       type: boolean
                     display_name:
                       type: string
-                    tier:
+                    category:
                       type: string
+                    cost_per_input_token:
+                      type: number
+                      format: float
+                    cost_per_output_token:
+                      type: number
+                      format: float
+                    cost_per_cached_input_token:
+                      type: number
+                      format: float
+                    cost_per_cache_write_token:
+                      type: number
+                      format: float
         '401':
           $ref: '#/components/responses/Unauthorized'
   /api/loops:
@@ -1041,7 +1059,7 @@ paths:
                       properties:
                         model:
                           type: string
-                        tier:
+                        category:
                           type: string
                         input_cost:
                           type: number
@@ -1070,9 +1088,13 @@ paths:
             schema:
               type: object
               required:
+                - provider
                 - name
                 - active
               properties:
+                provider:
+                  type: string
+                  example: openai
                 name:
                   type: string
                   example: gpt-4o
@@ -1096,12 +1118,12 @@ paths:
           description: Model not found
         '400':
           description: Invalid request
-  /api/models/tier:
+  /api/models/category:
     post:
       tags: [Dashboard]
       servers:
         - url: http://127.0.0.1:9191
-      summary: Update model tier
+      summary: Update model category
       security:
         - BearerAuth: []
       requestBody:
@@ -1112,18 +1134,18 @@ paths:
               type: object
               required:
                 - name
-                - tier
+                - category
               properties:
                 name:
                   type: string
                   example: gpt-4o
-                tier:
+                category:
                   type: string
-                  enum: [free, economy, standard, premium]
+                  enum: [free, economy, standard, premium, embedding]
                   example: premium
       responses:
         '200':
-          description: Model tier updated successfully
+          description: Model category updated successfully
           content:
             application/json:
               schema:
@@ -1137,7 +1159,7 @@ paths:
         '404':
           description: Model not found
         '400':
-          description: Invalid tier value
+          description: Invalid category value
   /api/pii-stats:
     get:
       tags: [Dashboard]
@@ -1278,6 +1300,215 @@ paths:
                       nullable: true
         '401':
           $ref: '#/components/responses/Unauthorized'
+  /api/pii/config:
+    get:
+      tags: [Dashboard]
+      servers:
+        - url: http://127.0.0.1:9191
+      summary: Get the PII protection feature flag
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Current PII enabled state
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  enabled:
+                    type: boolean
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Dashboard]
+      servers:
+        - url: http://127.0.0.1:9191
+      summary: Toggle the PII protection feature
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                enabled:
+                  type: boolean
+      responses:
+        '200':
+          description: PII protection toggled
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+                  enabled:
+                    type: boolean
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/pii/patterns:
+    get:
+      tags: [Dashboard]
+      servers:
+        - url: http://127.0.0.1:9191
+      summary: List PII detection patterns
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: PII patterns retrieved
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/PIIPattern'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Dashboard]
+      servers:
+        - url: http://127.0.0.1:9191
+      summary: Create a PII detection pattern
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - name
+                - regex
+              properties:
+                name:
+                  type: string
+                  example: order_id
+                regex:
+                  type: string
+                  example: 'ORD-[0-9]+'
+                enabled:
+                  type: boolean
+                  default: true
+                action:
+                  type: string
+                  enum: [mask, mask_reversible, block, log_only]
+                  default: mask
+      responses:
+        '201':
+          description: Pattern created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+                  name:
+                    type: string
+        '400':
+          description: Invalid pattern (missing name/regex, bad regex, or bad action)
+        '409':
+          description: Pattern already exists
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/pii/patterns/{name}:
+    put:
+      tags: [Dashboard]
+      servers:
+        - url: http://127.0.0.1:9191
+      summary: Update a PII detection pattern (regex, enabled, action)
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                regex:
+                  type: string
+                enabled:
+                  type: boolean
+                action:
+                  type: string
+                  enum: [mask, mask_reversible, block, log_only]
+      responses:
+        '200':
+          description: Pattern updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+                  name:
+                    type: string
+        '400':
+          description: Invalid pattern or no fields to update
+        '404':
+          description: Pattern not found
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    delete:
+      tags: [Dashboard]
+      servers:
+        - url: http://127.0.0.1:9191
+      summary: Delete a PII detection pattern
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Pattern deleted
+        '404':
+          description: Pattern not found
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/pii/patterns/reload:
+    post:
+      tags: [Dashboard]
+      servers:
+        - url: http://127.0.0.1:9191
+      summary: Reload PII patterns from the database into the runtime masker
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Patterns reloaded
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+        '500':
+          description: Failed to reload patterns
+        '401':
+          $ref: '#/components/responses/Unauthorized'
   /providers:
     get:
       tags: [Admin]
@@ -1407,6 +1638,14 @@ paths:
                 api_key:
                   type: string
                   example: sk-...
+                service_tier:
+                  type: string
+                  description: Provider-level default service tier injected into chat requests that don't set one (OpenAI-compatible providers). Empty clears it.
+                  enum:
+                    - ''
+                    - default
+                    - priority
+                    - flex
       responses:
         '200':
           description: Provider configuration saved successfully
@@ -1422,6 +1661,134 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '400':
           description: Invalid provider configuration
+  /api/providers/create:
+    post:
+      tags: [Dashboard]
+      servers:
+        - url: http://127.0.0.1:9191
+      summary: Register a new provider (custom OpenAI-compatible by default)
+      description: Persists a provider registration and hot-reloads it into the live registry without a restart.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - name
+                - base_url
+              properties:
+                name:
+                  type: string
+                  example: my-self-hosted
+                type:
+                  type: string
+                  description: Defaults to "openai" (custom OpenAI-compatible) when omitted
+                  example: openai
+                base_url:
+                  type: string
+                  example: https://llm.example.com/v1
+                api_key:
+                  type: string
+                  example: sk-...
+                service_tier:
+                  type: string
+                  description: Provider-level default service tier for OpenAI-compatible providers.
+                  enum:
+                    - ''
+                    - default
+                    - priority
+                    - flex
+      responses:
+        '200':
+          description: Provider created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+                  name:
+                    type: string
+                  type:
+                    type: string
+        '400':
+          description: Invalid provider configuration
+        '409':
+          description: Provider with this name already exists
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/providers/{name}/models-overrides:
+    get:
+      tags: [Dashboard]
+      servers:
+        - url: http://127.0.0.1:9191
+      summary: Download a provider's manual model-override document
+      description: Returns an array of model overrides (empty when none stored). Lowest-priority model source; the provider's /v1/models endpoint wins per-field.
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: name
+          required: true
+          schema:
+            type: string
+          description: Provider name
+      responses:
+        '200':
+          description: Model overrides document
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ModelOverride'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    put:
+      tags: [Dashboard]
+      servers:
+        - url: http://127.0.0.1:9191
+      summary: Upload a provider's manual model-override document
+      description: Replaces the stored model-override JSON (array of ModelOverride entries) and refreshes the config cache so the change applies without a restart.
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: name
+          required: true
+          schema:
+            type: string
+          description: Provider name
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              items:
+                $ref: '#/components/schemas/ModelOverride'
+      responses:
+        '200':
+          description: Model overrides stored
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+                  count:
+                    type: integer
+        '400':
+          description: Invalid model-override document
+        '401':
+          $ref: '#/components/responses/Unauthorized'
   /api/smart-router/stats:
     get:
       tags: [Dashboard]
@@ -2930,6 +3297,23 @@ components:
       in: header
       name: X-API-Key
   schemas:
+    PIIPattern:
+      type: object
+      description: A PII detection pattern (name, compiled regex, enabled flag, and masking action).
+      properties:
+        name:
+          type: string
+          description: Unique pattern name (e.g. 'credit_card')
+        regex:
+          type: string
+          description: The compiled regular expression used to detect matches
+        enabled:
+          type: boolean
+          description: Whether the pattern is active
+        action:
+          type: string
+          enum: [mask, mask_reversible, block, log_only]
+          description: What to do with detected matches
     APIKey:
       type: object
       properties:
@@ -2945,6 +3329,47 @@ components:
           type: integer
         created_at:
           type: string
+        enabled:
+          type: boolean
+        mcp_injection_enabled:
+          type: boolean
+          description: Per-key opt-in for server-side MCP/OpenAPI tool injection; defaults to false.
+    ModelOverride:
+      type: object
+      description: A single manually-specified model entry (lowest-priority model source; the provider's /v1/models endpoint wins per-field).
+      required:
+        - id
+      properties:
+        id:
+          type: string
+          description: Model ID as exposed to clients
+        display_name:
+          type: string
+        category:
+          type: string
+          enum: [free, economy, standard, premium, embedding]
+        cost_per_input_token:
+          type: number
+          format: float
+        cost_per_output_token:
+          type: number
+          format: float
+        cost_per_cached_input_token:
+          type: number
+          format: float
+          description: Per-token price for cache-read (cached input) tokens; 0 = bill at input price
+        cost_per_cache_write_token:
+          type: number
+          format: float
+          description: Per-token price for Anthropic cache-write (cache_creation) tokens; 0 = bill at input price
+        max_context_tokens:
+          type: integer
+        max_output_tokens:
+          type: integer
+        capabilities:
+          type: array
+          items:
+            type: string
     TriggerKind:
       type: string
       enum: [cron, webhook, http]

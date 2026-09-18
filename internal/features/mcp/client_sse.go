@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -411,8 +412,20 @@ func (c *SSEClient) readLoop(ctx context.Context, body io.ReadCloser) {
 func (c *SSEClient) handleEvent(_ context.Context, eventType, data string) {
 	switch eventType {
 	case "endpoint":
+		// Many servers (including ilter's own gateway) emit a relative
+		// endpoint (e.g. "/mcp?sessionId=..."). Resolve it against the
+		// original dial URL; on a parse failure keep the verbatim value so we
+		// never regress an absolute-endpoint server.
+		resolved := data
+		if base, err := url.Parse(c.server.Config.URL); err == nil {
+			if u, uErr := base.Parse(data); uErr == nil {
+				resolved = u.String()
+			} else {
+				sseLog.Warn("failed to resolve SSE endpoint, using verbatim", "server_id", c.server.ID, "error", uErr)
+			}
+		}
 		c.mu.Lock()
-		c.postURL = data
+		c.postURL = resolved
 		c.mu.Unlock()
 
 	case "message":

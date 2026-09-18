@@ -31,10 +31,7 @@ func (c *Checker) compileBuiltinRules() error {
 	if err := c.compileToxicRules(); err != nil {
 		return err
 	}
-	if err := c.compileInputGuardrails(); err != nil {
-		return err
-	}
-	return nil
+	return c.compileInputGuardrails()
 }
 
 func (c *Checker) compileInputGuardrails() error {

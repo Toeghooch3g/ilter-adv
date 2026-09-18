@@ -1,4 +1,4 @@
-# ILTER System Architecture
+# Ilter Advanced System Architecture
 
 > How the pieces fit together, technology choices, and how a request flows through the system.
 
@@ -6,11 +6,11 @@
 
 ## High-Level Design
 
-ILTER is a **single-binary reverse proxy** built in Go 1.26.3 (`CGO_ENABLED=0`) with embedded Astro + React dashboard:
+Ilter Advanced is a **single-binary reverse proxy** built in Go 1.26.3 (`CGO_ENABLED=0`) with embedded Astro + React dashboard:
 
 ```
                             ┌──────────────────────────────────────────┐
-                            │              ILTER (single binary)        │
+                            │      Ilter Advanced (single binary)      │
                             │                                           │
     Client                  │  ┌──────────────────────────────────┐    │
     (SDK / CLI / app)       │  │         Proxy Server (:8181)      │    │
@@ -28,8 +28,8 @@ ILTER is a **single-binary reverse proxy** built in Go 1.26.3 (`CGO_ENABLED=0`) 
         │                   │  │  ┌──────────────────────────────┐ │    │
         │                   │  │  │    Provider Adapter Layer     │ │    │
         │                   │  │  │  OpenAI │ Anthropic │ DeepSeek│ │    │
-        │                   │  │  │  Gemini │ Ollama   │ OpenRoute│ │    │
-        │                   │  │  │  Qwen   │ OpenCode │ Mock     │ │    │
+        │                   │  │  │  Gemini │ DeepInfra  │ Ollama │ │    │
+        │                   │  │  │  Qwen   │ OpenCode │ OpenRoute│ │    │
         │                   │  │  └──────────────────────────────┘ │    │
         │                   │  │                  │                 │    │
         │                   │  │                  ▼                 │    │
@@ -129,7 +129,7 @@ The frontend (`web/`) is an **Astro + React** SPA with:
 
 ## Observability Architecture
 
-ILTER has two **independent observability layers**:
+Ilter Advanced has two **independent observability layers**:
 
 | Layer | Port | Source | Format | Audience |
 |-------|------|--------|--------|----------|
@@ -360,7 +360,7 @@ The MCP Gateway enables seamless integration of Model Context Protocol tools int
 - **Access control** — Per-key or per-group tool-level authorization (`mcp_grant` table allow/deny rules)
 - **OpenAPI bridge** — Expose any REST API as MCP tools from an OpenAPI spec
 - **OAuth PKCE Authorization (RFC 7636 / RFC 8414 / RFC 9728)**:
-  For remote MCP clients (such as VS Code or cloud IDEs), ILTER provides native OAuth PKCE endpoints on port `:8181`:
+  For remote MCP clients (such as VS Code or cloud IDEs), Ilter Advanced provides native OAuth PKCE endpoints on port `:8181`:
   - `/.well-known/oauth-protected-resource`
   - `/.well-known/oauth-authorization-server`
   - `/authorize` (GET/POST)
@@ -369,19 +369,19 @@ The MCP Gateway enables seamless integration of Model Context Protocol tools int
 
 ### Tri-Protocol MCP Support (2024-11-05 / 2025-03-26 / 2026-07-28)
 
-ILTER's MCP Gateway and Hub speak all three published MCP protocol revisions
+Ilter Advanced's MCP Gateway and Hub speak all three published MCP protocol revisions
 simultaneously, on both sides of the bridge:
 
-- **Inbound** (ILTER as MCP server, serving Claude/VS Code/Cursor/etc.):
-  whichever version a client connects with, ILTER continues that entire
+- **Inbound** (Ilter Advanced as MCP server, serving Claude/VS Code/Cursor/etc.):
+  whichever version a client connects with, Ilter Advanced continues that entire
   session faithfully in that exact version. A client that supports discovery
   can call `server/discover` before pinning a version to see
   `protocolVersions` advertised newest-first (`2026-07-28`, `2025-03-26`,
   `2024-11-05`).
-- **Outbound** (ILTER as MCP client to a registered downstream server): ILTER
+- **Outbound** (Ilter Advanced as MCP client to a registered downstream server): Ilter Advanced
   tries the newest protocol first and negotiates down to whatever that
   specific downstream server actually supports — independent of the inbound
-  client's version. ILTER bridges the two sides transparently.
+  client's version. Ilter Advanced bridges the two sides transparently.
 
 Each version is implemented in its own package under
 `internal/features/mcp/protocol/`, registered against a shared
@@ -391,7 +391,7 @@ driver registry (`Register`/`Negotiate`) to avoid import cycles:
 | Package | Handshake | Transport | Notable behavior |
 |---|---|---|---|
 | `protocol/v20241105` | `initialize` handshake | HTTP + legacy SSE | Minimal capability set, legacy error codes |
-| `protocol/v20250326` | `initialize` handshake | Streamable HTTP + SSE hybrid | Pure extraction of ILTER's original (pre-tri-protocol) behavior — zero behavior change |
+| `protocol/v20250326` | `initialize` handshake | Streamable HTTP + SSE hybrid | Pure extraction of Ilter Advanced's original (pre-tri-protocol) behavior — zero behavior change |
 | `protocol/v20260728` | Stateless — no `initialize`; per-request `_meta` | Streamable HTTP with mandatory `Mcp-Method`/`Mcp-Name` headers | `server/discover`, MRTR `resultType`/`CacheableResult`, `subscriptions/listen` (replaces SSE-GET), Tasks extension, renumbered error codes, `ping`/`logging.setLevel`/`roots.list_changed` removed |
 
 Negotiation rules, enforced in `Gateway.Dispatch`/`Hub.Dispatch`
@@ -474,7 +474,7 @@ The canonical database schema contains 35+ tables organized into 7 functional do
 
 ## Container Build Architecture
 
-ILTER uses a **3-Stage Docker Build** producing an empty `scratch` base container with zero external OS dependencies:
+Ilter Advanced uses a **3-Stage Docker Build** producing an empty `scratch` base container with zero external OS dependencies:
 
 1. **Stage 1: Web Builder (`oven/bun:1-alpine`)** — Compiles Astro + React frontend into `web/dist`.
 2. **Stage 2: Go Builder (`golang:1.26-alpine`)** — Compiles the Go binary with `CGO_ENABLED=0 GOOS=linux`, embeds web assets, and compresses with UPX (`upx --best --lzma`).

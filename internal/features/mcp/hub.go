@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"strings"
 	"time"
 
 	"github.com/ilter-ai/ilter/internal/config"
@@ -12,11 +11,10 @@ import (
 	"github.com/ilter-ai/ilter/internal/features/mcp/protocol"
 )
 
-const hubToolSep = "__"
-
 // Hub exposes installed MCP servers to external clients (e.g. VSCode/Cursor)
-// over SSE + JSON-RPC. Tool names are prefixed as serverID__toolName when
-// exposed to the client, and unprefixed before passing to the Executor.
+// over SSE + JSON-RPC. Tool names are exposed in their server-prefixed form
+// (ExposedToolName: "{server_name}-{tool_name}") and passed to the Executor
+// as-is.
 type Hub struct {
 	registry   *Registry
 	authorizer *Authorizer
@@ -33,18 +31,6 @@ func NewHub(registry *Registry, authorizer *Authorizer, executor *Executor, stor
 		store:      store,
 		cfg:        cfg,
 	}
-}
-
-func toolExposedName(serverID, toolName string) string {
-	return serverID + hubToolSep + toolName
-}
-
-func splitExposedName(exposed string) (string, string) {
-	before, after, ok := strings.Cut(exposed, hubToolSep)
-	if !ok {
-		return "", exposed
-	}
-	return before, after
 }
 
 func (hub *Hub) Dispatch(req *JSONRPCRequest, session *Session) *JSONRPCResponse {
@@ -197,32 +183,13 @@ func (hub *Hub) handleNotificationInitialized(session *Session) {
 func (hub *Hub) handleToolsList(req *JSONRPCRequest, session *Session, version protocol.Version) *JSONRPCResponse {
 	allTools := hub.registry.ListTools()
 
-	allExposed := make([]ToolDefinition, 0, len(allTools))
-	exposedNames := make([]string, 0, len(allTools))
-	for _, ti := range allTools {
-		exposed := ToolDefinition{
-			Name:        toolExposedName(ti.ServerID, ti.Tool.Name),
-			Description: ti.Tool.Description,
-			InputSchema: ti.Tool.InputSchema,
-		}
-		allExposed = append(allExposed, exposed)
-		exposedNames = append(exposedNames, exposed.Name)
-	}
+	authorizedTools := hub.authorizer.GetAuthorizedToolsForServers(session.KeyPrefix, nil, session.KeyID, allTools)
 
-	keyPrefix := session.KeyPrefix
-	keyID := session.KeyID
-	authorized := hub.authorizer.GetAuthorizedTools(keyPrefix, nil, keyID, exposedNames)
-
-	authSet := make(map[string]bool, len(authorized))
-	for _, name := range authorized {
-		authSet[name] = true
-	}
-
-	tools := make([]ToolDefinition, 0, len(authorized))
-	for _, t := range allExposed {
-		if authSet[t.Name] {
-			tools = append(tools, t)
-		}
+	tools := make([]ToolDefinition, 0, len(authorizedTools))
+	for _, ti := range authorizedTools {
+		t := ti.Tool
+		t.Name = ExposedToolName(ti.ServerName, ti.ServerID, ti.Tool.Name)
+		tools = append(tools, t)
 	}
 
 	toolsJSON, err := json.Marshal(tools)
@@ -256,14 +223,13 @@ func (hub *Hub) handleToolsCall(req *JSONRPCRequest, session *Session, version p
 		}
 	}
 
-	serverID, internalName := splitExposedName(params.Name)
-	if serverID == "" || internalName == "" || internalName == params.Name {
-		// No separator found — not a valid exposed name.
-		return NewErrorResponse(req.ID, version.ErrorCode(protocol.ErrToolNotFound), "Tool not found: invalid name format")
+	tool, server, err := hub.registry.ResolveTool(params.Name)
+	if err != nil {
+		return NewErrorResponse(req.ID, version.ErrorCode(protocol.ErrToolNotFound), "Tool not found: "+params.Name)
 	}
 
 	if hub.authorizer != nil {
-		result := hub.authorizer.CheckAccess(session.KeyPrefix, nil, session.KeyID, serverID, internalName)
+		result := hub.authorizer.CheckAccess(session.KeyPrefix, nil, session.KeyID, server.ID, tool.Name)
 		if !result.Allowed {
 			return NewErrorResponse(req.ID, version.ErrorCode(protocol.ErrToolNotFound), "Tool not found")
 		}
@@ -274,7 +240,7 @@ func (hub *Hub) handleToolsCall(req *JSONRPCRequest, session *Session, version p
 	}
 
 	execParams := &ExecuteToolParams{
-		ToolName:  internalName,
+		ToolName:  params.Name,
 		Arguments: params.Arguments,
 		APIKeyID:  session.KeyID,
 		KeyPrefix: session.KeyPrefix,

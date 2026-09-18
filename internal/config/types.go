@@ -40,6 +40,7 @@ type Config struct {
 
 type DashboardConfig struct {
 	Enabled           bool
+	Host              string
 	Port              int
 	AuthToken         string
 	UserAuthJWTSecret string
@@ -122,6 +123,44 @@ type ProviderConfig struct {
 	CircuitBreaker  CircuitBreakerConfig `json:"circuit_breaker"`
 	Headers         map[string]string    `json:"headers,omitempty"`
 	DiscoveryPublic bool                 `json:"discovery_public,omitempty"` // discovery /models endpoint works without API key
+
+	// ModelOverrides is a manually-supplied model list for this provider
+	// (the lowest-priority model source). Details here fill gaps for fields
+	// the provider's /v1/models endpoint does not report; any detail the
+	// endpoint does report wins over these (highest priority = endpoint).
+	// Populated from the runtime_config "model_overrides" section (keyed by
+	// provider name) or, at boot, from ModelOverridesFile when no DB value
+	// exists yet.
+	ModelOverrides []ModelOverride `json:"model_overrides,omitempty"`
+
+	// ModelOverridesFile is an optional path to a JSON file (same schema as
+	// ModelOverrides) that seeds the provider's overrides at boot if no
+	// runtime "model_overrides" entry exists. Useful for keeping a custom
+	// provider's manual model metadata in version control.
+	ModelOverridesFile string `json:"model_overrides_file,omitempty"`
+
+	// ServiceTier is the provider-level default service tier ("", "default",
+	// "priority", "flex") injected into chat requests that do not set one.
+	// Set via ILTER_PROVIDER_<NAME>_SERVICE_TIER or the runtime registration.
+	ServiceTier string `json:"service_tier,omitempty"`
+}
+
+// ModelOverride describes a single manually-specified model entry used as the
+// lowest-priority model source for a provider. It mirrors catalog.ModelInfo's
+// metadata fields. When a model is discovered from the provider's /v1/models
+// endpoint, that endpoint's details take precedence field-by-field; entries
+// present only here are kept as-is.
+type ModelOverride struct {
+	ID                      string   `json:"id"`
+	DisplayName             string   `json:"display_name,omitempty"`
+	Category                string   `json:"category,omitempty"`
+	CostPerInputToken       float64  `json:"cost_per_input_token,omitempty"`
+	CostPerOutputToken      float64  `json:"cost_per_output_token,omitempty"`
+	CostPerCachedInputToken float64  `json:"cost_per_cached_input_token,omitempty"`
+	CostPerCacheWriteToken  float64  `json:"cost_per_cache_write_token,omitempty"`
+	MaxContextTokens        int      `json:"max_context_tokens,omitempty"`
+	MaxOutputTokens         int      `json:"max_output_tokens,omitempty"`
+	Capabilities            []string `json:"capabilities,omitempty"`
 }
 
 // GetAPIKeys returns all configured API keys. If APIKeys is set and non-empty, it returns cleaned APIKeys.
@@ -143,12 +182,14 @@ func (p ProviderConfig) GetAPIKeys() []string {
 }
 
 type ModelConfig struct {
-	Name               string
-	Weight             int
-	Priority           int
-	MaxTokens          int
-	CostPerInputToken  float64
-	CostPerOutputToken float64
+	Name                    string
+	Weight                  int
+	Priority                int
+	MaxTokens               int
+	CostPerInputToken       float64
+	CostPerOutputToken      float64
+	CostPerCachedInputToken float64
+	CostPerCacheWriteToken  float64
 }
 
 type CircuitBreakerConfig struct {
@@ -158,13 +199,18 @@ type CircuitBreakerConfig struct {
 }
 
 type CacheConfig struct {
-	Enabled             bool
-	Type                string
-	RedisURL            string
-	SimilarityThreshold float64
-	TTL                 time.Duration
-	OllamaURL           string
-	MaxEntries          int
+	Enabled                    bool
+	Type                       string // "redis" (default) | "postgres" | "disabled" | "" (auto)
+	RedisURL                   string
+	PostgresDSN                string // e.g. "postgres://user:pass@host:5432/db?sslmode=require"
+	PostgresRequireVectorscale bool   // default true; set false to allow pgvector fallback
+	EmbeddingModel             string // "provider:model" e.g. "openai:text-embedding-3-small"; empty → legacy Ollama path
+	RerankModel                string // "provider:model" e.g. "cohere:rerank-english-v3.0"; empty → no rerank
+	RerankTopK                 int    // candidates pulled before rerank (default 10)
+	SimilarityThreshold        float64
+	TTL                        time.Duration
+	OllamaURL                  string // legacy path; used only when EmbeddingModel is empty
+	MaxEntries                 int
 }
 
 type RateLimitConfig struct {

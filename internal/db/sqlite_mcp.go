@@ -2,7 +2,9 @@ package db
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 
 	"github.com/ilter-ai/ilter/internal/db/sqlc"
 )
@@ -125,4 +127,70 @@ func (s *SQLiteStore) SaveMCPTools(ctx context.Context, serverID string, tools [
 	}
 
 	return tx.Commit()
+}
+
+// MCPToolToggleRow is a per-tool server-level state row (enable/disable and
+// per-call pricing).
+type MCPToolToggleRow struct {
+	ServerID  string
+	ToolName  string
+	Enabled   bool
+	CostPer1k *float64 // USD per 1000 requests; nil = not priced
+}
+
+// ListMCPToolToggles returns every per-tool toggle row.
+func (s *SQLiteStore) ListMCPToolToggles() ([]MCPToolToggleRow, error) {
+	rows, err := s.queries.ListMCPToolToggles(context.Background())
+	if err != nil {
+		return nil, err
+	}
+	result := make([]MCPToolToggleRow, 0, len(rows))
+	for _, r := range rows {
+		result = append(result, MCPToolToggleRow{
+			ServerID:  r.ServerID,
+			ToolName:  r.ToolName,
+			Enabled:   r.Enabled != 0,
+			CostPer1k: r.CostPer1k,
+		})
+	}
+	return result, nil
+}
+
+// UpsertMCPToolToggle inserts or updates one tool's toggle state.
+func (s *SQLiteStore) UpsertMCPToolToggle(ctx context.Context, row MCPToolToggleRow) error {
+	enabled := 0
+	if row.Enabled {
+		enabled = 1
+	}
+	return s.queries.UpsertMCPToolToggle(ctx, sqlc.UpsertMCPToolToggleParams{
+		ServerID:  row.ServerID,
+		ToolName:  row.ToolName,
+		Enabled:   int64(enabled),
+		CostPer1k: row.CostPer1k,
+	})
+}
+
+// DeleteMCPToolToggle removes one tool's toggle row (resets to defaults:
+// enabled + unpriced).
+func (s *SQLiteStore) DeleteMCPToolToggle(ctx context.Context, serverID, toolName string) error {
+	return s.queries.DeleteMCPToolToggle(ctx, sqlc.DeleteMCPToolToggleParams{
+		ServerID: serverID,
+		ToolName: toolName,
+	})
+}
+
+// GetMCPToolToggle reads one tool's toggle state; returns (defaults, false)
+// when no row exists.
+func (s *SQLiteStore) GetMCPToolToggle(ctx context.Context, serverID, toolName string) (enabled bool, costPer1k *float64, ok bool, err error) {
+	row, err := s.queries.GetMCPToolToggle(ctx, sqlc.GetMCPToolToggleParams{
+		ServerID: serverID,
+		ToolName: toolName,
+	})
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return true, nil, false, nil
+		}
+		return false, nil, false, err
+	}
+	return row.Enabled != 0, row.CostPer1k, true, nil
 }

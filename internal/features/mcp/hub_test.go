@@ -132,7 +132,7 @@ func TestHub_Dispatch_ToolsCall_NotInitialized(t *testing.T) {
 	session := sm.Create("", "")
 	defer sm.Delete(session.ID)
 
-	params, _ := json.Marshal(CallToolParams{Name: "srv__tool"})
+	params, _ := json.Marshal(CallToolParams{Name: "srv-tool"})
 	resp := hub.Dispatch(&JSONRPCRequest{
 		JSONRPC: JSONRPCVersion,
 		ID:      testID("1"),

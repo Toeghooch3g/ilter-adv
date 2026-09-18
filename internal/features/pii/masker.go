@@ -108,8 +108,14 @@ func (s *ReversibleState) GetMappings() map[string]string {
 // NameDetector is lazily initialized on first use via detectorOnce
 // so ~10 MB of name data is only allocated when PII name detection is actually needed.
 type Masker struct {
-	mode         string
-	patterns     map[string]bool
+	mode       string
+	patterns   map[string]bool
+	patternsMu sync.RWMutex // guards m.patterns (read in findPIIRanges, written at construction/refresh)
+	// snapshotAll is true when the masker was built with no explicit pattern
+	// list (the runtime default): it snapshots every enabled LoadedPatterns
+	// entry, and RefreshEnabledPatterns keeps it fresh after dashboard CRUD.
+	// When false (explicitly-pinned set), refresh is a no-op.
+	snapshotAll  bool
 	nameDetector *NameDetector
 	detectorOnce sync.Once
 }
@@ -120,7 +126,9 @@ func NewMasker(mode string, enabledPatterns []string) *Masker {
 		mode = "mask"
 	}
 	patterns := make(map[string]bool)
+	snapshotAll := false
 	if len(enabledPatterns) == 0 {
+		snapshotAll = true
 		patterns["names"] = true
 		patternMu.RLock()
 		for name := range LoadedPatterns {
@@ -136,9 +144,34 @@ func NewMasker(mode string, enabledPatterns []string) *Masker {
 	// NameDetector not created here — lazy init via getDetector()
 	// saves ~10 MB of RAM when PII name detection is disabled.
 	return &Masker{
-		mode:     mode,
-		patterns: patterns,
+		mode:        mode,
+		patterns:    patterns,
+		snapshotAll: snapshotAll,
 	}
+}
+
+// RefreshEnabledPatterns rebuilds the enabled-pattern snapshot from the
+// current LoadedPatterns set. Dashboard pattern CRUD calls this after
+// LoadPatternsFromDB so newly created / re-enabled patterns apply to live
+// traffic immediately, without an ilter restart. No-op for an explicitly
+// pinned pattern set (snapshotAll false) — those are operator-configured
+// and should not be overwritten by DB state.
+func (m *Masker) RefreshEnabledPatterns() {
+	m.patternsMu.Lock()
+	defer m.patternsMu.Unlock()
+
+	if !m.snapshotAll {
+		return
+	}
+
+	patterns := make(map[string]bool)
+	patterns["names"] = true
+	patternMu.RLock()
+	for name := range LoadedPatterns {
+		patterns[name] = true
+	}
+	patternMu.RUnlock()
+	m.patterns = patterns
 }
 
 // getDetector lazily initializes the NameDetector on first call.
@@ -250,6 +283,11 @@ func (m *Masker) findPIIRanges(text string) []piiRange {
 		text = text[:maxPIIScanSize]
 	}
 	var ranges []piiRange
+
+	// m.patterns is rebuilt by RefreshEnabledPatterns (dashboard pattern
+	// CRUD); guard reads against that concurrent write.
+	m.patternsMu.RLock()
+	defer m.patternsMu.RUnlock()
 
 	patternMu.RLock()
 	for name, p := range LoadedPatterns {

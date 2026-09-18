@@ -308,6 +308,27 @@ func TestApplyEnvOverrides_AllRegisteredVarsApply(t *testing.T) {
 			getter:   func(cfg *Config) string { return strconv.Itoa(cfg.Server.Port) },
 		},
 		{
+			name:     "dashboard_port",
+			envName:  "ILTER_DASHBOARD_PORT",
+			envValue: "9292",
+			want:     "9292",
+			getter:   func(cfg *Config) string { return strconv.Itoa(cfg.Dashboard.Port) },
+		},
+		{
+			name:     "dashboard_host",
+			envName:  "ILTER_DASHBOARD_HOST",
+			envValue: "127.0.0.1",
+			want:     "127.0.0.1",
+			getter:   func(cfg *Config) string { return cfg.Dashboard.Host },
+		},
+		{
+			name:     "metrics_listen_addr",
+			envName:  "ILTER_METRICS_LISTEN_ADDR",
+			envValue: "127.0.0.1:9293",
+			want:     "127.0.0.1:9293",
+			getter:   func(cfg *Config) string { return cfg.Metrics.ListenAddr },
+		},
+		{
 			name:     "storage_path",
 			envName:  "ILTER_STORAGE_PATH",
 			envValue: "/tmp/env-test-store",
@@ -335,6 +356,48 @@ func TestApplyEnvOverrides_AllRegisteredVarsApply(t *testing.T) {
 			want:     "redis://myredis:6379",
 			getter:   func(cfg *Config) string { return cfg.Cache.RedisURL },
 		},
+		{
+			name:     "cache_type",
+			envName:  "ILTER_CACHE_TYPE",
+			envValue: "postgres",
+			want:     "postgres",
+			getter:   func(cfg *Config) string { return cfg.Cache.Type },
+		},
+		{
+			name:     "cache_pg_dsn",
+			envName:  "ILTER_CACHE_PG_DSN",
+			envValue: "postgres://u:p@h:5432/db?sslmode=disable",
+			want:     "postgres://u:p@h:5432/db?sslmode=disable",
+			getter:   func(cfg *Config) string { return cfg.Cache.PostgresDSN },
+		},
+		{
+			name:     "cache_pg_require_vectorscale",
+			envName:  "ILTER_CACHE_PG_REQUIRE_VECTORSCALE",
+			envValue: "false",
+			want:     "false",
+			getter:   func(cfg *Config) string { return strconv.FormatBool(cfg.Cache.PostgresRequireVectorscale) },
+		},
+		{
+			name:     "cache_embedding_model",
+			envName:  "ILTER_CACHE_EMBEDDING_MODEL",
+			envValue: "openai:text-embedding-3-small",
+			want:     "openai:text-embedding-3-small",
+			getter:   func(cfg *Config) string { return cfg.Cache.EmbeddingModel },
+		},
+		{
+			name:     "cache_rerank_model",
+			envName:  "ILTER_CACHE_RERANK_MODEL",
+			envValue: "cohere:rerank-english-v3.0",
+			want:     "cohere:rerank-english-v3.0",
+			getter:   func(cfg *Config) string { return cfg.Cache.RerankModel },
+		},
+		{
+			name:     "cache_rerank_top_k",
+			envName:  "ILTER_CACHE_RERANK_TOPK",
+			envValue: "20",
+			want:     "20",
+			getter:   func(cfg *Config) string { return strconv.Itoa(cfg.Cache.RerankTopK) },
+		},
 	}
 
 	// Count only production-registered vars (skip ILTER_Z2_* test registrations
@@ -361,6 +424,26 @@ func TestApplyEnvOverrides_AllRegisteredVarsApply(t *testing.T) {
 				t.Errorf("ApplyEnvOverrides(%s): got %q, want %q", tc.envName, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestApplyEnvOverrides_EmptyDashboardAndMetricsPreserveDefault(t *testing.T) {
+	resetForTest()
+
+	cfg := DefaultConfig()
+	ApplyEnvOverrides(&cfg)
+
+	if cfg.Dashboard.Port != DefaultDashboardPort {
+		t.Errorf("dashboard port should stay at default when ILTER_DASHBOARD_PORT unset: got %d, want %d",
+			cfg.Dashboard.Port, DefaultDashboardPort)
+	}
+	if cfg.Dashboard.Host != "" {
+		t.Errorf("dashboard host should stay at default when ILTER_DASHBOARD_HOST unset: got %q, want \"\"",
+			cfg.Dashboard.Host)
+	}
+	if cfg.Metrics.ListenAddr != DefaultMetricsListenAddr {
+		t.Errorf("metrics listen addr should stay at default when ILTER_METRICS_LISTEN_ADDR unset: got %q, want %q",
+			cfg.Metrics.ListenAddr, DefaultMetricsListenAddr)
 	}
 }
 

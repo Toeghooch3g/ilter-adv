@@ -1,4 +1,4 @@
-/** Recharts theme configuration matching the ILTER admin design system. */
+/** Recharts theme configuration matching the Ilter Advanced admin design system. */
 
 // ── Color palette mapped from design tokens ──
 export const CHART_COLORS = {

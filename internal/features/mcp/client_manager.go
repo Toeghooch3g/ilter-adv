@@ -99,6 +99,8 @@ func NewTransportClient(server *ServerInfo) (TransportClient, error) {
 		return NewStdioClient(server), nil
 	case "sse":
 		return NewSSEClient(server), nil
+	case "http", "streamable_http":
+		return NewStreamableHTTPClient(server), nil
 	default:
 		return nil, fmt.Errorf("unknown transport: %s", server.Config.Transport)
 	}

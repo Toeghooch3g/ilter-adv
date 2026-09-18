@@ -93,7 +93,7 @@ func main() {
 					inputCostStr := formatCost(m.CostPerInputToken)
 					outputCostStr := formatCost(m.CostPerOutputToken)
 					fmt.Printf("%-35s %-12s %-10s %-12d %-18s %-18s\n",
-						m.ID, m.Provider, m.Tier, m.MaxContextTokens, inputCostStr, outputCostStr)
+						m.ID, m.Provider, m.Category, m.MaxContextTokens, inputCostStr, outputCostStr)
 				}
 			}
 			catalog.ModelsMu.RUnlock()

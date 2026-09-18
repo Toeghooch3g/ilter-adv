@@ -24,11 +24,13 @@ type Route struct {
 }
 
 type ProviderModelEntry struct {
-	Name    string
-	Active  bool
-	Tier    string
-	CostIn  float64
-	CostOut float64
+	Name           string
+	Active         bool
+	Category       string
+	CostIn         float64
+	CostOut        float64
+	CostCacheRead  float64
+	CostCacheWrite float64
 }
 
 // LoadBalancer selects provider routes for a given model.
@@ -366,8 +368,12 @@ func (lb *LoadBalancer) findCheapestDowngrade(primaryModel string, allowedModels
 	return orderCheapestModels(inCheapest, allowedModels)
 }
 
-// RebuildProviders clears all routes and reloads them from the given provider catalog.
-func (lb *LoadBalancer) RebuildProviders(reg *provider.Registry) {
+// RebuildProviders clears all routes and reloads them from the persisted
+// provider_models rows (keyed by provider name, full pricing included),
+// falling back to live discovery only for providers with no DB rows. This
+// keeps routes stable when a provider's /v1/models discovery fails — a
+// transient upstream error can no longer wipe every route and 404 chat.
+func (lb *LoadBalancer) RebuildProviders(reg *provider.Registry, loadFromDB func(provider string) ([]ProviderModelEntry, error)) error {
 	lb.mu.Lock()
 	defer lb.mu.Unlock()
 
@@ -375,8 +381,22 @@ func (lb *LoadBalancer) RebuildProviders(reg *provider.Registry) {
 	lb.providers = make(map[string]provider.Provider)
 
 	for _, p := range reg.List() {
-		name := p.Name()
-		lb.providers[name] = p
+		lb.providers[p.Name()] = p
+	}
+
+	if loadFromDB != nil {
+		if err := lb.loadRoutesFromDBLocked(loadFromDB); err != nil {
+			return fmt.Errorf("rebuild routes from DB: %w", err)
+		}
+	}
+
+	// Discovery fallback for providers that have no persisted rows (fresh
+	// boot before discovery has populated provider_models). Discovery errors
+	// are skipped — the DB-backed routes above are authoritative.
+	for _, p := range reg.List() {
+		if lb.hasAnyRouteFor(p.Name()) {
+			continue
+		}
 		models, err := p.DiscoverModels(context.Background())
 		if err != nil {
 			continue
@@ -390,16 +410,37 @@ func (lb *LoadBalancer) RebuildProviders(reg *provider.Registry) {
 			})
 		}
 	}
+	return nil
+}
+
+// hasAnyRouteFor reports whether name has at least one registered route.
+func (lb *LoadBalancer) hasAnyRouteFor(name string) bool {
+	for _, rs := range lb.routes {
+		for _, r := range rs {
+			if r.Provider != nil && r.Provider.Name() == name {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // LoadRoutesFromDB adds routes from a provider model store for providers that
-// have no YAML-configured models.
+// have no YAML-configured models. Provider models in the DB are keyed by the
+// provider's unique name (instance), not its type — several providers may
+// share a type (e.g. multiple custom OpenAI-compatible endpoints), so we must
+// look them up by name to avoid mixing one provider's models into another's
+// routes.
 func (lb *LoadBalancer) LoadRoutesFromDB(fn func(provider string) ([]ProviderModelEntry, error)) error {
 	lb.mu.Lock()
 	defer lb.mu.Unlock()
+	return lb.loadRoutesFromDBLocked(fn)
+}
 
+// loadRoutesFromDBLocked appends DB rows to routes; the caller must hold mu.
+func (lb *LoadBalancer) loadRoutesFromDBLocked(fn func(provider string) ([]ProviderModelEntry, error)) error {
 	for name, p := range lb.providers {
-		models, err := fn(p.Type())
+		models, err := fn(p.Name())
 		if err != nil {
 			return fmt.Errorf("load provider %s models: %w", name, err)
 		}
@@ -410,9 +451,11 @@ func (lb *LoadBalancer) LoadRoutesFromDB(fn func(provider string) ([]ProviderMod
 			lb.routes[m.Name] = append(lb.routes[m.Name], Route{
 				Provider: p,
 				Model: config.ModelConfig{
-					Name:               m.Name,
-					CostPerInputToken:  m.CostIn,
-					CostPerOutputToken: m.CostOut,
+					Name:                    m.Name,
+					CostPerInputToken:       m.CostIn,
+					CostPerOutputToken:      m.CostOut,
+					CostPerCachedInputToken: m.CostCacheRead,
+					CostPerCacheWriteToken:  m.CostCacheWrite,
 				},
 			})
 		}
@@ -437,6 +480,38 @@ func (lb *LoadBalancer) GetRoutes(modelName string) ([]Route, error) {
 	routesCopy := make([]Route, len(routes))
 	copy(routesCopy, routes)
 	return routesCopy, nil
+}
+
+// GetRouteByProvider returns the route for modelName served by providerName
+// (matching by provider name), or (Route{}, false). The caller uses it to
+// recover the full ModelConfig (pricing fields included) for the provider a
+// request was actually dispatched to, since dispatch yields only
+// provider/model names.
+func (lb *LoadBalancer) GetRouteByProvider(modelName, providerName string) (Route, bool) {
+	lb.mu.RLock()
+	defer lb.mu.RUnlock()
+
+	for _, r := range lb.routes[modelName] {
+		if r.Provider != nil && r.Provider.Name() == providerName {
+			return r, true
+		}
+	}
+	return Route{}, false
+}
+
+// HasProviderModel reports whether providerName currently has a route for
+// modelName. The proxy handler uses it to decide whether a "provider/model"
+// request model is a valid provider pin (vs. a garbage prefix to strip).
+func (lb *LoadBalancer) HasProviderModel(providerName, modelName string) bool {
+	lb.mu.RLock()
+	defer lb.mu.RUnlock()
+
+	for _, r := range lb.routes[modelName] {
+		if r.Provider != nil && r.Provider.Name() == providerName {
+			return true
+		}
+	}
+	return false
 }
 
 // GetAvailableModels returns model names that have at least one route.

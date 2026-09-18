@@ -226,7 +226,7 @@ func computeModelTierCheapest() (modelTier map[string]string, cheapestInTier map
 			continue
 		}
 		info := infos[0]
-		tier := info.Tier
+		tier := info.Category
 		if tier == "" {
 			continue
 		}
